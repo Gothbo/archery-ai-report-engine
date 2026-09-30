@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "suooter-archery-engine"
+version = "0.1.0"
+description = "射箭 AI 训练报告引擎（速得尔 SUOOTER）：事实层 + 指标层 + 规则引擎 + 记忆层，本地服务化"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "pydantic>=2.6",
+    "pydantic-settings>=2.2",
+    "tzdata>=2024.1",  # Windows 无系统时区库，zoneinfo 需要（A1 本地时区切窗）
+    "swagger-ui-py>=1.0",  # Swagger UI 本地资源（离线可用，不依赖 jsdelivr CDN）
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,61 @@
+{
+  "config_version": "0.1.0-demo",
+  "timezone": "Asia/Shanghai",
+  "sample_threshold": {
+    "daily": 20,
+    "weekly": 20,
+    "monthly": 87,
+    "quarterly": 260,
+    "yearly": 1040,
+    "_basis": "本队实际训练频率(3次/周×30箭)×20% 推导；基础护栏=周报≥2次训练；换队伍/换频率需重算"
+  },
+  "wind_bands": [[0, 1.5], [1.5, 2.0], [2.0, 2.5], [2.5, 99]],
+  "wind_bands_note": "左闭右开 lo<=w<hi；1.5 继承 D4 单阈值，2.0/2.5 按风对弹道影响经验曲线扩展（教练/运动科学评审 2026-09 冻结）",
+  "mdc": {
+    "avgScore": { "threshold": 0.30, "direction": 1 },
+    "mcrT": { "threshold": 0.05, "direction": -1 },
+    "hrVolatility": { "threshold": null, "direction": -1 },
+    "dispersionMm": { "threshold": 2.0, "direction": -1 }
+  },
+  "mdc_note": "演示配置：mdc_source 置为 demo 版本以展示 MDC 判定效果（avgScore/mcrT/dispersionMm 阈值沿用 D4 专家评审值）；hrVolatility 仍为 null（M4.5 未共识，该指标继续走降级模板）。正式链路 SSOT 仍为 config.json（mdc_source=null）",
+  "mdc_source": "demo-thresholds-20260928",
+  "forbidden_phrases": ["练它即提分"],
+  "rolling_window_shots": 288,
+  "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },
+  "memory": {
+    "rolling_snapshot_keep": 12,
+    "rolling_snapshot_keep_note": "滑动窗口高度重叠，仅保留最近12条滚动快照（本队训练频率约8.8个月），更旧自动删除（B8）",
+    "anchor_rebuild_policy": {
+      "triggers": ["season_change", "bow_change", "coach_manual", "four_week_mdc"],
+      "check_timing": "weekly_report_generation",
+      "four_week_min_weeks": 4
+    },
+    "notes_display_days": 14
+  },
+  "store": {
+    "db_path": "facts.db",
+    "sqlite_source_path": "D:\\射箭最新程序202609\\display_sys\\SQLiteTest.db",
+    "sqlite_min_time": "2024-01-01",
+    "sqlite_min_time_note": "跳过 2009 等早期测试数据（41 条 6 位身份号）；真接入时按环境调整",
+    "session_gap_minutes": 90,
+    "session_gap_note": "同一天间隔 >90 分钟拆为两场（M5 聚类口径）",
+    "default_distance_m": 70,
+    "default_distance_note": "真库无距离字段，默认反曲弓标准距离；不同项目需扩展",
+    "shot_type_map": { "1": 0, "3": 1, "7": 1 },
+    "shot_type_map_note": "真库 ShotType 语义待开发确认；M5 默认 1=试射、3/7=记分，避免基线口径偏差",
+    "project_bow_map": { "171": "反曲弓" },
+    "project_bow_map_note": "真库 ProjectId→弓种映射，未映射项走 proj{id} 兜底（不同项目基线不混用）"
+  },
+  "llm": {
+    "enabled": false,
+    "provider": "llamacpp",
+    "endpoint": "http://127.0.0.1:8080",
+    "model": "qwen2.5-1.5b-instruct-q4_k_m",
+    "model_version": "qwen2.5-1.5b-v1",
+    "timeout_sec": 180,
+    "max_retries": 1,
+    "temperature": 0.2,
+    "num_ctx": 2048
+  },
+  "log_dir": "logs"
+}
