@@ -14,6 +14,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "tzdata>=2024.1",  # Windows 无系统时区库，zoneinfo 需要（A1 本地时区切窗）
     "swagger-ui-py>=1.0",  # Swagger UI 本地资源（离线可用，不依赖 jsdelivr CDN）
+    "httpx>=0.27",  # app/llm/client.py 运行时依赖（LLM HTTP 调用）
 ]
 
 [project.optional-dependencies]

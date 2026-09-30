@@ -127,29 +127,32 @@ class SQLiteSource(Source):
                 f"""SELECT * FROM {_SHOT_TABLE}
                     WHERE ShootingTime >= ? AND ShootingTime IS NOT NULL
                       AND LENGTH(CAST(IdentityID AS TEXT)) >= 17
-                    ORDER BY ShootingTime""",
+                    ORDER BY ShootingTime, Id""",
                 (store.sqlite_min_time,),
             ).fetchall()
             hr_map = self._load_hr(conn)
             wind_map = self._load_wind(conn)
 
         # 场次聚类：同运动员同日、相邻箭间隔 <= gap 归为一场（按时间序保证顺序）
+        # 按运动员分别维护"当前场"：多人同时段射箭、行交错时不被切碎（相邻比较只在同一运动员内做）
         clusters: list[list[sqlite3.Row]] = []
+        open_cluster: dict[str, list[sqlite3.Row]] = {}
         for r in score_rows:
             local_dt = _parse_local(r["ShootingTime"])
             if local_dt is None:
                 logger.warning("跳过无法解析时间的箭 id=%s", r["Id"])
                 continue
             aid = athlete_id_of(r["IdentityID"])
-            if clusters:
-                prev = clusters[-1][-1]
-                prev_dt = _parse_local(prev["ShootingTime"])
-                prev_aid = athlete_id_of(prev["IdentityID"])
-                if (prev_dt is not None and prev_aid == aid and prev_dt.date() == local_dt.date()
+            cur = open_cluster.get(aid)
+            if cur is not None:
+                prev_dt = _parse_local(cur[-1]["ShootingTime"])
+                if (prev_dt is not None and prev_dt.date() == local_dt.date()
                         and local_dt - prev_dt <= timedelta(minutes=store.session_gap_minutes)):
-                    clusters[-1].append(r)
+                    cur.append(r)
                     continue
-            clusters.append([r])
+            cur = [r]
+            open_cluster[aid] = cur
+            clusters.append(cur)
 
         date_seq: dict[tuple[str, str], int] = {}
         for cluster in clusters:
