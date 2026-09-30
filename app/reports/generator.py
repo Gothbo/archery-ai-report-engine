@@ -123,6 +123,10 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     if cached_id and not force:
         return {"report_id": cached_id, "cached": True}
 
+    # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
+    # 判定会读到上一次重生成留下的重复行）
+    db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
+
     shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id)
     session_ids = _session_ids_in_window(db, athlete_id, granularity, window_key)
     m = _calc_metrics(shots)

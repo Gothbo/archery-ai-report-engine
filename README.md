@@ -16,7 +16,17 @@
 start.bat
 ```
 
-脚本自动完成：创建 `.venv`（缺省）→ 按 `pyproject.toml` 安装依赖（缺省）→ 启动 `http://127.0.0.1:8000`。
+脚本自动完成：创建 `.venv`（缺省）→ 按 `pyproject.toml` 安装依赖（缺省）→ 起本地模型服务（`models\` 下有 gguf 且 `8090` 空闲时）→ 启动 `http://127.0.0.1:8000`。
+
+运行档由脚本顶部 `ENGINE_CONFIG` 一行决定（改一行即可切换，脚本本身保持纯 ASCII，避免 CMD 代码页乱码）：
+
+| 档位 | mdc_source | 报告 | 对话 |
+| --- | --- | --- | --- |
+| `config.llamacpp.local.json`（默认） | demo-thresholds-20260928 | 出 MDC 判定 | 接本地模型 `:8090` |
+| `config.demo.json` | demo-thresholds-20260928 | 出 MDC 判定 | 关闭 |
+| `config.json`（正式 SSOT） | null | 只描述不判定 | 关闭 |
+
+已有外部模型服务（llama.cpp Vulkan 版 / Ollama）时保持 `LLM_PORT` 被占用即可，脚本会直接复用。
 
 ### 手动命令
 

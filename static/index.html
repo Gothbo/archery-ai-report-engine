@@ -203,6 +203,7 @@ let view = 'coach';
 let athletes = [];
 let athleteId = null;
 let sessions = [];
+let lastRequest = null; // 最近一次生成的粒度：切换视角时按新视角重取同一窗口
 
 function api(path, opts) {
   return fetch(path, opts).then(async (res) => {
@@ -267,6 +268,7 @@ function onAthleteChange() {
   $('status').textContent = '加载中…';
   $('reportEmpty').style.display = '';
   $('reportPanel').style.display = 'none';
+  lastRequest = null; // 换了运动员就丢弃上一份报告的窗口，避免切视角时误触发重取
   api('/api/v1/athletes/' + athleteId).then((r) => {
     const p = r.profile || {};
     const bits = [];
@@ -295,8 +297,15 @@ function onAthleteChange() {
     sel.value = sessions[sessions.length - 1].session_id;
   });
 
+  resetChat();
   refreshSidePanels();
   loadChatReports();
+}
+
+function resetChat() {
+  // 换运动员必须清空问答：否则上一位运动员的对话留在屏幕上，容易被误读成本人的数据
+  $('chatMessages').innerHTML =
+    '<div class="empty" style="padding:20px 0">选择运动员后，可就训练表现提问（需先生成一份报告）</div>';
 }
 
 function refreshSidePanels() {
@@ -319,7 +328,8 @@ function refreshSidePanels() {
     const ms = r.memories || [];
     if (!ms.length) { box.innerHTML = '<div class="empty" style="padding:16px 0">暂无结论沉淀</div>'; return; }
     box.innerHTML = ms.slice(0, 8).map((m) =>
-      '<div class="memory"><span class="k">' + m.granularity + ' · ' + esc(m.window_key) + '</span>：' +
+      '<div class="memory"><span class="k">' + (G_NAMES[m.granularity] || m.granularity) +
+      (m.window_key ? ' · ' + esc(windowLabel(m)) : '') + '</span>：' +
       esc(m.conclusion || m.summary || '') + '</div>'
     ).join('');
   }).catch(() => {});
@@ -333,12 +343,27 @@ function typeLabel(t) {
 const G_NAMES = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
 let chatReports = [];
 
-function loadChatReports() {
+function windowLabel(x) {
+  const k = String(x.window_key || '');
+  return x.granularity === 'daily' ? k.replace(/^daily:/, '') : k;
+}
+
+function loadChatReports(preferKey) {
   if (!athleteId) return;
   const sel = $('chatReportSelect');
+  const prev = chatReports[parseInt(sel.value, 10)];
+  const keepKey = preferKey || (prev ? prev.granularity + '|' + prev.window_key : '');
   sel.innerHTML = '<option value="">加载中…</option>';
   api('/api/v1/athletes/' + athleteId + '/reports').then((r) => {
-    chatReports = r.reports || [];
+    // 同一窗口只保留最新一份：重生成会留下多行缓存，否则下拉被重复项撑爆（实测周报重复 37 条）。
+    // 接口按 generated_at_utc DESC 返回，故每个窗口首次出现即为最新。
+    const seen = {};
+    chatReports = (r.reports || []).filter((x) => {
+      const k = x.granularity + '|' + x.window_key;
+      if (seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
     if (!chatReports.length) {
       sel.innerHTML = '<option value="">（请先生成一份报告）</option>';
       $('chatSendBtn').disabled = true;
@@ -346,8 +371,14 @@ function loadChatReports() {
     }
     sel.innerHTML = chatReports.map((x, i) =>
       '<option value="' + i + '">' + (G_NAMES[x.granularity] || x.granularity) + ' · ' +
-      esc(x.window_key) + ' · ' + esc((x.generated_at_utc || '').slice(0, 10)) + '</option>'
+      esc(windowLabel(x)) + ' · ' + esc((x.generated_at_utc || '').slice(0, 10)) + '</option>'
     ).join('');
+    // 优先选中刚生成的那份；否则沿用原选中项；再否则取最新一份
+    let idx = -1;
+    if (keepKey) chatReports.forEach((x, i) => {
+      if (idx < 0 && x.granularity + '|' + x.window_key === keepKey) idx = i;
+    });
+    sel.value = String(idx >= 0 ? idx : 0);
     $('chatSendBtn').disabled = false;
   }).catch(() => {
     sel.innerHTML = '<option value="">（加载失败）</option>';
@@ -371,7 +402,7 @@ function sendChat() {
     pending.innerHTML = renderAnswer(resp);
     scrollChat();
   }).catch((e) => {
-    pending.innerHTML = '<div class="bubble"><span class="degraded">问询失败：' + esc(e.message) + '</span></div>';
+    pending.innerHTML = '<span class="degraded">问询失败：' + esc(e.message) + '</span>';
   });
 }
 
@@ -391,13 +422,14 @@ function addMsg(role, text) {
 }
 
 function renderAnswer(resp) {
+  // 调用方（addMsg）返回的就是 .bubble 容器，这里只填内容，
+  // 否则会渲染成 bubble 套 bubble，答案被套上两层内边距
   const html = [];
-  html.push('<div class="bubble">' + esc(resp.answer || ''));
+  html.push(esc(resp.answer || ''));
   if (resp.degraded) {
     const reason = resp.reason || '';
     html.push('<div class="degraded">降级：' + esc(reason) + '</div>');
   }
-  html.push('</div>');
   const srcs = resp.sources || [];
   if (srcs.length) {
     html.push('<details class="sources"><summary>溯源（' + srcs.length + '）</summary><ul>');
@@ -451,7 +483,14 @@ function generate(g) {
   const qs = new URLSearchParams({ view: view, refresh: '1', ...p }).toString();
   $('status').textContent = '生成中…';
   api('/api/v1/athletes/' + athleteId + '/reports/' + g + '?' + qs, { method: 'POST' })
-    .then((r) => { renderReport(r); $('status').textContent = r.cached ? '已读取缓存' : '已生成'; })
+    .then((r) => {
+      lastRequest = g;
+      renderReport(r);
+      // 生成后立刻刷新「引用报告」下拉并选中这份：否则新报告不在列表里，
+      // 此前没有任何报告时对话输入框会一直处于禁用状态。
+      loadChatReports(r.granularity ? r.granularity + '|' + r.window_key : '');
+      $('status').textContent = r.cached ? '已读取缓存' : '已生成';
+    })
     .catch((e) => { $('status').textContent = ''; alert('生成失败：' + e.message); });
 }
 
@@ -465,7 +504,7 @@ function renderReport(r) {
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
   $('reportHead').textContent =
     (r.athlete ? r.athlete.name : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
-    (view === 'coach' ? ' · 教练视角' : '');
+    (view === 'coach' ? ' · 教练视角' : ' · 运动员视角');
 
   const body = $('reportBody');
   body.innerHTML = '';
@@ -502,11 +541,10 @@ document.querySelectorAll('#viewSwitch button').forEach((b) => {
     b.classList.add('active');
     view = b.dataset.view;
     refreshSidePanels();
+    // 报告正文按视角过滤备注（教练观察仅教练可见），换视角必须重取同一窗口，
+    // 否则运动员视图会继续显示教练视角那份正文
+    if (lastRequest) generate(lastRequest);
   };
-});
-
-document.querySelectorAll('.gran-btn').forEach((b) => {
-  b.onclick = () => generate(b.dataset.g);
 });
 
 $('athleteSelect').onchange = onAthleteChange;

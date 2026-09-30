@@ -309,8 +309,13 @@ class Database:
         return rows[0] if rows else None
 
     def list_memories(self, athlete_id: str) -> list[sqlite3.Row]:
+        # window_key 取自报告缓存（report_memories 本身不存窗口键），供前端标注结论属于哪个窗口
         return self._query(
-            "SELECT * FROM report_memories WHERE athlete_id=? ORDER BY generated_at_utc DESC", (athlete_id,)
+            """SELECT m.*, c.window_key AS window_key
+                 FROM report_memories m
+                 LEFT JOIN report_cache c ON c.report_id = m.report_id
+                WHERE m.athlete_id=? ORDER BY m.generated_at_utc DESC""",
+            (athlete_id,),
         )
 
     # ---- 报告缓存（B10/B12）----
@@ -331,6 +336,26 @@ class Database:
                VALUES (?,?,?,?,?,?)""",
             (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now()),
         )
+
+    def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
+                            mdc_version: str | None) -> None:
+        """重生成前清理同窗口旧缓存行及其结论记忆。
+
+        report_id 是 uuid 主键，INSERT OR REPLACE 永远只会追加，同窗口重生成会堆积（周报实测 37 行）：
+        前端「引用报告」下拉被重复项撑爆，且「近 3 期 / 近 4 周」判定会读到同一份报告的重复行。
+        """
+        old_ids = [r["report_id"] for r in self._query(
+            """SELECT report_id FROM report_cache
+               WHERE athlete_id=? AND granularity=? AND window_key=?
+                 AND (mdc_version IS ? OR mdc_version=?)""",
+            (athlete_id, granularity, window_key, mdc_version, mdc_version))]
+        for rid in old_ids:
+            self._execute("DELETE FROM report_memories WHERE report_id=?", (rid,))
+        self._execute(
+            """DELETE FROM report_cache
+               WHERE athlete_id=? AND granularity=? AND window_key=?
+                 AND (mdc_version IS ? OR mdc_version=?)""",
+            (athlete_id, granularity, window_key, mdc_version, mdc_version))
 
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
         """B10①：同 session_id 重新导入 → 失效该场次缓存报告（daily 窗口键 = daily:<session_id>）。"""
