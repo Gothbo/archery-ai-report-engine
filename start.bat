@@ -21,6 +21,9 @@ REM                               describe only (no judgement) and chat is
 REM                               off until the M4.5 expert thresholds land.
 set "ENGINE_CONFIG=config.llamacpp.local.json"
 set "ENGINE_PORT=8000"
+REM  Bind address. Default 127.0.0.1 = local machine only (P0: the API has
+REM  no auth and serves athlete data). Only change this behind an auth proxy.
+set "ENGINE_HOST=127.0.0.1"
 
 REM ---- 2) local model server, optional --------------------------------
 REM  Started only when the model file exists and the port is still free.
@@ -68,5 +71,5 @@ if not exist "%LLM_MODEL%" (
 REM ---- 6) engine ------------------------------------------------------
 echo [4/4] Engine profile: %ENGINE_CONFIG%
 echo        Open http://127.0.0.1:%ENGINE_PORT%/  - Ctrl+C to stop
-"%PY%" -m uvicorn app.main:app --host 0.0.0.0 --port %ENGINE_PORT%
+"%PY%" -m uvicorn app.main:app --host %ENGINE_HOST% --port %ENGINE_PORT%
 endlocal

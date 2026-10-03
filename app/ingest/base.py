@@ -29,6 +29,14 @@ class ShotRaw:
     bow_type: str = ""
     video_ref: str | None = None
     shot_time_utc: str = ""
+    # v1.2 接口来源字段（其它数据源留空）：幂等键 / 靶位 / 时间锚点 / 飞行时间 / X 环
+    shot_id: str | None = None          # dt2.shotId（19 位雪花 ID 字符串）
+    score_id: str | None = None         # dt2.scoreId
+    lane: str | None = None
+    release_time_utc: str | None = None  # 离弦（全局锚点）
+    hit_time_utc: str | None = None      # 中靶
+    flight_time_ms: int | None = None
+    inner_ten: bool | None = None
 
 
 @dataclass

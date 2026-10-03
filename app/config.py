@@ -63,6 +63,10 @@ class StoreConfig(BaseModel):
     default_distance_m: int = Field(default=70, gt=0)   # M5：真库无距离字段，默认反曲弓 70m
     shot_type_map: dict[str, int] = Field(default_factory=lambda: {"1": 0, "3": 1, "7": 1})
     project_bow_map: dict[str, str] = Field(default_factory=lambda: {"171": "反曲弓"})
+    # P0 隐私：athlete_id 脱敏密钥文件；None → 与 db_path 同目录的 athlete_id.key（环境变量 ENGINE_ID_SECRET 优先）
+    id_secret_path: str | None = None
+    # v1.2 接口 bowType 英文枚举 → 引擎内部弓种值（与 project_bow_map 的取值一致，基线键不分裂）
+    v12_bow_type_map: dict[str, str] = Field(default_factory=lambda: {"recurve": "反曲弓", "compound": "复合弓"})
 
 
 class LLMConfig(BaseModel):

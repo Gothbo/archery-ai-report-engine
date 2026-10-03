@@ -7,17 +7,16 @@
 - ShotType 1/3/7 语义待开发确认 → config.store.shot_type_map 映射（默认 1=试射、3/7=记分）
 - ProjectId → 弓种映射 config.store.project_bow_map；未映射走 proj{id}（不同项目基线不混用）
 - ShootingTime/CreateDate/CreateTime 均为**本地时间（Asia/Shanghai）无时区** → 转 UTC 存储（A1）
-- 运动员主键：真库只有身份证号（IdentityID，18 位含 X 校验位）→ 确定性映射雪花格式 athlete_id
-  （纯数字 18 位用 10^18+identity 双射；含 X 用 SHA1 派生），真接入时由登录系统下发正式雪花 ID
+- 运动员主键：真库只有身份证号（IdentityID，18 位含 X 校验位）→ 带密钥 HMAC 脱敏为 19 位数字 athlete_id
+  （app/ingest/identity.py，不可逆；身份证号不落库、不出接口），真接入时由登录系统下发正式雪花 ID
+- 缺测哨兵（接口 v1.2 §十）：HeartRate<=0 视为缺测、不参与匹配；WindSpeed<0 视为缺测；风向缺失=NULL（不当 0°）
 - mcr_t 不在本库（撒放用时在弹道消息）→ 一律 NULL（缺测不出结论）
 - HR/Wind 按运动员 + 时间窗口最近匹配（HR 30s / Wind 60s，D2）
 - 场次聚类：同运动员同日，箭间隔 >session_gap_minutes 拆为两场（M5 口径）
 """
 from __future__ import annotations
 
-import hashlib
 import logging
-import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import Iterator
@@ -25,6 +24,7 @@ from zoneinfo import ZoneInfo
 
 from app.config import get_config
 from app.ingest.base import SessionRaw, ShotRaw, Source
+from app.ingest.identity import pseudonymize_athlete
 
 logger = logging.getLogger("engine.ingest.sqlite")
 
@@ -62,12 +62,8 @@ def _to_utc_iso_ms(local_dt: datetime) -> str:
 
 
 def athlete_id_of(identity) -> str:
-    """身份证号 → 雪花格式运动员 ID（确定性；双射优先，X 校验位走 SHA1 派生）。"""
-    ident = str(identity).strip().upper()
-    if re.fullmatch(r"\d{18}", ident):
-        return str(10**18 + int(ident))
-    h = hashlib.sha1(ident.encode("utf-8")).hexdigest()
-    return str(10**18 + int(h[:14], 16) % 10**18)
+    """身份证号 → 19 位数字运动员 ID（带密钥 HMAC，确定性、不可逆、大小写无关）。"""
+    return pseudonymize_athlete(identity)
 
 
 def _to_float(v) -> float | None:
@@ -104,7 +100,7 @@ class SQLiteSource(Source):
         self.db_path = db_path or (get_config().store.sqlite_source_path or "")
 
     def athlete_profiles(self) -> dict[str, dict]:
-        """{athlete_id: {name, identity_id}}：名字取自 WindSpeedDirection.AthleteName。"""
+        """{athlete_id: {name}}：名字取自 WindSpeedDirection.AthleteName（身份证号不落库）。"""
         out: dict[str, dict] = {}
         with sqlite3.connect(self.db_path) as conn:
             rows = conn.execute(
@@ -112,7 +108,7 @@ class SQLiteSource(Source):
             ).fetchall()
         for reg, name in rows:
             aid = athlete_id_of(reg)
-            out.setdefault(aid, {"name": name, "identity_id": str(reg)})
+            out.setdefault(aid, {"name": name})
         return out
 
     def count_score_rows(self) -> int:
@@ -211,8 +207,11 @@ class SQLiteSource(Source):
             dt = _parse_local(r["CreateDate"])
             if dt is None:
                 continue
+            hr = _to_float(r["HeartRate"])
+            if hr is None or hr <= 0:  # 缺测哨兵 0 → 不参与匹配（不以 0 计入统计）
+                continue
             aid = athlete_id_of(r["IdentityID"])
-            out.setdefault(aid, []).append((_local_to_utc_ms(dt), int(r["HeartRate"])))
+            out.setdefault(aid, []).append((_local_to_utc_ms(dt), int(hr)))
         for lst in out.values():
             lst.sort()
         return out
@@ -229,9 +228,14 @@ class SQLiteSource(Source):
             dt = _parse_local(r["CreateTime"])
             if dt is None:
                 continue
+            speed = _to_float(r["WindSpeed"])
+            if speed is None or speed < 0:  # 缺测哨兵 -1 → 不参与匹配（0 = 真实无风，保留）
+                continue
+            deg = _to_float(r["WindDirection"])
+            if deg is not None and deg < 0:
+                deg = None
             aid = athlete_id_of(r["RegisterNum"])
-            out.setdefault(aid, []).append(
-                (_local_to_utc_ms(dt), float(r["WindSpeed"]), _to_float(r["WindDirection"]) or 0.0))
+            out.setdefault(aid, []).append((_local_to_utc_ms(dt), speed, deg))
         for lst in out.values():
             lst.sort()
         return out
