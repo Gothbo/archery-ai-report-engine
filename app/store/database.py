@@ -162,6 +162,7 @@ class Database:
     # ---- M2b：记忆层 ----
 
     def upsert_profile(self, profile: dict) -> None:
+        """档案 upsert。P0 隐私：identity_id（身份证号）一律不落库，传入也忽略（恒写 NULL）。"""
         self._execute(
             """INSERT INTO athlete_profile
                  (athlete_id, account_id, identity_id, name, gender, age, bow_type, hand, level, updated_at_utc)
@@ -174,7 +175,7 @@ class Database:
             (
                 profile["athlete_id"],
                 profile.get("account_id"),
-                profile.get("identity_id"),
+                None,  # identity_id 已弃用：不存身份证号
                 profile.get("name"),
                 profile.get("gender"),
                 profile.get("age"),

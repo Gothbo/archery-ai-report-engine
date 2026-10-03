@@ -47,7 +47,7 @@ CREATE INDEX IF NOT EXISTS idx_shot_athlete_mode ON shot_fact(athlete_id, shooti
 CREATE TABLE IF NOT EXISTS athlete_profile (
     athlete_id    TEXT PRIMARY KEY,
     account_id    TEXT,                       -- 预留：登录系统账号绑定（可空）
-    identity_id   TEXT,                       -- 冗余参考：现场身份证号（可空）
+    identity_id   TEXT,                       -- 已弃用（P0 隐私）：不再写入身份证号，恒为 NULL；旧库由迁移脚本清空
     name          TEXT,
     gender        TEXT,
     age           INTEGER,
