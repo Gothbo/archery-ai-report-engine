@@ -4,6 +4,8 @@
 样例来源（tests/fixtures/v12，逐字节复制自 PM 侧对接包与 mock 数据，无真实身份信息）：
 - doc_examples.json         对接包《样例.json》10 条（dt1–dt8 + dt9A/9B）
 - mock_dt5_full.json / mock_dt6.json / mock_dt5_dt6_demo.jsonc   拉力/撒放 mock
+- doc_examples_v1_2.json / doc_anomaly_examples_v1_2.json   PM 侧修订版对接包（schemaVersion 1.2）
+  《样例.json》与《异常与降级样例.json》逐字节副本
 """
 from __future__ import annotations
 
@@ -90,8 +92,12 @@ def _post(client, payload):
 class TestValidation:
     def test_vendored_schema_is_doc_copy(self):
         import hashlib
-        from app.ingest.v12.validate import SCHEMA_PATH, SCHEMA_SHA256
+        from app.ingest.v12.validate import SCHEMA_PATH, SCHEMA_SHA256, SCHEMAS
         assert hashlib.sha256(SCHEMA_PATH.read_bytes()).hexdigest() == SCHEMA_SHA256
+        assert set(SCHEMAS) == {"1.1", "1.2"}
+        for ver, (path, sha) in SCHEMAS.items():
+            assert hashlib.sha256(path.read_bytes()).hexdigest() == sha, ver
+            assert json.loads(path.read_text(encoding="utf-8"))["properties"]["schemaVersion"]["const"] == ver
 
     def test_doc_examples_all_valid(self):
         msgs = _examples()
@@ -114,7 +120,7 @@ class TestValidation:
         # +08:00 偏移：schema format 放行，但文档硬约束要求 UTC Z → 本适配层拒绝
         (lambda m: m["data"].update(releaseTime="2025-09-09T18:18:44.620+08:00"), "releaseTime"),
         (lambda m: m.update(sentAt="2025-09-09 10:18:45"), "sentAt"),
-        (lambda m: m.update(schemaVersion="1.2"), "schemaVersion"),
+        (lambda m: m.update(schemaVersion="2.0"), "schemaVersion"),   # 未知协议版本
         (lambda m: m["data"].update(shotId=1963169497552654336), "shotId"),   # ID 不能是 number
         (lambda m: m["data"].update(score=10.7), "score"),                     # 环值须整数
         (lambda m: m["data"].update(bowType="反曲弓"), "bowType"),
@@ -392,3 +398,157 @@ def test_duplicate_message_id_with_different_payload_flagged(client):
     res = _post(client, [changed])["results"][0]
     assert res["status"] == "duplicate" and res["payload_differs"] is True
     assert _db().query("SELECT score FROM shot_fact")[0]["score"] == 9.0
+
+
+# ---------------------------------------------------------------- schema 1.2（修订版对接包）
+
+def _v12_examples() -> list[dict]:
+    return json.loads((FIX / "doc_examples_v1_2.json").read_text(encoding="utf-8"))
+
+
+def _v12_anomalies() -> dict[str, dict]:
+    cases = json.loads((FIX / "doc_anomaly_examples_v1_2.json").read_text(encoding="utf-8"))
+    return {c["message"]["messageId"]: c["message"] for c in cases}
+
+
+def make_dt2_v12(n: int, *, miss: bool = False, **kw) -> dict:
+    """schema 1.2 的 dt2：在 make_dt2 基础上升版本、加 miss；脱靶时 score=0/scoreId=null/坐标可空。"""
+    m = make_dt2(n, **kw)
+    m["schemaVersion"] = "1.2"
+    m["data"]["miss"] = miss
+    if miss:
+        m["data"].update(score=0, innerTen=False, scoreId=None, x=None, y=None)
+    return m
+
+
+class TestSchemaV12:
+    def test_v12_examples_and_anomalies_valid(self):
+        msgs = _v12_examples()
+        assert len(msgs) == 10 and all(m["schemaVersion"] == "1.2" for m in msgs)
+        for m in msgs:
+            assert validate_message(m) == [], m["messageId"]
+        anomalies = _v12_anomalies()
+        assert len(anomalies) == 8
+        for mid, m in anomalies.items():
+            assert validate_message(m) == [], mid
+
+    def test_v11_messages_still_use_v11_schema(self):
+        # 1.1 发送端不受影响：原样例照常合法；1.1 下脱靶仍按旧 schema 判非法
+        assert all(validate_message(m) == [] for m in _examples())
+        m = _by_dt(2)
+        m["data"].update(score=0, innerTen=False, scoreId=None)
+        assert validate_message(m)
+        # 1.1 消息带 1.2 才有的 miss 字段也不会因版本混用出错（1.1 schema 对 data 未禁额外字段）
+        m = _by_dt(2)
+        m["data"]["miss"] = False
+        assert validate_message(m) == []
+
+    @pytest.mark.parametrize("mutate, expect", [
+        (lambda m: m["data"].pop("miss"), "miss"),
+        (lambda m: m["data"].update(miss=True, score=5, scoreId=None, innerTen=False), "score"),
+        (lambda m: m["data"].update(miss=True, score=0, innerTen=False), "scoreId"),
+        (lambda m: m["data"].update(score=0), "score"),
+        (lambda m: m["data"].pop("flightTimeMs"), "flightTimeMs"),
+        (lambda m: m["data"].update(releaseTime="2026-09-07T09:00:30.000+08:00"), "releaseTime"),
+        (lambda m: m["data"].update(athleteId="110101199001011234"), "athleteId"),   # 合成的身份证格式号
+        (lambda m: m.update(timestamp="2026-09-07T01:00:30.000Z"), "timestamp"),     # 信封不允许额外字段
+        (lambda m: m["data"].update(lane=1), "lane"),
+        (lambda m: m["data"].update(windSpeed=-2), "windSpeed"),
+    ])
+    def test_v12_invalid_cases(self, mutate, expect):
+        m = make_dt2_v12(1)
+        assert validate_message(m) == []
+        mutate(m)
+        errs = validate_message(m)
+        assert errs and any(expect in e for e in errs), errs
+
+    def test_v12_realtime_mixed_null_rejected_by_schema(self):
+        m = next(x for x in _v12_examples() if x["dataType"] == 1)
+        m["data"]["shotId"] = None
+        assert validate_message(m)
+
+    def test_v12_examples_batch(self, client):
+        out = _post(client, _v12_examples())
+        assert out["summary"]["accepted"] == 7 and out["summary"]["unsupported"] == 3, out["results"]
+
+    def test_miss_ingested_and_counted(self, client):
+        from app.ingest.identity import pseudonymize_athlete
+        from app.reports.generator import _calc_metrics
+        aid = pseudonymize_athlete("spid-test-a")
+        msgs = [make_dt2_v12(i, score=9) for i in range(24)]
+        msgs += [make_dt2_v12(i, miss=True) for i in range(24, 30)]
+        out = _post(client, msgs)
+        assert out["summary"]["accepted"] == 30, out["results"]
+        db = _db()
+        rows = [dict(r) for r in db.query(
+            "SELECT * FROM shot_fact WHERE session_id=? ORDER BY shot_seq", (f"{aid}_20260907_v01",))]
+        assert len(rows) == 30
+        misses = [r for r in rows if r["hit"] == 0]
+        assert len(misses) == 6
+        assert all(r["score"] == 0 and r["score_id"] is None and r["x_mm"] is None for r in misses)
+        m = _calc_metrics(rows)
+        assert m["n_shots"] == 30
+        assert m["hit_rate"] == 80.0                      # 24/30：脱靶计入分母
+        assert m["avg_score"] == round(24 * 9 / 30, 2)    # 脱靶按 0 环
+        assert m["dispersion_mm"] is not None              # 无坐标的脱靶不参与散布
+        r = client.post(f"/api/v1/athletes/{aid}/reports/daily", params={"session_id": f"{aid}_20260907_v01"})
+        assert r.status_code == 200, r.text
+        assert "命中率 80.0%" in json.dumps(r.json(), ensure_ascii=False)
+
+    def test_miss_with_coordinates_keeps_xy(self, client):
+        m = _v12_anomalies()["msg_ex_miss_xy"]
+        out = _post(client, m)
+        assert out["results"][0]["status"] == "accepted", out
+        row = _db().query("SELECT * FROM v12_shot WHERE shot_id=?", (m["data"]["shotId"],))[0]
+        assert row["score"] == 0 and row["score_id"] is None
+        assert row["x_mm"] == 312.0 and row["y_mm"] == -40.0
+
+    def test_release_time_missing_falls_back_to_hit_time(self, client):
+        m = _v12_anomalies()["msg_ex_no_release"]
+        out = _post(client, m)
+        res = out["results"][0]
+        assert res["status"] == "accepted", res
+        assert any("releaseTime 缺失" in w for w in res.get("warnings", []))
+        row = _db().query("SELECT * FROM v12_shot WHERE shot_id=?", (m["data"]["shotId"],))[0]
+        assert row["release_time_utc"] is None and row["flight_time_ms"] is None
+        assert row["shot_time_utc"] == row["hit_time_utc"] == m["data"]["hitTime"]
+        fact = _db().query("SELECT * FROM shot_fact WHERE shot_id=?", (m["data"]["shotId"],))[0]
+        assert fact["shot_time_utc"] == m["data"]["hitTime"]
+
+    def test_missing_athlete_id_unsupported_and_resendable(self, client):
+        m = _v12_anomalies()["msg_ex_no_snapshot"]
+        out = _post(client, m)
+        res = out["results"][0]
+        assert res["status"] == "unsupported" and "athleteId" in res["reason"]
+        db = _db()
+        assert db.query("SELECT COUNT(*) c FROM v12_shot")[0]["c"] == 0
+        assert db.query("SELECT COUNT(*) c FROM ingest_messages")[0]["c"] == 0
+        fixed = copy.deepcopy(m)
+        fixed["data"]["athleteId"] = "spid123"            # 平台补填后用原 messageId 重发
+        res2 = _post(client, fixed)["results"][0]
+        assert res2["status"] == "accepted", res2
+        row = db.query("SELECT * FROM v12_shot WHERE shot_id=?", (m["data"]["shotId"],))[0]
+        assert row["hr"] is None and row["wind_speed"] is None   # 快照未填 → 空值
+
+    def test_score_decimal_and_sentinels(self, client):
+        m = _v12_anomalies()["msg_ex_sentinel"]
+        res = _post(client, m)["results"][0]
+        assert res["status"] == "accepted", res
+        row = _db().query("SELECT * FROM v12_shot WHERE shot_id=?", (m["data"]["shotId"],))[0]
+        assert row["score"] == 10.7
+        assert row["hr"] is None and row["wind_speed"] is None and row["wind_dir_deg"] is None
+        assert row["offset_m"] is None
+
+    def test_score_decimal_inconsistent_warns(self, client):
+        m = make_dt2_v12(1, score=9, scoreDecimal=10.2)
+        res = _post(client, m)["results"][0]
+        assert res["status"] == "accepted"
+        assert any("scoreDecimal" in w for w in res.get("warnings", []))
+
+    def test_v11_and_v12_mixed_batch(self, client):
+        msgs = [make_dt2(i) for i in range(5)] + [make_dt2_v12(i, mid_prefix="v12") for i in range(5, 10)]
+        msgs.append({**make_dt2_v12(10, mid_prefix="bad"), "schemaVersion": "1.3"})
+        out = _post(client, msgs)
+        assert out["summary"]["accepted"] == 10 and out["summary"]["invalid"] == 1, out["results"]
+        assert "不支持的协议版本" in out["results"][-1]["errors"][0]
+        assert out["summary"]["sessions_rebuilt"] == 1

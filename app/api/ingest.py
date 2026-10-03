@@ -53,9 +53,11 @@ V12_MAX_BATCH = 500
 def ingest_v12(payload: Any = Body(..., description="单条 v1.2 消息（JSON 对象）或消息数组（批量）")) -> dict:
     """接收《射箭电子靶数据接口 v1.2》上行消息（信封 schemaVersion/messageId/dataType/data）。
 
+    - 协议版本：schemaVersion "1.1"（原对接包 schema）与 "1.2"（修订版 schema：脱靶 miss、
+      releaseTime 可选）均接收，按版本分别校验；其他版本判为 invalid
     - 单条：请求体为一个消息对象；批量：请求体为消息数组（≤500 条）
     - 逐条返回结果：accepted / duplicate（messageId 或 shotId 已受理）/ invalid（附原因）/
-      unsupported（本期外 dataType）
+      unsupported（本期外 dataType，或 dt2 缺 athleteId 无法归属）
     - 批内单条失败不影响其它条；HTTP 200 表示批次已处理，具体看每条 status
     """
     if isinstance(payload, dict):

@@ -94,10 +94,11 @@ start.bat
 
 按 PM 侧《射箭电子靶数据接口 v1.2》对接包接收消息。核心 `app/ingest/v12/receiver.py` 跟传输方式无关：现在接的是 HTTP，以后接 MQTT 订阅时直接调用 `ingest_messages()` 即可。
 
-- **校验**：`app/ingest/v12/schema.json` 是对接包 schema 的逐字节副本（sha256 有测试守护）。在此基础上补了文档里写明、但 schema 没有表达出来的硬约束：时间必须是 UTC 且以 `Z` 结尾；实时流的 `shotId`/`shotSeq` 必须同时为空或同时有值；`subType` 只能用于 dt9。结构不合法的消息直接拒绝，不落库，也不占用 messageId，修正后可以用原 messageId 重发。
+- **协议版本**：按信封 `schemaVersion` 路由。`"1.1"` 用 `app/ingest/v12/schema.json`（开发侧原对接包 schema 的逐字节副本），`"1.2"` 用 `app/ingest/v12/schema_v1_2.json`（PM 侧修订版对接包 schema 的逐字节副本），两份都有 sha256 测试守护；其他版本直接判为 invalid。1.2 相比 1.1：脱靶用 `miss=true` 显式表达（`score=0`、`scoreId=null`）；`releaseTime`/`flightTimeMs` 可选（缺失即降级）；dt2 平台快照字段与 `athleteId` 可选；新增可选 `scoreDecimal`；UTC 尾 Z 等硬约束写进了 schema。
+- **校验**：在 schema 之上，对所有版本统一补了文档里写明、但 schema 没有表达出来的硬约束：时间必须是 UTC 且以 `Z` 结尾；实时流的 `shotId`/`shotSeq` 必须同时为空或同时有值；`subType` 只能用于 dt9。结构不合法的消息直接拒绝，不落库，也不占用 messageId，修正后可以用原 messageId 重发。
 - **去重**：`messageId` 精确去重（表 `ingest_messages`，只存内容摘要）。dt2 另外按 `shotId`/`scoreId` 防重，重复的不覆盖。
 - **本期分发范围**：dt2 弹着、dt1 心率、dt4 风参与计算；dt3 只存视频路径；dt7 存轨迹元数据和点列，不参与计算；dt5/dt6 只存原文；dt8/dt9 返回 `unsupported`，不落库。
-- **字段映射**：`releaseTime` 作为锚点，写入 `shot_time_utc`；`x/y` 由 cm 乘 10 换成 `x_mm/y_mm`；`heartRate=0`、`windSpeed/windDirection/offsetM=-1` 转为 NULL；`bowType` 由 `config.store.v12_bow_type_map` 映射（默认 recurve→反曲弓、compound→复合弓）；`athleteId` 做 HMAC 脱敏。`shot_fact` 新增 `shot_id/score_id/lane/release_time_utc/hit_time_utc/flight_time_ms/inner_ten` 字段。`isGood` 不当作废箭标记使用。
+- **字段映射**：`releaseTime` 作为锚点，写入 `shot_time_utc`（1.2 下缺失时退回 `hitTime`，回执 `warnings` 标注精度受限）；脱靶（`miss=true`）按 0 环入库、`hit=0`，计入总箭数，与 SQLite 源口径一致，所以命中率、平均环会把脱靶算进去；有 `scoreDecimal` 时优先用它作为环值；dt2 缺 `athleteId` 时返回 `unsupported`（无法归属运动员，不落库，补齐后可原样重发）；`x/y` 由 cm 乘 10 换成 `x_mm/y_mm`；`heartRate=0`、`windSpeed/windDirection/offsetM=-1` 转为 NULL；`bowType` 由 `config.store.v12_bow_type_map` 映射（默认 recurve→反曲弓、compound→复合弓）；`athleteId` 做 HMAC 脱敏。`shot_fact` 新增 `shot_id/score_id/lane/release_time_utc/hit_time_utc/flight_time_ms/inner_ten` 字段。`isGood` 不当作废箭标记使用。
 - **场次**：沿用现有口径（同一运动员、同一本地日、两箭间隔 ≤ `session_gap_minutes`），按"运动员 + 本地日"重建。场次号格式为 `{athlete_id}_{YYYYMMDD}_v{nn}`，和 SQLite 源区分开。乱序到达、实时流晚到都会触发重建；弹着快照缺测时，用同 `shotId` 的实时流样本补。
 
 ## 口径来源

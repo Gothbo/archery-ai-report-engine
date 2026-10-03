@@ -28,7 +28,7 @@ dev = [
 include = ["app*"]
 
 [tool.setuptools.package-data]
-"app.ingest.v12" = ["schema.json"]
+"app.ingest.v12" = ["schema.json", "schema_v1_2.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,199 @@
+[
+  {
+    "case": "dt2 脱靶：miss=true、score=0、innerTen=false、scoreId=null；坐标未测到时 x/y=null",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_miss",
+      "dataType": 2,
+      "data": {
+        "releaseTime": "2025-09-09T10:20:02.100Z",
+        "hitTime": "2025-09-09T10:20:03.320Z",
+        "flightTimeMs": 1220,
+        "shotSeq": 2,
+        "shotId": "1963169497552654337",
+        "scoreId": null,
+        "lane": "lane-01",
+        "athleteId": "spid123",
+        "miss": true,
+        "score": 0,
+        "x": null,
+        "y": null,
+        "innerTen": false,
+        "shootingMode": 1,
+        "bowType": "recurve",
+        "targetType": "122cm-recurve",
+        "heartRate": 92,
+        "windSpeed": 3.2,
+        "windDirection": 70,
+        "offsetM": 0.16
+      }
+    }
+  },
+  {
+    "case": "dt2 脱靶：光幕测到靶面外坐标（cm），照常下发 x/y",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_miss_xy",
+      "dataType": 2,
+      "data": {
+        "releaseTime": "2025-09-09T10:21:10.000Z",
+        "hitTime": "2025-09-09T10:21:11.230Z",
+        "flightTimeMs": 1230,
+        "shotSeq": 3,
+        "shotId": "1963169497552654338",
+        "scoreId": null,
+        "lane": "lane-01",
+        "athleteId": "spid123",
+        "miss": true,
+        "score": 0,
+        "x": 31.2,
+        "y": -4.0,
+        "innerTen": false,
+        "shootingMode": 1,
+        "bowType": "recurve",
+        "targetType": "122cm-recurve",
+        "heartRate": 92,
+        "windSpeed": 3.2,
+        "windDirection": 70,
+        "offsetM": 0.16
+      }
+    }
+  },
+  {
+    "case": "dt2 降级：设备端无法算 releaseTime → 省略 releaseTime 与 flightTimeMs，锚点退回 hitTime，接收端标注'精度受限'",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_no_release",
+      "dataType": 2,
+      "data": {
+        "hitTime": "2025-09-09T10:22:30.480Z",
+        "shotSeq": 4,
+        "shotId": "1963169497552654339",
+        "scoreId": "1963169497552654339",
+        "lane": "lane-01",
+        "athleteId": "spid123",
+        "miss": false,
+        "score": 9,
+        "x": 7.1,
+        "y": 3.0,
+        "innerTen": false,
+        "shootingMode": 1,
+        "bowType": "recurve",
+        "targetType": "122cm-recurve",
+        "heartRate": 92,
+        "windSpeed": 3.2,
+        "windDirection": 70,
+        "offsetM": 0.16
+      }
+    }
+  },
+  {
+    "case": "dt2 设备原始形态：平台快照 heartRate/windSpeed/windDirection/offsetM 与 athleteId 均未填（确认点#14/#17 待答复）。结构合法；接收端无 athleteId 时无法归属运动员",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_no_snapshot",
+      "dataType": 2,
+      "data": {
+        "releaseTime": "2025-09-09T10:23:40.000Z",
+        "hitTime": "2025-09-09T10:23:41.210Z",
+        "flightTimeMs": 1210,
+        "shotSeq": 5,
+        "shotId": "1963169497552654340",
+        "scoreId": "1963169497552654340",
+        "lane": "lane-01",
+        "miss": false,
+        "score": 10,
+        "x": 4.5,
+        "y": -2.0,
+        "innerTen": false,
+        "shootingMode": 1,
+        "bowType": "recurve",
+        "targetType": "122cm-recurve"
+      }
+    }
+  },
+  {
+    "case": "dt2 缺测哨兵：heartRate=0、windSpeed/windDirection/offsetM=-1；附可选小数环值 scoreDecimal=10.7（待开发确认）",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_sentinel",
+      "dataType": 2,
+      "data": {
+        "releaseTime": "2025-09-09T10:24:50.000Z",
+        "hitTime": "2025-09-09T10:24:51.220Z",
+        "flightTimeMs": 1220,
+        "shotSeq": 6,
+        "shotId": "1963169497552654341",
+        "scoreId": "1963169497552654341",
+        "lane": "lane-01",
+        "athleteId": "spid123",
+        "miss": false,
+        "score": 10,
+        "x": 1.2,
+        "y": 0.5,
+        "innerTen": true,
+        "shootingMode": 1,
+        "bowType": "recurve",
+        "targetType": "122cm-recurve",
+        "heartRate": 0,
+        "windSpeed": -1,
+        "windDirection": -1,
+        "offsetM": -1,
+        "scoreDecimal": 10.7
+      }
+    }
+  },
+  {
+    "case": "dt1 窗外/休息段 + 心率带掉线：shotId/shotSeq 同为 null；heartRate=0（缺测）",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_hr_rest",
+      "dataType": 1,
+      "data": {
+        "timestamp": "2025-09-09T10:30:00.000Z",
+        "shotSeq": null,
+        "shotId": null,
+        "lane": "lane-01",
+        "heartRate": 0,
+        "rrIntervalsMs": [],
+        "rmssdMs": 0
+      }
+    }
+  },
+  {
+    "case": "dt4 窗外 + 风速仪断线：windSpeed/windDirection=-1（0 m/s 才是真实无风）",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_wind_missing",
+      "dataType": 4,
+      "data": {
+        "timestamp": "2025-09-09T10:30:01.000Z",
+        "shotSeq": null,
+        "shotId": null,
+        "lane": "lane-01",
+        "windSpeed": -1,
+        "windDirection": -1
+      }
+    }
+  },
+  {
+    "case": "dt3 单路摄像头失败：videos 仅保留可用 source",
+    "message": {
+      "schemaVersion": "1.2",
+      "messageId": "msg_ex_video_one",
+      "dataType": 3,
+      "data": {
+        "releaseTime": "2025-09-09T10:18:44.620Z",
+        "shotSeq": 1,
+        "lane": "lane-01",
+        "videos": [
+          {
+            "source": "top",
+            "videoPath": "/videos/s1_shot1_top.mp4",
+            "shotId": "1963169497552654336"
+          }
+        ]
+      }
+    }
+  }
+]

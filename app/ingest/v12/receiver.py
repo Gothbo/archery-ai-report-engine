@@ -2,10 +2,13 @@
 """v1.2 上行消息接收核心（与传输无关：HTTP 已接入，MQTT 订阅以后直接调用 ingest_messages 即可）。
 
 处理流程（每条消息独立结果，互不影响）：
-1. 校验：schema.json + 文档硬约束（validate.py）→ 失败 = invalid（记日志、不落库、不占用 messageId）
+1. 校验：按 schemaVersion 路由（1.1 → schema.json，1.2 → schema_v1_2.json）+ 文档硬约束（validate.py）
+   → 失败 = invalid（记日志、不落库、不占用 messageId）
 2. 去重：messageId 已受理 → duplicate（§4.3：仅处理一次，后续丢弃，不覆盖/不重算）
 3. 分发（本期范围，开工包：dt 2/1/4/3/7）：
-   - dt2 弹着 → v12_shot（shotId 已存在 → duplicate，不覆盖）
+   - dt2 弹着 → v12_shot（shotId 已存在 → duplicate，不覆盖）。schema 1.2：脱靶 miss=true 入库为 0 环
+     （hit=False，计入总箭数）；releaseTime 缺失时锚点退回 hitTime（回执 warnings 标注精度受限）；
+     缺 athleteId（确认点 #17 未定，平台未补填）→ unsupported（无法归属运动员，不落库、不占用 messageId）
    - dt1 心率 / dt4 风 → v12_sample
    - dt3 视频 → v12_video（只存路径）
    - dt7 轨迹 → v12_trajectory（元数据 + 点列，不参与计算）
@@ -91,6 +94,10 @@ def _process_one(db: Database, msg: Any, affected: set) -> dict:
                 "reason": f"dataType={dt} 不在本期范围（本期 dt 1/2/3/4/7，dt 5/6 只存原文）；未落库，支持后可原样重发"}
 
     data = msg["data"]
+    if dt == 2 and not data.get("athleteId"):
+        return {**res, "status": "unsupported",
+                "reason": "dt2 缺 athleteId：引擎不做 lane+排班补填（确认点 #17），无法归属运动员；"
+                          "未落库、不占用 messageId，补齐 athleteId 后可原样重发"}
     now = _now_utc()
     try:
         with conn:  # 单条消息原子：数据行 + messageId 同时提交
@@ -141,7 +148,7 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
                 """INSERT OR IGNORE INTO v12_video
                      (shot_id, source, video_path, message_id, release_time_utc, shot_seq, lane)
                    VALUES (?,?,?,?,?,?,?)""",
-                (v["shotId"], v["source"], v["videoPath"], mid, utc_ms_str(data["releaseTime"]),
+                (v["shotId"], v["source"], v["videoPath"], mid, utc_ms_str(data.get("releaseTime")),
                  data["shotSeq"], data.get("lane")))
             stored += cur.rowcount
             _mark_shot(conn, v["shotId"], affected)
@@ -156,7 +163,7 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
                   trajectory_length_mm, dispersion_mm, offset_x_mm, offset_y_mm, post_hold_ms,
                   stability_score, points_json)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (data["shotId"], mid, utc_ms_str(data["releaseTime"]), data["shotSeq"], data["sampleRateHz"],
+            (data["shotId"], mid, utc_ms_str(data.get("releaseTime")), data["shotSeq"], data["sampleRateHz"],
              len(data["points"]), data["trajectoryLength"], data["dispersionMm"], data["offsetX"],
              data["offsetY"], data["postHoldMs"], data["stabilityScore"], json.dumps(data["points"])))
         if cur.rowcount == 0:

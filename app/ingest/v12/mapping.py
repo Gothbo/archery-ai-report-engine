@@ -3,13 +3,16 @@
 
 口径（均出自接口总文档 v1.2 / 对接包 schema）：
 - 时间：UTC Z 毫秒，统一格式化为 YYYY-MM-DDTHH:MM:SS.mmmZ（与 shot_fact 现有字符串排序口径一致）
-- 锚点：shot_time_utc = releaseTime（§3.1 离弦=全局锚点）；若将来 schema 放宽允许缺失，退回 hitTime（§4.2）
+- 锚点：shot_time_utc = releaseTime（§3.1 离弦=全局锚点）；schema 1.2 允许缺失，缺失时退回 hitTime（§4.2，标注精度受限）
+- 脱靶（schema 1.2 miss=true）：score 记 0.0、坐标可空，与 SQLite 源口径一致（0 环、hit=False，计入总箭数）
+- 环值：schema 1.2 可选 scoreDecimal（小数环值）存在时优先使用，否则用整数 score
 - ID：shotId/scoreId 原样保留为字符串（19 位雪花 ID > 2^53，禁止转 number）
 - 单位：dt2 x/y 为 cm → 引擎内部 *_mm（×10）；dt7 已是 mm；flightTimeMs/rmssdMs/R-R 为 ms 原样
 - 缺测哨兵（§十）：heartRate<=0 → None；windSpeed/windDirection<0（-1）→ None；
   offsetM 随 windSpeed 缺测（或自身 -1）→ None
 - 弓种：bowType 英文枚举 → config.store.v12_bow_type_map（默认 recurve=反曲弓 / compound=复合弓）
-- 身份：athleteId → HMAC 脱敏 athlete_id（app/ingest/identity.py），原值不落库
+- 身份：athleteId → HMAC 脱敏 athlete_id（app/ingest/identity.py），原值不落库；schema 1.2 中 athleteId 可选，
+  缺失时 athlete_id=None，由接收层回执 unsupported（无法归属运动员，不落库）
 - isGood：v1.2 没有该字段，本适配层不读取、不作作废信号（let down 信号待确认点 #16）
 """
 from __future__ import annotations
@@ -65,11 +68,18 @@ def map_dt2(data: dict) -> dict:
     wind_speed = wind_or_none(data.get("windSpeed"))
     offset = data.get("offsetM")
     offset_m = None if wind_speed is None or offset is None or offset < 0 else float(offset)
-    score = float(data["score"])
+    miss = bool(data.get("miss", False))
+    if miss:
+        score = 0.0
+    elif data.get("scoreDecimal") is not None:
+        score = float(data["scoreDecimal"])
+    else:
+        score = float(data["score"])
+    athlete = data.get("athleteId")
     return {
         "shot_id": data["shotId"],
         "score_id": data.get("scoreId"),
-        "athlete_id": pseudonymize_athlete(data["athleteId"]),
+        "athlete_id": pseudonymize_athlete(athlete) if athlete else None,
         "lane": data.get("lane"),
         "shot_seq": data.get("shotSeq"),
         "shot_time_utc": anchor,
@@ -92,8 +102,14 @@ def map_dt2(data: dict) -> dict:
 
 
 def dt2_warnings(data: dict) -> list[str]:
-    """不拦截、只提示的一致性检查（§六自检：flightTimeMs = hitTime − releaseTime）。"""
+    """不拦截、只提示的一致性检查（§六自检：flightTimeMs = hitTime − releaseTime；降级/小数环值提示）。"""
     out: list[str] = []
+    if data.get("releaseTime") is None:
+        out.append("releaseTime 缺失：锚点退回 hitTime，按'精度受限'处理（§4.2/§十）")
+    dec = data.get("scoreDecimal")
+    if dec is not None and not data.get("miss") and int(dec // 1) != data.get("score"):
+        out.append(f"scoreDecimal={dec} 与 score={data.get('score')} 不一致"
+                   "（应满足 floor(scoreDecimal)=score），按 scoreDecimal 入库")
     rel, hit = parse_utc_z(data.get("releaseTime")), parse_utc_z(data.get("hitTime"))
     ft = data.get("flightTimeMs")
     if rel and hit:
