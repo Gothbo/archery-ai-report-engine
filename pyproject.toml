@@ -15,6 +15,7 @@ dependencies = [
     "tzdata>=2024.1",  # Windows 无系统时区库，zoneinfo 需要（A1 本地时区切窗）
     "swagger-ui-py>=1.0",  # Swagger UI 本地资源（离线可用，不依赖 jsdelivr CDN）
     "httpx>=0.27",  # app/llm/client.py 运行时依赖（LLM HTTP 调用）
+    "jsonschema>=4.18",  # v1.2 接收适配层：按开发侧对接包 schema.json（draft 2020-12）校验
 ]
 
 [project.optional-dependencies]
@@ -25,6 +26,9 @@ dev = [
 
 [tool.setuptools.packages.find]
 include = ["app*"]
+
+[tool.setuptools.package-data]
+"app.ingest.v12" = ["schema.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,0 +1,256 @@
+[
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_001",
+    "sentAt": "2025-09-09T10:18:44.500Z",
+    "dataType": 1,
+    "data": {
+      "timestamp": "2025-09-09T10:18:44.500Z",
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "lane": "lane-01",
+      "heartRate": 92,
+      "rrIntervalsMs": [
+        640,
+        680,
+        635,
+        678,
+        630,
+        675,
+        632,
+        670
+      ],
+      "rmssdMs": 43
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_002",
+    "sentAt": "2025-09-09T10:18:45.840Z",
+    "dataType": 2,
+    "data": {
+      "releaseTime": "2025-09-09T10:18:44.620Z",
+      "hitTime": "2025-09-09T10:18:45.840Z",
+      "flightTimeMs": 1220,
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "scoreId": "1963169497552654336",
+      "lane": "lane-01",
+      "athleteId": "spid123",
+      "score": 10,
+      "x": 4.5,
+      "y": -2.0,
+      "innerTen": false,
+      "shootingMode": 1,
+      "bowType": "recurve",
+      "targetType": "122cm-recurve",
+      "heartRate": 92,
+      "windSpeed": 3.2,
+      "windDirection": 70,
+      "offsetM": 0.16
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_003",
+    "dataType": 3,
+    "data": {
+      "releaseTime": "2025-09-09T10:18:44.620Z",
+      "shotSeq": 1,
+      "lane": "lane-01",
+      "videos": [
+        {
+          "source": "top",
+          "videoPath": "/videos/s1_shot1_top.mp4",
+          "shotId": "1963169497552654336"
+        },
+        {
+          "source": "side",
+          "videoPath": "/videos/s1_shot1_side.mp4",
+          "shotId": "1963169497552654336"
+        }
+      ]
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_004",
+    "sentAt": "2025-09-09T10:18:44.300Z",
+    "dataType": 4,
+    "data": {
+      "timestamp": "2025-09-09T10:18:44.300Z",
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "lane": "lane-01",
+      "windSpeed": 3.2,
+      "windDirection": 70,
+      "tempC": 21.5,
+      "humidityPct": 60
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_005",
+    "dataType": 5,
+    "data": {
+      "releaseTime": "2025-09-09T10:18:44.620Z",
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "unit": "kg",
+      "sampleRateHz": 1000,
+      "curve": [
+        {
+          "t": -3600,
+          "f": 0.0
+        },
+        {
+          "t": -180,
+          "f": 22.5
+        },
+        {
+          "t": -15,
+          "f": 22.1
+        },
+        {
+          "t": -5,
+          "f": 20.3
+        },
+        {
+          "t": 0,
+          "f": 14.2
+        },
+        {
+          "t": 15,
+          "f": 0.2
+        },
+        {
+          "t": 20,
+          "f": 0.0
+        }
+      ],
+      "peak": {
+        "value": 22.6,
+        "timeMs": -490,
+        "phase": "full-draw",
+        "unit": "kg"
+      },
+      "stability": 0.94,
+      "drawDurationMs": 3580
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_006",
+    "dataType": 6,
+    "data": {
+      "releaseTime": "2025-09-09T10:18:44.620Z",
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "clickerMs": -180,
+      "mcrtMs": 180,
+      "holdMs": 40
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_007",
+    "dataType": 7,
+    "data": {
+      "releaseTime": "2025-09-09T10:18:44.620Z",
+      "shotSeq": 1,
+      "shotId": "1963169497552654336",
+      "sampleRateHz": 120,
+      "unit": "mm",
+      "points": [
+        {
+          "t": -2000,
+          "x": 8.1,
+          "y": 12.4
+        },
+        {
+          "t": -100,
+          "x": 0.4,
+          "y": -0.6
+        },
+        {
+          "t": 0,
+          "x": 0.5,
+          "y": -0.4
+        },
+        {
+          "t": 200,
+          "x": 0.2,
+          "y": -0.3
+        }
+      ],
+      "trajectoryLength": 156.2,
+      "dispersionMm": 3.8,
+      "offsetX": 0.05,
+      "offsetY": 0.1,
+      "postHoldMs": 200,
+      "stabilityScore": 0.88,
+      "spatialNote": "120fps时间充分;0.05°角分辨率待确认"
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_008",
+    "dataType": 8,
+    "data": {
+      "sessionEndTime": "2025-09-09T11:30:00.000Z",
+      "sessionId": "s_20250909_1",
+      "athleteId": "spid123",
+      "dailyShots": 180,
+      "groupShots": 6,
+      "groupRestSec": 90,
+      "consecutiveDays": 12,
+      "sessionDurationMin": 150,
+      "hrv": {
+        "rmssdMs": 48,
+        "sdnnMs": 55,
+        "lfNu": 0.55,
+        "hfNu": 0.45
+      }
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_009",
+    "dataType": 9,
+    "subType": "athleteProfile",
+    "data": {
+      "createdAt": "2025-09-01T09:00:00.000Z",
+      "athleteId": "spid123",
+      "name": "W**",
+      "gender": "M",
+      "age": 21,
+      "heightCm": 178,
+      "weightKg": 72,
+      "armSpanCm": 181,
+      "drawLengthInch": 28.5,
+      "bowType": "recurve",
+      "level": "provincial",
+      "dominantEye": "R"
+    }
+  },
+  {
+    "schemaVersion": "1.1",
+    "messageId": "msg_010",
+    "dataType": 9,
+    "subType": "baselineSnapshot",
+    "data": {
+      "snapshotTime": "2025-09-09T11:35:00.000Z",
+      "athleteId": "spid123",
+      "bowType": "recurve",
+      "nShots": 288,
+      "windowEnd": "2025-09-09T11:00:00.000Z",
+      "windowStart": "2025-09-07T08:00:00.000Z",
+      "baseline": {
+        "mcrtMs": 176,
+        "mcrtCvPct": 8.5,
+        "dispersionMm": 3.6,
+        "rmssdMs": 42
+      }
+    }
+  }
+]

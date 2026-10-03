@@ -54,6 +54,15 @@ class Database:
     # ---- 列级迁移（CREATE TABLE IF NOT EXISTS 不补列；对已存在库幂等补列）----
 
     _ADD_COLUMNS: dict[str, list[tuple[str, str]]] = {
+        "shot_fact": [
+            ("shot_id", "TEXT"),
+            ("score_id", "TEXT"),
+            ("lane", "TEXT"),
+            ("release_time_utc", "TEXT"),
+            ("hit_time_utc", "TEXT"),
+            ("flight_time_ms", "INTEGER"),
+            ("inner_ten", "INTEGER"),
+        ],
         "memory_notes": [
             ("provenance", "TEXT"),
             ("quote_text", "TEXT"),
@@ -128,14 +137,22 @@ class Database:
                 r["bow_type"],
                 r["video_ref"],
                 r["shot_time_utc"],
+                r.get("shot_id"),
+                r.get("score_id"),
+                r.get("lane"),
+                r.get("release_time_utc"),
+                r.get("hit_time_utc"),
+                r.get("flight_time_ms"),
+                r.get("inner_ten"),
             )
             for r in rows
         ]
         cur = self._conn.executemany(
             """INSERT OR IGNORE INTO shot_fact
                  (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
-                  wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                  wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc,
+                  shot_id, score_id, lane, release_time_utc, hit_time_utc, flight_time_ms, inner_ten)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             data,
         )
         self._conn.commit()
