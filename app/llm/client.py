@@ -1,16 +1,22 @@
 # -*- coding: utf-8 -*-
 """LLM 客户端（B1-2）：可替换接口，provider 适配（llamacpp / ollama）+ Mock。
 
-- LLMClient 抽象：chat(messages, stream=False) -> str
+- LLMClient 抽象：chat(messages, stream=False) -> str；astream_chat(messages) -> 异步逐段产出文本
 - HTTPLLMClient：httpx 同步调用；llamacpp 走 OpenAI 兼容 /v1/chat/completions，
   ollama 走 /api/chat；超时 + 重试；model_version 透传（上下文版本键）
-- MockLLMClient：测试/演示用，不绑真实模型
+  流式（PR #3）：httpx.AsyncClient 流式读取（llama-server SSE / ollama NDJSON），不重试；
+  关闭生成器 = 关闭上游 HTTP 连接，llama-server 检测到断开后停止生成（真取消；
+  读取阶段要等当前 prompt 处理完，取消后由 wait_idle 轮询 /slots 确认空闲）
+- MockLLMClient：测试/演示用，不绑真实模型；支持流式模式（可注入节奏/挂起/中途失败）
 - 判读留规则引擎：本模块只做"表达"，不做任何数值判定
 """
 from __future__ import annotations
 
 import abc
+import asyncio
+import json
 import logging
+from typing import AsyncIterator
 
 import httpx
 
@@ -23,6 +29,10 @@ class LLMError(Exception):
     """LLM 调用失败（连接/超时/协议/重试耗尽）→ ask 层降级模板。"""
 
 
+class LLMOfflineError(LLMError):
+    """连不上模型服务（流式路径）→ COACH-OFFLINE（前端降级规则版）。"""
+
+
 class LLMClient(abc.ABC):
     """可替换接口：换 provider / 换模型对 ask 层零侵入。"""
 
@@ -30,6 +40,11 @@ class LLMClient(abc.ABC):
     def chat(self, messages: list[dict], stream: bool = False) -> str:
         """messages=[{role, content}, ...]；返回助手文本。stream 签名预留（D3 单轮非流式）。"""
         raise NotImplementedError
+
+    async def astream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
+        """流式：异步逐段产出助手文本（不重试）。调用方 aclose()/取消 = 停止上游。"""
+        raise LLMError("该 LLM 客户端不支持流式")
+        yield ""  # pragma: no cover  （使本函数成为异步生成器）
 
 
 class HTTPLLMClient(LLMClient):
@@ -89,16 +104,125 @@ class HTTPLLMClient(LLMClient):
             raise LLMError("LLM 返回空内容")
         return str(content).strip()
 
+    async def astream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
+        """流式调用（PR #3）。超时由调用方（app/llm/tasks.py）按首 token / 空闲 / 总截止控制；
+        这里的 httpx 超时只是兜底（连接用 connect_timeout_sec，读取用 total_timeout_sec）。
+
+        退出路径（正常结束 / 异常 / 被取消 / 被 aclose）都会经过 async with 退出，
+        关闭上游响应与连接；llama-server 检测到断开后取消该任务（撰写阶段实测约 0.05 s；
+        读取阶段要等当前 prompt 处理完，见 wait_idle）。
+        """
+        cfg = self.cfg
+        timeout = httpx.Timeout(cfg.total_timeout_sec, connect=cfg.connect_timeout_sec)
+        if cfg.provider == "ollama":
+            url = f"{cfg.endpoint.rstrip('/')}/api/chat"
+            payload = {
+                "model": cfg.model,
+                "messages": messages,
+                "stream": True,
+                "options": {"temperature": cfg.temperature, "num_ctx": cfg.num_ctx},
+            }
+        else:  # llamacpp：llama-server 原生 OpenAI 兼容 SSE
+            url = f"{cfg.endpoint.rstrip('/')}/v1/chat/completions"
+            payload = {
+                "model": cfg.model,
+                "messages": messages,
+                "stream": True,
+                "temperature": cfg.temperature,
+            }
+        try:
+            async with httpx.AsyncClient(timeout=timeout, trust_env=False) as client:
+                async with client.stream("POST", url, json=payload) as resp:
+                    if resp.status_code >= 400:
+                        body = (await resp.aread()).decode("utf-8", "replace")[:300]
+                        raise LLMError(f"模型服务返回 HTTP {resp.status_code}：{body}")
+                    async for line in resp.aiter_lines():
+                        piece, done = _parse_stream_line(cfg.provider, line)
+                        if piece:
+                            yield piece
+                        if done:
+                            return
+        except httpx.ConnectError as exc:
+            raise LLMOfflineError(f"连不上模型服务 {cfg.endpoint}：{exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LLMError(f"模型服务流式读取失败：{type(exc).__name__} {exc}") from exc
+
+    async def wait_idle(self, max_wait: float) -> bool | None:
+        """取消/超时后确认模型服务真的空闲：轮询 llama-server `GET /slots`（默认开启），
+        直到没有 slot 在处理或到 max_wait。返回 True=已空闲 / False=等到上限仍忙 / None=无法判断。
+
+        实测（llama.cpp b11435，CPU）：撰写阶段断开后约 0.05 s 停止；但读取阶段（prefill）断开后，
+        服务端要把当前 prompt 处理完才执行取消。所以引擎在这段时间保持 cancelling（新请求仍 409），
+        不把「连接已关」当成「模型已停」。
+        """
+        if self.cfg.provider != "llamacpp":
+            return None
+        url = f"{self.cfg.endpoint.rstrip('/')}/slots"
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + max_wait
+        async with httpx.AsyncClient(timeout=httpx.Timeout(2.0), trust_env=False) as client:
+            while True:
+                try:
+                    resp = await client.get(url)
+                    if resp.status_code != 200:
+                        return None
+                    busy = any(s.get("is_processing") for s in resp.json())
+                except Exception:  # noqa: BLE001 —— 拿不到状态就不等（不能因此卡住锁）
+                    return None
+                if not busy:
+                    return True
+                if loop.time() >= deadline:
+                    return False
+                await asyncio.sleep(0.2)
+
+
+def _parse_stream_line(provider: str, line: str) -> tuple[str, bool]:
+    """解析一行流式输出 → (文本片段, 是否结束)。
+    llamacpp：SSE 行 `data: {...}` / `data: [DONE]`；ollama：NDJSON `{"message":{"content":..},"done":..}`。"""
+    line = line.strip()
+    if not line:
+        return "", False
+    if provider == "ollama":
+        obj = json.loads(line)
+        if obj.get("error"):
+            raise LLMError(f"模型服务报错：{obj['error']}")
+        return (obj.get("message") or {}).get("content") or "", bool(obj.get("done"))
+    if not line.startswith("data:"):
+        return "", False  # SSE 注释 / event: 行等，忽略
+    data = line[5:].strip()
+    if data == "[DONE]":
+        return "", True
+    obj = json.loads(data)
+    if obj.get("error"):
+        raise LLMError(f"模型服务报错：{obj['error']}")
+    choice = (obj.get("choices") or [{}])[0]
+    piece = (choice.get("delta") or {}).get("content") or ""
+    return piece, False
+
 
 class MockLLMClient(LLMClient):
     """测试/演示用：固定响应列表按次弹出；也可用 responder 函数按提问动态生成。"""
 
     def __init__(self, responses: list[str] | None = None,
-                 responder=None, error: Exception | None = None):
+                 responder=None, error: Exception | None = None, *,
+                 chunk_size: int = 4, chunk_delay: float = 0.0, first_token_delay: float = 0.0,
+                 hang_after: int | None = None, fail_after: int | None = None):
         self._responses = list(responses or [])
         self._responder = responder
         self._error = error
         self.calls: list[list[dict]] = []
+        # 流式模式参数：按 chunk_size 个字切片；首 token 前等 first_token_delay；
+        # hang_after=N → 发完 N 片后挂起（模拟模型卡死，用于超时/取消测试）；
+        # fail_after=N → 发完 N 片后抛 LLMError（模拟上游中途断流）
+        self.chunk_size = max(1, chunk_size)
+        self.chunk_delay = chunk_delay
+        self.first_token_delay = first_token_delay
+        self.hang_after = hang_after
+        self.fail_after = fail_after
+        # 观测点：上游是否开始 / 是否已关闭（取消、超时、断开后必须为 True）/ 已发片数
+        self.stream_started = False
+        self.stream_closed = False
+        self.stream_chunks_sent = 0
 
     def chat(self, messages: list[dict], stream: bool = False) -> str:
         self.calls.append(messages)
@@ -109,6 +233,26 @@ class MockLLMClient(LLMClient):
         if not self._responses:
             raise LLMError("MockLLMClient 无可用响应")
         return self._responses.pop(0)
+
+    async def astream_chat(self, messages: list[dict]) -> AsyncIterator[str]:
+        self.stream_started = True
+        try:
+            if self.first_token_delay:
+                await asyncio.sleep(self.first_token_delay)
+            text = self.chat(messages)
+            for i in range(0, len(text), self.chunk_size):
+                if self.hang_after is not None and self.stream_chunks_sent >= self.hang_after:
+                    await asyncio.Event().wait()  # 永不返回，只能被取消/超时打断
+                if self.fail_after is not None and self.stream_chunks_sent >= self.fail_after:
+                    raise LLMError("mock 上游中途断流")
+                if self.chunk_delay and self.stream_chunks_sent:
+                    await asyncio.sleep(self.chunk_delay)
+                self.stream_chunks_sent += 1
+                yield text[i:i + self.chunk_size]
+            if self.hang_after is not None and self.stream_chunks_sent >= self.hang_after:
+                await asyncio.Event().wait()
+        finally:
+            self.stream_closed = True
 
 
 def get_llm_client(cfg: LLMConfig) -> LLMClient:

@@ -29,9 +29,11 @@ def _make_temp_config(tmp_path: Path, *, mdc_source: str | None = "test-consensu
 
 def _reset_engine():
     import app.config as cfgmod
+    import app.llm.tasks as tasksmod
     import app.store.database as dbmod
     cfgmod.get_config.cache_clear()
     dbmod._SINGLETON = None
+    tasksmod.reset_registry()  # PR #3：LLM 单飞锁是进程内单例，用例间清空
 
 
 @pytest.fixture()

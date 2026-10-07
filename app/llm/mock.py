@@ -70,4 +70,22 @@ def demo_responder(messages: list[dict]) -> str:
         parts.append(tail + "。")
 
     answer = "进步了。" + "".join(parts) if parts and not regress else "".join(parts)
+    if any("【训练指导】" in m.get("content", "") for m in messages if m.get("role") == "system"):
+        return _demo_guidance(answer)
     return answer or "（mock：骨架无可解读内容）"
+
+
+def _demo_guidance(answer: str) -> str:
+    """训练指导演示文本（PR #3）：固定五个小标题；数字只来自上面骨架取数的 answer。"""
+    return "\n".join([
+        "一、本次概述",
+        answer or "报告未给出可解读的变化。",
+        "二、数据基础",
+        "以本期报告的有效箭数、锚点与滚动基线为依据；报告未包含的数据不做推断。",
+        "三、技术表现",
+        "以报告中的环值、散布与撒放节奏结论为准，保持当前动作一致性。",
+        "四、状态与负荷",
+        "报告未包含该数据。",
+        "五、提升方案",
+        "按报告建议逐项落实，保持训练节奏；涉及伤病与训练调整以备注为准。",
+    ])
