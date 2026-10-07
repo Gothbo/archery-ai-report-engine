@@ -31,8 +31,9 @@ def g3_length(answer: str, max_len: int = 500) -> int | None:
     return len(answer) if len(answer) > max_len else None
 
 
-def check_guards(answer: str, context: dict, forbidden_phrases: list[str]) -> tuple[bool, str | None]:
-    """综合检查：返回 (是否通过, 失败原因)。"""
+def check_guards(answer: str, context: dict, forbidden_phrases: list[str],
+                 max_len: int = 500) -> tuple[bool, str | None]:
+    """综合检查：返回 (是否通过, 失败原因)。max_len 默认 500（/ask）；训练指导传 llm.guidance_max_len。"""
     if not answer.strip():
         return False, "答案为空"
     hit = g1_forbidden(answer, forbidden_phrases)
@@ -41,7 +42,7 @@ def check_guards(answer: str, context: dict, forbidden_phrases: list[str]) -> tu
     bad = g2_numbers(answer, context["numbers"])
     if bad is not None:
         return False, f"G2 出现骨架外数字：{bad}"
-    too_long = g3_length(answer)
+    too_long = g3_length(answer, max_len)
     if too_long is not None:
         return False, f"G3 答案超长（{too_long} 字）"
     return True, None

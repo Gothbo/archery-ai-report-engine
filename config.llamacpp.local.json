@@ -47,7 +47,12 @@
     "timeout_sec": 300,
     "max_retries": 1,
     "temperature": 0.2,
-    "num_ctx": 2048
+    "num_ctx": 2048,
+    "connect_timeout_sec": 5,
+    "first_token_timeout_sec": 90,
+    "idle_timeout_sec": 30,
+    "total_timeout_sec": 180,
+    "guidance_max_len": 1000
   },
   "log_dir": "logs"
 }
