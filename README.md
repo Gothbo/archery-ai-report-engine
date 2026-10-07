@@ -16,7 +16,7 @@
 start.bat
 ```
 
-脚本自动完成：创建 `.venv`（缺省）→ 按 `pyproject.toml` 安装依赖（缺省）→ 起本地模型服务（`models\` 下有 gguf 且 `8090` 空闲时）→ 启动 `http://127.0.0.1:8000`。
+脚本自动完成：创建 `.venv`（缺省）→ 按 `pyproject.toml` 安装依赖（缺省）→ 起本地模型服务 llama.cpp 原生 `llama-server`（`models\` 下有 gguf、`llama.cpp\llama-server.exe` 或 PATH 上有 `llama-server`、且 `8090` 空闲时）→ 启动 `http://127.0.0.1:8000`。
 
 运行档由脚本顶部 `ENGINE_CONFIG` 一行决定（改一行即可切换，脚本本身保持纯 ASCII，避免 CMD 代码页乱码）：
 
@@ -27,6 +27,8 @@ start.bat
 | `config.json`（正式 SSOT） | null | 只描述不判定 | 关闭 |
 
 已有外部模型服务（llama.cpp Vulkan 版 / Ollama）时保持 `LLM_PORT` 被占用即可，脚本会直接复用。
+
+模型服务统一用 llama.cpp 原生 `llama-server`（把 Windows 版 release，如 `llama-bNNNN-bin-win-vulkan-x64.zip`，解压到 `llama.cpp\`），不再用 llama-cpp-python：AI 训练指导的「取消」依赖 llama-server 在连接断开时停止生成。脚本启动参数为 `-c 4096 -np 1`。
 
 ### 手动命令
 
@@ -68,6 +70,18 @@ start.bat
 | GET | `/api/v1/athletes/{id}/memories` | 历史结论沉淀 |
 | GET | `/api/v1/sessions/{session_id}` | 逐箭详情 |
 | POST | `/api/v1/ingest/v12` | 接收 v1.2 上行消息（单条对象或数组批量，逐条返回 accepted/duplicate/invalid/unsupported） |
+| POST | `/api/v1/athletes/{id}/ask` | 对话问答（非流式）；引擎忙时 409 `COACH-BUSY` |
+| POST | `/api/v1/athletes/{id}/guidance/stream` | AI 训练指导（SSE 流式；绑定报告 + 视角；运动员视角不发草稿） |
+| GET | `/api/v1/llm/status` | LLM 任务忙闲（running / cancelling / idle），不含运动员身份 |
+| POST | `/api/v1/llm/tasks/{task_id}/cancel` | 取消任务（真正停止模型生成后才释放锁） |
+
+### AI 训练指导（流式 + 真取消）
+
+- 同一时间只跑 1 个 LLM 任务（指导与问答共用一把进程内锁，需单 worker 部署）；忙时在打开流之前返回 409。
+- 事件：`accepted → stage(reading) → stage(writing) → delta*（仅教练视角） → stage(verifying) → final | guardrail_failed | error | cancelled`。
+- 护栏只在完整文本上跑；不通过时整段换降级文案（与 `/ask` 相同），不显示 AI 文本。
+- 超时：首字 `first_token_timeout_sec`、字间 `idle_timeout_sec`、总截止 `total_timeout_sec`（默认 90 / 30 / 180 s），流式不自动重试。
+- 完整契约与宿主（CU / ASMS / WebView2）集成要点见 [`docs/guidance_stream_contract.md`](docs/guidance_stream_contract.md)；目标机取消实测脚本 `scripts/verify_stream_cancel.py`。
 
 ## 数据源
 
