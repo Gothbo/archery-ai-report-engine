@@ -120,6 +120,25 @@
   .note-card .nc-head { color: var(--text-2); margin-bottom: 4px; }
   .note-card .nc-content { font-size: 13px; line-height: 1.5; }
   .note-card .nc-badge { float: right; color: var(--accent); font-size: 11px; }
+  /* ---- PR #3 AI 训练指导：状态徽章 / 阶段进度 / 灰色草稿 / 正文（对齐 V17.2 §16.4 状态表）---- */
+  .g-badge { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #ececf0; color: var(--text-2); }
+  .g-badge.ok { background: #e3f5e8; color: #1e7a3c; }
+  .g-badge.run { background: #e5f0fd; color: #0058b0; }
+  .g-badge.err { background: #fde8e7; color: #b3261e; }
+  .g-badge.warn { background: #fff3d6; color: #7a4f00; }
+  .g-steps { font-size: 13px; color: #c7c7cc; margin-top: 10px; }
+  .g-steps .on { color: var(--accent); font-weight: 600; }
+  .g-steps .done { color: var(--text-2); }
+  .g-body { margin-top: 10px; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }
+  .g-draft { color: #8e8e93; border: 1px dashed #d1d1d6; border-radius: 10px; padding: 10px 14px; background: #fbfbfd; }
+  .g-draft .g-tag { display: block; font-size: 12px; font-weight: 600; color: #6e6e73; margin-bottom: 4px; white-space: normal; }
+  .g-draft .g-cursor::after { content: "▍"; animation: g-blink 1s steps(1) infinite; color: var(--accent); }
+  @keyframes g-blink { 50% { opacity: 0; } }
+  .g-hint { font-size: 13px; color: var(--text-2); white-space: normal; }
+  .g-alert { font-size: 14px; border-radius: 10px; padding: 10px 14px; white-space: normal; }
+  .g-alert.err { background: #fdf1f0; color: #8c1d18; }
+  .g-alert.warn { background: #fff8e6; color: #5c3b00; }
+  .g-code { font-size: 12px; color: var(--text-2); margin-top: 6px; }
 </style>
 </head>
 <body>
@@ -160,6 +179,28 @@
     <div class="meta" id="reportMeta"></div>
   </div>
   <div id="reportEmpty" class="empty">选择运动员，点击上方按钮生成报告</div>
+
+  <!-- PR #3 AI 训练指导：一次生成绑定「当前报告 + 视角」；换报告 / 切视角 / 换运动员 = 取消并丢弃 -->
+  <div id="guidancePanel" class="panel" style="display:none">
+    <div class="row">
+      <div class="section-title" style="margin:0">AI 训练指导</div>
+      <span class="g-badge" id="gBadge">未生成</span>
+      <span style="margin-left:auto" class="row">
+        <button class="ghost" id="gCancelBtn" style="display:none">取消</button>
+        <button class="primary" id="gGenBtn">生成训练指导</button>
+      </span>
+    </div>
+    <div class="meta" id="gBasis" style="margin-top:6px"></div>
+    <div class="g-steps" id="gSteps" style="display:none">
+      <span id="gStep1">① 正在读取数据</span> · <span id="gStep2">② 正在撰写</span> · <span id="gStep3">③ 核对数据</span>
+      <span id="gElapsed" style="margin-left:8px;color:var(--text-2)"></span>
+    </div>
+    <div class="g-body" id="gBody"></div>
+    <div class="row" id="gActions" style="display:none;margin-top:12px">
+      <button class="primary" id="gRetryBtn">重试</button>
+      <button class="ghost" id="gRulesBtn">只看规则建议</button>
+    </div>
+  </div>
 
   <div class="two-col">
     <div class="panel">
@@ -269,6 +310,9 @@ function onAthleteChange() {
   $('reportEmpty').style.display = '';
   $('reportPanel').style.display = 'none';
   lastRequest = null; // 换了运动员就丢弃上一份报告的窗口，避免切视角时误触发重取
+  discardGuidance();  // 上一位运动员的在途指导：真取消并丢弃
+  currentReport = null;
+  $('guidancePanel').style.display = 'none';
   api('/api/v1/athletes/' + athleteId).then((r) => {
     const p = r.profile || {};
     const bits = [];
@@ -501,6 +545,11 @@ document.querySelectorAll('.gran-btn').forEach((b) => {
 function renderReport(r) {
   $('reportEmpty').style.display = 'none';
   $('reportPanel').style.display = '';
+  // 新报告（含切视角重取）：作废上一份报告的在途指导，指导区回到未生成
+  discardGuidance();
+  currentReport = r;
+  $('guidancePanel').style.display = '';
+  gIdle();
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
   $('reportHead').textContent =
     (r.athlete ? r.athlete.name : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
@@ -529,6 +578,259 @@ function renderReport(r) {
   $('reportMeta').textContent = meta.join('\n');
 }
 
+/* ---- PR #3 AI 训练指导（流式 + 真取消）。状态：idle / reading / writing / verifying / stopping /
+   final / guard / interrupted / rules / busy。只有通过服务端核对的全文才作为正文显示；
+   教练视角撰写中显示灰色草稿，运动员视角服务端不发草稿（这里也不渲染）。 ---- */
+let currentReport = null;   // 当前显示的报告（生成指导时绑定它的 granularity + window_key）
+let gJob = null;            // 在途任务 {seq, controller, taskId, view, t0, draft, stopping}
+let gSeq = 0;               // 每次作废 +1：晚到的事件一律丢弃
+let gTick = null;           // 已等待计时
+let gPoll = null;           // 409 后轮询 /llm/status
+
+function gBadge(text, cls) { const b = $('gBadge'); b.textContent = text; b.className = 'g-badge' + (cls ? ' ' + cls : ''); }
+
+function gSteps(stage) {
+  const order = ['reading', 'writing', 'verifying'];
+  const idx = order.indexOf(stage);
+  $('gSteps').style.display = idx >= 0 ? '' : 'none';
+  ['gStep1', 'gStep2', 'gStep3'].forEach((id, i) => {
+    $(id).className = i < idx ? 'done' : (i === idx ? 'on' : '');
+  });
+}
+
+function gStopTimers() {
+  if (gTick) { clearInterval(gTick); gTick = null; }
+  if (gPoll) { clearInterval(gPoll); gPoll = null; }
+  $('gElapsed').textContent = '';
+}
+
+function gButtons(running, stopping) {
+  $('gGenBtn').disabled = running || stopping;
+  $('gCancelBtn').style.display = running || stopping ? '' : 'none';
+  $('gCancelBtn').disabled = !!stopping;
+  $('gCancelBtn').textContent = stopping ? '正在停止…' : '取消';
+}
+
+function gViewLabel(v) { return v === 'coach' ? '教练' : '运动员'; }
+
+function gIdle(note) {
+  gStopTimers();
+  gSteps(null);
+  gBadge('未生成');
+  gButtons(false, false);
+  $('gGenBtn').textContent = '生成训练指导';
+  $('gActions').style.display = 'none';
+  $('gBasis').textContent = currentReport
+    ? '依据 ' + (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) + ' · 面向 ' + gViewLabel(view)
+    : '';
+  $('gBody').innerHTML = '<div class="g-hint">' + esc(note || '总评 · 数据基础 · 技术表现 · 状态与负荷 · 提升方案。本机模型生成，通常约 1 分钟；不会自动调用 AI。') + '</div>';
+}
+
+// 作废在途任务：先请服务端真取消，再断开连接（断开本身也是服务端的兜底取消）
+function discardGuidance() {
+  gSeq++;
+  const job = gJob;
+  gJob = null;
+  gStopTimers();
+  if (!job) return;
+  if (job.taskId) fetch('/api/v1/llm/tasks/' + job.taskId + '/cancel', { method: 'POST' }).catch(() => {});
+  try { job.controller.abort(); } catch (e) {}
+}
+
+function startGuidance() {
+  if (gJob || !currentReport || !athleteId) return;  // 防连点：在途时不重复发起
+  const seq = ++gSeq;
+  const job = { seq, controller: new AbortController(), taskId: null, view, t0: Date.now(), draft: '', stopping: false };
+  gJob = job;
+  gBadge('生成中', 'run');
+  gButtons(true, false);
+  $('gActions').style.display = 'none';
+  $('gBasis').textContent = '依据 ' + (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) + ' · 面向 ' + gViewLabel(view);
+  gStage('reading');
+  gTick = setInterval(() => {
+    const s = Math.floor((Date.now() - job.t0) / 1000);
+    $('gElapsed').textContent = '已等待 ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }, 1000);
+  const body = { granularity: currentReport.granularity, window_key: currentReport.window_key, view: job.view };
+  fetch('/api/v1/athletes/' + athleteId + '/guidance/stream', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body), signal: job.controller.signal,
+  }).then(async (res) => {
+    if (seq !== gSeq) return;
+    if (res.status === 409) { const d = await res.json().catch(() => ({})); gJob = null; gBusy(d); return; }
+    if (res.status === 503) { gJob = null; gRules('AI 教练未开启，先给规则版'); return; }
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      gJob = null;
+      gInterrupted('COACH-' + res.status, '这次的数据有问题，没能生成指导：' + (typeof d.detail === 'string' ? d.detail : '参数错误'));
+      return;
+    }
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = '';
+    let ended = false;
+    while (!ended) {
+      const { value, done } = await reader.read();
+      if (seq !== gSeq) { reader.cancel().catch(() => {}); return; }
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf('\n\n')) >= 0) {
+        const block = buf.slice(0, i);
+        buf = buf.slice(i + 2);
+        let ev = null, data = null;
+        block.split('\n').forEach((line) => {
+          if (line.startsWith('event: ')) ev = line.slice(7);
+          else if (line.startsWith('data: ')) data = JSON.parse(line.slice(6));
+        });
+        if (!ev || seq !== gSeq) continue;   // 注释心跳（: ping）没有 event 行
+        if (gEvent(ev, data || {})) ended = true;
+      }
+    }
+    if (seq === gSeq && !ended) { gJob = null; gInterrupted('COACH-EMPTY', '指导生成中断：连接意外结束，没有收到完整结果；成绩不受影响。'); }
+  }).catch(() => {
+    if (seq !== gSeq) return;  // 主动作废（abort）不算错误
+    gJob = null;
+    gInterrupted('COACH-OFFLINE', '连不上报告引擎，指导没有生成；成绩不受影响。');
+  });
+}
+
+function gStage(stage) {
+  gSteps(stage);
+  const job = gJob;
+  if (!job || job.stopping) return;
+  if (stage === 'reading') {
+    $('gBody').innerHTML = '<div class="g-hint">正在读取本期报告数据，模型准备中… 规则建议已在上方报告里。</div>';
+  } else if (stage === 'writing') {
+    if (job.view === 'coach') {
+      $('gBody').innerHTML = '<div class="g-draft"><span class="g-tag">草稿 · 待核对</span><span id="gDraft"></span><span class="g-cursor"></span></div>';
+    } else {
+      $('gBody').innerHTML = '<div class="g-hint">正在撰写。运动员视角：完整指导通过数据核对后一次性显示。</div>';
+    }
+  } else if (stage === 'verifying') {
+    const tag = document.querySelector('#gBody .g-tag');
+    if (tag) tag.textContent = '草稿 · 正在核对数据…';
+    const cur = document.querySelector('#gBody .g-cursor');
+    if (cur) cur.remove();
+    if (job.view !== 'coach') $('gBody').innerHTML = '<div class="g-hint">正在核对数据…</div>';
+  }
+}
+
+// 返回 true = 终止事件
+function gEvent(ev, d) {
+  if (ev === 'accepted') { if (gJob) gJob.taskId = d.task_id; return false; }
+  if (ev === 'stage') { gStage(d.stage); return false; }
+  if (ev === 'delta') {
+    if (!gJob || gJob.view !== 'coach' || gJob.stopping) return false;
+    gJob.draft += d.text || '';
+    const el = $('gDraft');
+    if (el) el.textContent = gJob.draft;
+    return false;
+  }
+  gJob = null;
+  gStopTimers();
+  if (ev === 'final') gFinal(d);
+  else if (ev === 'guardrail_failed') gGuard(d);
+  else if (ev === 'cancelled') gIdle('已取消，后台已停止，可以重新生成。');
+  else if (ev === 'error') {
+    if (d.code === 'COACH-OFFLINE') gRules('AI 教练离线，先给规则版');
+    else gInterrupted(d.code || 'COACH-LLM', d.message || '指导生成中断；成绩不受影响。');
+  }
+  return true;
+}
+
+function gFinal(d) {
+  gSteps(null);
+  gBadge('✓ 已生成', 'ok');
+  gButtons(false, false);
+  $('gGenBtn').textContent = '重新生成';
+  $('gActions').style.display = 'none';
+  const t = (d.generated_at || '').slice(11, 19);
+  $('gBasis').textContent = 'AI 教练 + 规则引擎 · 生成于 ' + t + ' · 依据 ' + (G_NAMES[d.granularity] || '') + '报告 ' +
+    windowLabel(d) + ' · 面向 ' + gViewLabel(d.view) + ' · ✓ 已通过数据核对';
+  const div = document.createElement('div');
+  div.textContent = d.text || '';   // 用最终全文整体替换草稿（不是把草稿转色）
+  $('gBody').innerHTML = '';
+  $('gBody').appendChild(div);
+}
+
+function gFailCommon(badgeText, basis) {
+  gSteps(null);
+  gBadge(badgeText, 'err');
+  gButtons(false, false);
+  $('gGenBtn').textContent = '生成训练指导';
+  $('gActions').style.display = '';
+  $('gBasis').textContent = basis;
+}
+
+function gGuard(d) {
+  gFailCommon('已中断', new Date().toTimeString().slice(0, 8) + ' · 数值与数据不符 · COACH-GUARD');
+  const html = ['<div class="g-alert err">AI 给出的内容与本期数据对不上，<b>没有显示</b>，以免误导。<br>' + esc(d.message || '') + '</div>'];
+  if (d.reason) html.push('<div class="g-code">核对结果：' + esc(d.reason) + '</div>');
+  if (d.fallback_skeleton) html.push('<details class="sources"><summary>报告原文</summary><div class="g-hint" style="white-space:pre-wrap;margin-top:6px">' + esc(d.fallback_skeleton) + '</div></details>');
+  $('gBody').innerHTML = html.join('');
+}
+
+function gInterrupted(code, message) {
+  gFailCommon('已中断', new Date().toTimeString().slice(0, 8) + ' · ' + code);
+  $('gBody').innerHTML = '<div class="g-alert err"><b>指导生成中断</b><br>' + esc(message) + '</div><div class="g-code">错误码 ' + esc(code) + '</div>';
+}
+
+function gRules(note) {
+  gStopTimers();
+  gSteps(null);
+  gBadge('规则版', 'warn');
+  gButtons(false, false);
+  $('gGenBtn').textContent = '重新生成';
+  $('gActions').style.display = 'none';
+  $('gBasis').textContent = '规则引擎 · ' + (currentReport ? (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) : '');
+  const sug = (currentReport && currentReport.suggestions) || [];
+  $('gBody').innerHTML = (note ? '<div class="g-alert warn">' + esc(note) + '</div>' : '') +
+    (sug.length ? sug.map((x) => '<p>' + esc(x) + '</p>').join('') : '<div class="g-hint">本期报告没有规则建议。</div>');
+}
+
+function gBusy(d) {
+  gStopTimers();
+  gSteps(null);
+  gBadge('未生成');
+  $('gActions').style.display = 'none';
+  $('gCancelBtn').style.display = 'none';
+  $('gGenBtn').disabled = true;
+  $('gBody').innerHTML = '<div class="g-alert warn">引擎正在' + (d.state === 'cancelling' ? '停止上一个任务' : '生成另一份内容') +
+    '，空闲后才能生成（最长约 ' + esc(d.retry_after_sec || '') + ' 秒）。</div>';
+  const seq = gSeq;
+  gPoll = setInterval(() => {
+    api('/api/v1/llm/status').then((st) => {
+      if (seq !== gSeq) return;
+      if (!st.busy) gIdle('引擎已空闲，可以生成。');
+    }).catch(() => {});
+  }, 2000);
+}
+
+function cancelGuidance() {
+  const job = gJob;
+  if (!job || job.stopping) return;
+  job.stopping = true;
+  gButtons(true, true);
+  gBadge('正在停止', 'run');
+  $('gBody').innerHTML = '<div class="g-hint">正在停止后台任务…（模型停下后才能重新生成）</div>';
+  if (job.taskId) {
+    // 真取消：原流会在模型停止后发 cancelled 事件
+    fetch('/api/v1/llm/tasks/' + job.taskId + '/cancel', { method: 'POST' }).catch(() => {});
+  } else {
+    // 还没拿到 task_id：断开连接（服务端兜底取消），再轮询到空闲
+    gSeq++;
+    gJob = null;
+    try { job.controller.abort(); } catch (e) {}
+    gBusy({ state: 'cancelling', retry_after_sec: 5 });
+  }
+}
+
+$('gGenBtn').onclick = startGuidance;
+$('gRetryBtn').onclick = startGuidance;
+$('gCancelBtn').onclick = cancelGuidance;
+$('gRulesBtn').onclick = () => gRules('');
+
 function deleteNote(id) {
   api('/api/v1/athletes/' + athleteId + '/notes/' + id, { method: 'DELETE' })
     .then(() => refreshSidePanels())
@@ -540,6 +842,9 @@ document.querySelectorAll('#viewSwitch button').forEach((b) => {
     document.querySelectorAll('#viewSwitch button').forEach((x) => x.classList.remove('active'));
     b.classList.add('active');
     view = b.dataset.view;
+    // 指导绑定视角：先作废（尤其不能让教练视角的草稿留在运动员视角下），报告重取后回到未生成
+    discardGuidance();
+    if (currentReport) gIdle();
     refreshSidePanels();
     // 报告正文按视角过滤备注（教练观察仅教练可见），换视角必须重取同一窗口，
     // 否则运动员视图会继续显示教练视角那份正文
