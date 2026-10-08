@@ -25,6 +25,8 @@ from app.api.reports import router as reports_router
 from app.api.sessions import notes_router, sessions_router
 from app.config import get_config
 from app.logging_setup import setup_logging
+from app.portal import PortalApp
+from app.security import CrossSiteWriteGuard
 from app.store.database import get_database
 
 logger = logging.getLogger("engine")
@@ -47,6 +49,9 @@ app = FastAPI(
     redoc_url=None,
 )
 
+# PR #4：跨站写请求拦截（纯 ASGI，见 app/security.py；不开 CORS）
+app.add_middleware(CrossSiteWriteGuard)
+
 app.include_router(ingest_router)
 app.include_router(reports_router)
 app.include_router(athletes_router)
@@ -61,6 +66,16 @@ app.mount("/swagger-static", StaticFiles(directory=_SWAGGER_STATIC), name="swagg
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
+
+
+@app.get("/portal", include_in_schema=False)
+def portal_root() -> RedirectResponse:
+    # 门户用相对路径（base './'），必须带结尾斜杠才能正确解析 ./assets/…
+    return RedirectResponse(url="/portal/", status_code=307)
+
+
+# PR #4：同源托管服务中心门户（config.portal.dist_dir；未配置 → 404 PORTAL-NOT-CONFIGURED）
+app.mount("/portal", PortalApp(), name="portal")
 
 
 @app.get("/", include_in_schema=False)

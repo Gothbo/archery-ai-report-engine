@@ -102,6 +102,49 @@ class LLMConfig(BaseModel):
         return self
 
 
+class PortalConfig(BaseModel):
+    """PR #4：同源托管服务中心门户（不开 CORS）。dist_dir=门户 npm run build 产物目录；None=不托管。
+    相对路径按引擎根目录（BASE_DIR）解析。挂载路径固定为 /portal/。"""
+
+    dist_dir: str | None = None
+
+
+class SecurityConfig(BaseModel):
+    """PR #4：跨站写请求拦截（POST/PUT/PATCH/DELETE）。不开 CORS；Origin 必须同源或在白名单内。"""
+
+    block_cross_site_writes: bool = True
+    allowed_origins: list[str] = Field(default_factory=list)  # 如宿主虚拟主机 https://portal.suooter.example
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _no_wildcard_or_null(cls, v: list[str]) -> list[str]:
+        out = []
+        for o in v:
+            o = o.strip().rstrip("/")
+            if o in ("*", "null", ""):
+                raise ValueError("security.allowed_origins 不允许 '*'、'null' 或空串（null origin 等于任何网站）")
+            out.append(o.lower())
+        return out
+
+
+class ConclusionsConfig(BaseModel):
+    """PR #4：引擎结论口径（风档差 / 平台期）。默认值为演示口径，待 PM / 专家定（provisional=true）。"""
+
+    wind_gap_split_mps: float = Field(default=2.0, gt=0)   # 低风 < split ≤ 高风
+    wind_gap_min_shots: int = Field(default=5, ge=1)       # 两侧各自最少箭数
+    wind_gap_threshold: float = Field(default=0.3, ge=0)   # 低风均环 − 高风均环 ≥ 阈值 → triggered
+    plateau_periods: int = Field(default=3, ge=2)
+    plateau_metric: str = "avgScore"
+    provisional: bool = True
+
+    @field_validator("plateau_metric")
+    @classmethod
+    def _plateau_metric_known(cls, v: str) -> str:
+        if v not in REQUIRED_MDC_KEYS:
+            raise ValueError(f"conclusions.plateau_metric 必须为 {REQUIRED_MDC_KEYS}")
+        return v
+
+
 class EngineConfig(BaseSettings):
     # json_file 不在类定义期固化：settings_customise_sources 每次实例化读模块级 CONFIG_PATH，
     # 测试夹具改 CONFIG_PATH 后重载配置才能生效
@@ -123,6 +166,9 @@ class EngineConfig(BaseSettings):
     )
     store: StoreConfig = StoreConfig()
     llm: LLMConfig = LLMConfig()
+    portal: PortalConfig = PortalConfig()
+    security: SecurityConfig = SecurityConfig()
+    conclusions: ConclusionsConfig = ConclusionsConfig()
     log_dir: str = "logs"
 
     @classmethod
