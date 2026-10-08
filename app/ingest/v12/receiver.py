@@ -288,9 +288,11 @@ def _rebuild(db: Database, affected: set[tuple[str, str]], on_imported) -> int:
 
 
 def _ensure_profile(db: Database, aid: str, bow_type: str | None) -> None:
-    """dt9A 不在本期：首次出现的运动员建最小档案（展示名由脱敏 ID 派生，不含真实身份）。已有档案不覆盖。"""
+    """dt9A 不在本期：首次出现的运动员建最小档案。已有档案不覆盖。
+    PR #4：名字留空（NULL），门户显示「未命名选手」；不再用脱敏 ID 后四位拼名字（HMAC 派生，隐私）。
+    区分同名 / 未命名选手用引擎本地顺序号 display_no（upsert_profile 自动分配）。"""
     if db.get_profile(aid) is None:
-        db.upsert_profile({"athlete_id": aid, "name": f"运动员{aid[-4:]}", "bow_type": bow_type})
+        db.upsert_profile({"athlete_id": aid, "name": None, "bow_type": bow_type})
 
 
 __all__ = ["ingest_messages", "IN_PHASE", "RAW_ONLY"]

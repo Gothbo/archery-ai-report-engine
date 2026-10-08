@@ -37,6 +37,7 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_DDL)
         self._migrate_columns()
+        self._migrate_portal_p0()
         self._conn.commit()
 
     # ---- 连接管理 ----
@@ -68,6 +69,10 @@ class Database:
             ("quote_text", "TEXT"),
             ("confirmed_at_utc", "TEXT"),
         ],
+        # PR #4：引擎本地展示编号（顺序号，与身份 / HMAC 无数学关系；重建库会重新编号）
+        "athlete_profile": [
+            ("display_no", "INTEGER"),
+        ],
         # PR #4：报告正文落库（不含「近期备注」一节；读取时按视角现取备注、运动员视角剔除 coach_extra）
         "report_cache": [
             ("report_json", "TEXT"),
@@ -80,6 +85,34 @@ class Database:
             for name, ddl in cols:
                 if name not in existing:
                     self._execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def _migrate_portal_p0(self) -> None:
+        """PR #4 数据迁移（幂等，每次启动执行）：
+        1. 给没有 display_no 的档案按插入顺序（rowid）依次编号，建唯一索引；
+        2. 清空旧版 v1.2 自动生成的名字「运动员{athlete_id 后四位}」（由 HMAC 派生，隐私问题）：
+           只清恰好等于该模式的名字，手工改过的名字不动 → 门户显示「未命名选手」。
+        """
+        self._assign_display_no()
+        self._execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_display_no ON athlete_profile(display_no)")
+        cur = self._execute(
+            "UPDATE athlete_profile SET name=NULL WHERE name = '运动员' || substr(athlete_id, -4)")
+        if cur.rowcount:
+            logger.info("迁移：清空 %d 个由脱敏 ID 派生的自动名字", cur.rowcount)
+
+    def _assign_display_no(self, athlete_id: str | None = None) -> None:
+        sql = "SELECT rowid AS rid FROM athlete_profile WHERE display_no IS NULL"
+        params: tuple = ()
+        if athlete_id is not None:
+            sql += " AND athlete_id=?"
+            params = (athlete_id,)
+        rows = self._query(sql + " ORDER BY rowid", params)
+        if not rows:
+            return
+        start = self._query("SELECT COALESCE(MAX(display_no), 0) AS m FROM athlete_profile")[0]["m"]
+        for i, r in enumerate(rows, 1):
+            self._conn.execute("UPDATE athlete_profile SET display_no=? WHERE rowid=?", (start + i, r["rid"]))
+        self._conn.commit()
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         cur = self._conn.execute(sql, params)
@@ -206,6 +239,16 @@ class Database:
                 _iso_now(),
             ),
         )
+        # PR #4：新档案分配展示编号（已有编号的不变；PUT profile 不能改编号）
+        self._assign_display_no(profile["athlete_id"])
+
+    def latest_lane(self, athlete_id: str) -> tuple[str | None, str | None]:
+        """最近一支带靶位的箭：(lane 原样字符串, shot_time_utc)。没有 → (None, None)。"""
+        rows = self._query(
+            """SELECT lane, shot_time_utc FROM shot_fact
+               WHERE athlete_id=? AND lane IS NOT NULL AND TRIM(lane)<>''
+               ORDER BY shot_time_utc DESC LIMIT 1""", (athlete_id,))
+        return (rows[0]["lane"], rows[0]["shot_time_utc"]) if rows else (None, None)
 
     def get_profile(self, athlete_id: str) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM athlete_profile WHERE athlete_id=?", (athlete_id,))
