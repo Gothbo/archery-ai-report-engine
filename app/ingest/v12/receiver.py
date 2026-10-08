@@ -42,7 +42,7 @@ IN_PHASE = {1, 2, 3, 4, 7}
 RAW_ONLY = {5, 6}
 SESSION_TAG = "v"  # 场次号后缀 _v01：与 SQLite 源 _01 区分
 
-_LOCK = threading.Lock()  # Database 为单连接，接收端串行处理
+_LOCK = threading.Lock()  # 接收端批次之间串行
 
 
 def _now_utc() -> str:
@@ -55,7 +55,9 @@ def _sha256(msg: dict) -> str:
 
 def ingest_messages(db: Database, messages: list[Any], on_imported=None) -> dict:
     """处理一批 v1.2 消息 → {"summary": {...}, "results": [...]}。"""
-    with _LOCK:
+    # 直接用 db.conn 开事务：整批持有 db.lock，防止其他线程（API 线程池）在事务中途用同一连接
+    # 读 / commit / rollback（真引擎联调 #1）。db 方法内部再取同一把可重入锁不会死锁。
+    with _LOCK, db.lock:
         results: list[dict] = []
         affected: set[tuple[str, str]] = set()
         for idx, msg in enumerate(messages):
@@ -288,9 +290,11 @@ def _rebuild(db: Database, affected: set[tuple[str, str]], on_imported) -> int:
 
 
 def _ensure_profile(db: Database, aid: str, bow_type: str | None) -> None:
-    """dt9A 不在本期：首次出现的运动员建最小档案（展示名由脱敏 ID 派生，不含真实身份）。已有档案不覆盖。"""
+    """dt9A 不在本期：首次出现的运动员建最小档案。已有档案不覆盖。
+    PR #4：名字留空（NULL），门户显示「未命名选手」；不再用脱敏 ID 后四位拼名字（HMAC 派生，隐私）。
+    区分同名 / 未命名选手用引擎本地顺序号 display_no（upsert_profile 自动分配）。"""
     if db.get_profile(aid) is None:
-        db.upsert_profile({"athlete_id": aid, "name": f"运动员{aid[-4:]}", "bow_type": bow_type})
+        db.upsert_profile({"athlete_id": aid, "name": None, "bow_type": bow_type})
 
 
 __all__ = ["ingest_messages", "IN_PHASE", "RAW_ONLY"]

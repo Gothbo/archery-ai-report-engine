@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 from app.config import EngineConfig, get_config
@@ -25,11 +26,17 @@ def _iso_now() -> str:
 
 
 class Database:
-    """SQLite 访问封装。连接按线程创建（check_same_thread=False + 调用方串行），WAL 模式。"""
+    """SQLite 访问封装。单连接（check_same_thread=False），WAL 模式。
+
+    FastAPI 同步路由在线程池里并发执行：同一连接被多线程同时使用会偶发
+    InterfaceError / 结果行错乱（真引擎联调 #1）。所以连接的每次使用都在 self.lock
+    （可重入锁）内串行；直接用 .conn 的调用方（v1.2 接收端）必须先持有 db.lock。
+    """
 
     def __init__(self, db_path: str):
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -37,18 +44,21 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_DDL)
         self._migrate_columns()
+        self._migrate_portal_p0()
         self._conn.commit()
 
     # ---- 连接管理 ----
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except sqlite3.Error:
-            pass
+        with self.lock:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """原始连接：调用方必须在 `with db.lock:` 内使用（含事务全程）。"""
         return self._conn
 
     # ---- 列级迁移（CREATE TABLE IF NOT EXISTS 不补列；对已存在库幂等补列）----
@@ -68,6 +78,14 @@ class Database:
             ("quote_text", "TEXT"),
             ("confirmed_at_utc", "TEXT"),
         ],
+        # PR #4：引擎本地展示编号（顺序号，与身份 / HMAC 无数学关系；重建库会重新编号）
+        "athlete_profile": [
+            ("display_no", "INTEGER"),
+        ],
+        # PR #4：报告正文落库（不含「近期备注」一节；读取时按视角现取备注、运动员视角剔除 coach_extra）
+        "report_cache": [
+            ("report_json", "TEXT"),
+        ],
     }
 
     def _migrate_columns(self) -> None:
@@ -77,13 +95,44 @@ class Database:
                 if name not in existing:
                     self._execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
 
+    def _migrate_portal_p0(self) -> None:
+        """PR #4 数据迁移（幂等，每次启动执行）：
+        1. 给没有 display_no 的档案按插入顺序（rowid）依次编号，建唯一索引；
+        2. 清空旧版 v1.2 自动生成的名字「运动员{athlete_id 后四位}」（由 HMAC 派生，隐私问题）：
+           只清恰好等于该模式的名字，手工改过的名字不动 → 门户显示「未命名选手」。
+        """
+        self._assign_display_no()
+        self._execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_profile_display_no ON athlete_profile(display_no)")
+        cur = self._execute(
+            "UPDATE athlete_profile SET name=NULL WHERE name = '运动员' || substr(athlete_id, -4)")
+        if cur.rowcount:
+            logger.info("迁移：清空 %d 个由脱敏 ID 派生的自动名字", cur.rowcount)
+
+    def _assign_display_no(self, athlete_id: str | None = None) -> None:
+        sql = "SELECT rowid AS rid FROM athlete_profile WHERE display_no IS NULL"
+        params: tuple = ()
+        if athlete_id is not None:
+            sql += " AND athlete_id=?"
+            params = (athlete_id,)
+        with self.lock:  # 取 MAX + 逐行编号须整体串行，否则并发建档会撞唯一索引
+            rows = self._query(sql + " ORDER BY rowid", params)
+            if not rows:
+                return
+            start = self._query("SELECT COALESCE(MAX(display_no), 0) AS m FROM athlete_profile")[0]["m"]
+            for i, r in enumerate(rows, 1):
+                self._conn.execute("UPDATE athlete_profile SET display_no=? WHERE rowid=?", (start + i, r["rid"]))
+            self._conn.commit()
+
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        cur = self._conn.execute(sql, params)
-        self._conn.commit()
-        return cur
+        with self.lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur
 
     def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        return self._conn.execute(sql, params).fetchall()
+        with self.lock:
+            return self._conn.execute(sql, params).fetchall()
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """公共只读查询（报告/记忆层使用）。"""
@@ -147,16 +196,17 @@ class Database:
             )
             for r in rows
         ]
-        cur = self._conn.executemany(
-            """INSERT OR IGNORE INTO shot_fact
-                 (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
-                  wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc,
-                  shot_id, score_id, lane, release_time_utc, hit_time_utc, flight_time_ms, inner_ten)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            data,
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self.lock:
+            cur = self._conn.executemany(
+                """INSERT OR IGNORE INTO shot_fact
+                     (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
+                      wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc,
+                      shot_id, score_id, lane, release_time_utc, hit_time_utc, flight_time_ms, inner_ten)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                data,
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def session_exists(self, session_id: str) -> bool:
         return bool(self._query("SELECT 1 FROM session_dim WHERE session_id=?", (session_id,)))
@@ -202,6 +252,16 @@ class Database:
                 _iso_now(),
             ),
         )
+        # PR #4：新档案分配展示编号（已有编号的不变；PUT profile 不能改编号）
+        self._assign_display_no(profile["athlete_id"])
+
+    def latest_lane(self, athlete_id: str) -> tuple[str | None, str | None]:
+        """最近一支带靶位的箭：(lane 原样字符串, shot_time_utc)。没有 → (None, None)。"""
+        rows = self._query(
+            """SELECT lane, shot_time_utc FROM shot_fact
+               WHERE athlete_id=? AND lane IS NOT NULL AND TRIM(lane)<>''
+               ORDER BY shot_time_utc DESC LIMIT 1""", (athlete_id,))
+        return (rows[0]["lane"], rows[0]["shot_time_utc"]) if rows else (None, None)
 
     def get_profile(self, athlete_id: str) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM athlete_profile WHERE athlete_id=?", (athlete_id,))
@@ -347,13 +407,35 @@ class Database:
         )
         return rows[0]["report_id"] if rows else None
 
-    def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str, mdc_version: str | None) -> None:
+    def get_cached_report_row(self, athlete_id: str, granularity: str, window_key: str,
+                              mdc_version: str | None) -> sqlite3.Row | None:
+        """同 get_cached_report，但返回整行（含 report_json；PR #4 之前生成的旧行 report_json 为 NULL）。"""
+        rows = self._query(
+            """SELECT * FROM report_cache
+               WHERE athlete_id=? AND granularity=? AND window_key=?
+                 AND (mdc_version IS ? OR mdc_version=?)""",
+            (athlete_id, granularity, window_key, mdc_version, mdc_version),
+        )
+        return rows[0] if rows else None
+
+    def get_report_row(self, report_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM report_cache WHERE report_id=?", (report_id,))
+        return rows[0] if rows else None
+
+    def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str,
+                          mdc_version: str | None, report_json: str | None = None) -> None:
         self._execute(
             """INSERT OR REPLACE INTO report_cache
-                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc)
-               VALUES (?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now()),
+                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json)
+               VALUES (?,?,?,?,?,?,?)""",
+            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json),
         )
+
+    def fill_report_body(self, report_id: str, report_json: str, generated_at_utc: str) -> None:
+        """给 PR #4 之前的旧缓存行补存正文：写 report_json，生成时间与正文一致；report_id、历史结论不变。"""
+        self._execute(
+            "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
+            (report_json, generated_at_utc, report_id))
 
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
                             mdc_version: str | None) -> None:
@@ -374,6 +456,15 @@ class Database:
                WHERE athlete_id=? AND granularity=? AND window_key=?
                  AND (mdc_version IS ? OR mdc_version=?)""",
             (athlete_id, granularity, window_key, mdc_version, mdc_version))
+
+    def ingest_last_received(self, data_types) -> dict[int, str | None]:
+        """v1.2 各 dataType 最后受理时间（走索引 idx_ingest_dt_time，每类一次 MAX 查找）。"""
+        out: dict[int, str | None] = {}
+        for dt in data_types:
+            row = self._query(
+                "SELECT MAX(received_at_utc) AS t FROM ingest_messages WHERE data_type=?", (dt,))
+            out[dt] = row[0]["t"] if row else None
+        return out
 
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
         """B10①：同 session_id 重新导入 → 失效该场次缓存报告（daily 窗口键 = daily:<session_id>）。"""

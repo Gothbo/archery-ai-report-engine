@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -20,6 +21,7 @@ from app.metrics.environment import wind_band_avg_scores, wind_band_counts
 from app.metrics.performance import avg_score, far_miss_rate, hit_rate, inner10_rate, total_score
 from app.metrics.physiology import hr_volatility
 from app.metrics.process import dispersion_mm, mean_mcr_t, offset_mm
+from app.reports import conclusions as C
 from app.reports import rules as R
 from app.reports.window import window_bounds
 from app.store.database import Database
@@ -29,6 +31,55 @@ logger = logging.getLogger("engine.reports.generator")
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+class SessionNotFound(ValueError):
+    """日报场次不存在或不属于该运动员（PR #4：返回 404，不再生成 0 箭空报告写进缓存）。"""
+
+
+def _check_session(db: Database, athlete_id: str, session_id: str | None) -> None:
+    if not session_id:
+        return  # 缺 session_id 由 _shots_in_window 报 ValueError（400，原行为）
+    rows = db.query("SELECT athlete_id FROM session_dim WHERE session_id=?", (session_id,))
+    if not rows or rows[0]["athlete_id"] != athlete_id:
+        raise SessionNotFound(f"场次 {session_id} 不存在或不属于该运动员（尚未导入或已重建）")
+
+
+def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
+    """已存正文 → 本次视角的报告：按视角现取「近期备注」一节，并写入 view / cached。
+
+    落库的正文不含备注（备注随时增删、按视角过滤），所以每次读取都现取。
+    coach_extra 在这里保留（问答骨架沿用）；对外接口用 public_view() 按视角剔除。
+    """
+    out = dict(body)
+    sections = [s for s in body.get("sections", []) if s.get("key") != "notes"]
+    from app.memory.notes import list_notes_for_view
+    notes = list_notes_for_view(db, body["athlete"]["id"], view)
+    if notes:
+        note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
+                      for n in notes[:5]]
+        sections.append({"key": "notes", "title": "近期备注", "content": note_lines,
+                         "evidence": [{"type": "fact", "ref": "notes", "value": len(notes)}]})
+    out["sections"] = sections
+    out["view"] = view
+    out["cached"] = cached
+    return out
+
+
+def public_view(report: dict, view: str) -> dict:
+    """对外输出（PR #4）：运动员视角在服务端剔除 coach_extra（滚动基线、警告等教练信息）。"""
+    if view == "athlete" and "coach_extra" in report:
+        report = {k: v for k, v in report.items() if k != "coach_extra"}
+    return report
+
+
+def load_stored_report(db: Database, report_id: str) -> dict | None:
+    """按 report_id 读已存正文（不含备注）。行不存在 → KeyError；旧行没有正文 → None。"""
+    row = db.get_report_row(report_id)
+    if row is None:
+        raise KeyError(report_id)
+    raw = row["report_json"]
+    return json.loads(raw) if raw else None
 
 
 def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key: str,
@@ -116,16 +167,25 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     """
     cfg = get_config()
     R.validate_rules(cfg)
+    if granularity == "daily":
+        _check_session(db, athlete_id, session_id)
 
     # 缓存查找（B10：key = granularity+window_key+口径版本）
-    cached_id = None if force else db.get_cached_report(
+    # PR #4：命中且有已存正文 → 返回正文（按本次视角现取备注）
+    cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cfg.mdc_source)
-    if cached_id and not force:
-        return {"report_id": cached_id, "cached": True}
+    backfill_id = None
+    if cached_row and not force:
+        if cached_row["report_json"]:
+            return render_for_view(db, json.loads(cached_row["report_json"]), view, cached=True)
+        # PR #4 之前的旧行（无正文）：按未命中重新计算并补存正文（真引擎联调 #2）。
+        # 与 refresh=1 不同：保留原 report_id，不清理缓存行、不删除 / 不重写该报告已有的历史结论
+        backfill_id = cached_row["report_id"]
 
-    # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
-    # 判定会读到上一次重生成留下的重复行）
-    db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
+    if backfill_id is None:
+        # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
+        # 判定会读到上一次重生成留下的重复行）
+        db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
 
     shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id)
     session_ids = _session_ids_in_window(db, athlete_id, granularity, window_key)
@@ -140,10 +200,20 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     # 样本门槛（A4）：不足 → 降级"样本不足，仅供参考"，禁止判定词
     gate_ok = R.sample_gate(cfg, granularity, m["n_shots"], len(session_ids))
 
-    report_id = str(uuid.uuid4())
+    report_id = backfill_id or str(uuid.uuid4())
 
     sections: list[dict] = []
     conclusions: list[dict] = []
+
+    # PR #4：四个指标的结构化判定（门户只展示；reason 见 docs/portal_api_contract.md §3.3.1）
+    now_vals = {"avgScore": m["avg_score"], "mcrT": m["mcr_t"],
+                "hrVolatility": m["hr_volatility"], "dispersionMm": m["dispersion_mm"]}
+    anchor_vals = {"avgScore": anchor_dict.get("avg_score"), "mcrT": anchor_dict.get("mcr_t"),
+                   "hrVolatility": anchor_dict.get("hr_volatility"),
+                   "dispersionMm": anchor_dict.get("dispersion_mm")} if anchor_dict else {}
+    default_reason = "sample_insufficient" if not gate_ok else ("no_anchor" if not anchor_dict else "missing_data")
+    verdicts = {k: C.verdict_entry(cfg, k, now_vals[k], anchor_vals.get(k), reason=default_reason)
+                for k in C.METRIC_KEYS}
 
     # 今日/窗口成绩
     score_text = f"平均环 {m['avg_score']}（n={m['n_shots']}），内十率 {m['inner10_rate']}%，远弹率 {m['far_miss_rate']}%，命中率 {m['hit_rate']}%"
@@ -181,6 +251,9 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
             if now_v is None or ref_v is None:
                 continue  # 缺测不出结论（B11）
             res = R.judge_metric(cfg, rule.metric, now_v, ref_v)
+            v_judge, v_reason = C.reason_of(res, comparable)
+            verdicts[rule.metric] = C.verdict_entry(cfg, rule.metric, now_v, ref_v,
+                                                    verdict=v_judge, reason=v_reason)
             if not comparable:
                 # 不可比：只描述不判定
                 res["degraded"] = True
@@ -215,31 +288,24 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         sections.append({"key": "wind_bands", "title": "风档对照", "content": band_lines,
                          "evidence": [{"type": "fact", "ref": "wind_band_avg", "value": band_avg}]})
 
-    # 平台期识别（D7-C3）：连续 3 个同粒度窗口均"平稳" → plateau（P1 标记为辅助）
-    recent = [dict(r) for r in db.query(
-        """SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?
-             AND conclusion_type='judgement' ORDER BY generated_at_utc DESC LIMIT 3""",
-        (athlete_id, granularity),
-    )]
-    if len(recent) == 3 and all(r["conclusion_key"] == "steady" for r in recent):
-        from app.memory.memories import record_conclusion
-        plateau_text = ("近 3 期成绩均与锚点平稳（差值未超最小可检测变化），疑似进入平台期，"
+    # 平台期识别（D7-C3）：连续 N（默认 3）期同粒度报告均"平稳" → plateau（P1 标记为辅助）
+    # PR #4 修正：旧逻辑取 report_memories 最近 3 行，但每份报告每个指标各写一行，
+    # 实际取到的是「上一份报告的 3 个指标」。现在每份报告算一期（见 conclusions.compute_plateau）。
+    plateau = C.compute_plateau(db, cfg, athlete_id, granularity, window_key, report_id, verdicts)
+    if plateau["triggered"]:
+        n_periods = plateau["periods"]
+        plateau_text = (f"近 {n_periods} 期成绩均与锚点平稳（差值未超最小可检测变化），疑似进入平台期，"
                         "建议调整训练刺激（辅助判断，仅供参考）")
         sections.append({"key": "plateau", "title": "平台期提示", "content": [plateau_text],
-                         "evidence": [{"type": "fact", "ref": "last_3_steady",
-                                       "value": [r["generated_at_utc"] for r in recent]}]})
-        record_conclusion(db, athlete_id=athlete_id, report_id=report_id, granularity=granularity,
-                          conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
-                          delta_value=None, evidence="")
+                         "evidence": [{"type": "fact", "ref": f"last_{n_periods}_steady",
+                                       "value": [r["window_key"] for r in plateau["recent"]]}]})
+        if backfill_id is None:  # 补存正文不重写历史结论
+            from app.memory.memories import record_conclusion
+            record_conclusion(db, athlete_id=athlete_id, report_id=report_id, granularity=granularity,
+                              conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
+                              delta_value=None, evidence="")
 
-    # 备注注入（双视角，A2/D9）
-    from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, athlete_id, view)
-    if notes:
-        note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
-                      for n in notes[:5]]
-        sections.append({"key": "notes", "title": "近期备注", "content": note_lines,
-                         "evidence": [{"type": "fact", "ref": "notes", "value": len(notes)}]})
+    # 备注注入（双视角，A2/D9）：PR #4 起不进落库正文，返回前由 render_for_view 按视角现取
 
     report = {
         "report_id": report_id,
@@ -253,12 +319,29 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         "suggestions": [],
         "coach_extra": {"warnings": [], "load": {}},
         "anchor_rebuild_hint": _anchor_rebuild_hint(db, athlete_id),
+        # PR #4：结构化指标与结论（引擎计算，门户只展示；字段见 docs/portal_api_contract.md §3）
+        "metrics": {k: m[k] for k in ("n_shots", "avg_score", "inner10_rate", "far_miss_rate", "hit_rate",
+                                      "total_score", "mcr_t", "hr_volatility", "dispersion_mm")},
+        "conclusions": {
+            "schema_version": C.SCHEMA_VERSION,
+            "verdicts": verdicts,
+            "wind_gap": C.compute_wind_gap(cfg, shots),
+            "self_compare": C.compute_self_compare(db, cfg, athlete_id, granularity, window_key,
+                                                   session_id, m, shots),
+            "plateau": plateau,
+        },
     }
     if rolling_dict:
         report["coach_extra"]["rolling_baseline"] = {
             "n_shots": rolling_dict["n_shots"], "avg_score": rolling_dict.get("avg_score"),
             "collected_at_utc": rolling_dict["collected_at_utc"],
         }
+
+    if backfill_id is not None:
+        # 补存正文：只更新这一行的 report_json / generated_at_utc；该报告已有的历史结论不删、不重写
+        db.fill_report_body(report_id, json.dumps(report, ensure_ascii=False), report["generated_at_utc"])
+        logger.info("旧报告补存正文 id=%s granularity=%s window=%s", report_id, granularity, window_key)
+        return render_for_view(db, report, view, cached=False)
 
     # 结论回写记忆（④：judgement 类落库供历史引用）
     for c in conclusions:
@@ -268,9 +351,10 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
             conclusion_key=c["judge"], conclusion=c["conclusion"], judge_basis=c["judge_basis"],
             delta_value=c["delta"], evidence=str(c["evidence"]))
 
-    db.put_cached_report(report_id, athlete_id, granularity, window_key, cfg.mdc_source)
+    db.put_cached_report(report_id, athlete_id, granularity, window_key, cfg.mdc_source,
+                         report_json=json.dumps(report, ensure_ascii=False))
     logger.info("报告已生成 id=%s granularity=%s window=%s view=%s", report_id, granularity, window_key, view)
-    return report
+    return render_for_view(db, report, view, cached=False)
 
 
 def _metric_title(metric: str) -> str:

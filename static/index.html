@@ -290,7 +290,7 @@ function loadAthletes() {
     athletes.forEach((a) => {
       const opt = document.createElement('option');
       opt.value = a.athlete_id;
-      opt.textContent = a.name + (a.bow_type ? ' · ' + a.bow_type : '');
+      opt.textContent = (a.name || '未命名选手') + (a.bow_type ? ' · ' + a.bow_type : '');
       sel.appendChild(opt);
     });
     // 默认选中「最近有训练」的运动员：列表按姓名排序，取第一个可能落到久未训练的档案，
@@ -552,7 +552,7 @@ function renderReport(r) {
   gIdle();
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
   $('reportHead').textContent =
-    (r.athlete ? r.athlete.name : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
+    (r.athlete ? (r.athlete.name || '未命名选手') : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
     (view === 'coach' ? ' · 教练视角' : ' · 运动员视角');
 
   const body = $('reportBody');

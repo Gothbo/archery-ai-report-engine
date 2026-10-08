@@ -18,6 +18,7 @@ from app.llm.client import LLMError, get_llm_client
 from app.llm.guardrails import check_guards
 from app.llm.tasks import LLMBusy, get_registry
 from app.rag.context import assemble_context
+from app.reports.generator import SessionNotFound
 from app.store.database import get_database
 
 router = APIRouter(prefix="/api/v1", tags=["ask"])
@@ -35,12 +36,15 @@ class AskRequest(BaseModel):
 
 
 @router.post("/athletes/{athlete_id}/ask")
-def ask(athlete_id: str, body: AskRequest) -> dict:
+def ask(athlete_id: str, body: AskRequest):
     cfg = get_config()
     db = get_database()
     try:
         ctx = assemble_context(db, athlete_id, body.question,
                                body.granularity, body.window_key, view=body.view)
+    except SessionNotFound as exc:
+        from app.api.reports import session_not_found
+        return session_not_found(exc)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

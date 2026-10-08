@@ -61,9 +61,16 @@ def assemble_context(db: Database, athlete_id: str, question: str,
             raise ValueError("运动员暂无已生成报告：请先在报告区生成一份，再发起对话")
         _granularity, _window_key = latest[0]["granularity"], latest[0]["window_key"]
 
+    # PR #4：有已存正文就直接用（report_id / 生成时间 / 历史结论都不变）；以前这里 force=True，
+    # 是因为缓存命中只给 id、拿不到正文 —— 每问一次报告就重算、换新 id。
+    # 没有缓存 → 正常生成；PR #4 之前的旧缓存行（无正文）→ generate_report 自己补存正文（report_id 与历史结论不变）。
+    # 下面的 force=True 只是兜底（正常走不到）。
+    session_id = _window_key[6:] if _granularity == "daily" else None
     report = generate_report(db, athlete_id, _granularity, _window_key,
-                             session_id=_window_key[6:] if _granularity == "daily" else None,
-                             view=view, force=True)
+                             session_id=session_id, view=view, force=False)
+    if "sections" not in report:
+        report = generate_report(db, athlete_id, _granularity, _window_key,
+                                 session_id=session_id, view=view, force=True)
 
     notes = list_notes_for_view(db, athlete_id, view)
     history = db.latest_memory(athlete_id, _granularity)

@@ -139,6 +139,8 @@ CREATE TABLE IF NOT EXISTS ingest_messages (
     payload_sha256  TEXT NOT NULL,            -- 只存摘要（不存原文，避免身份字段落库）；重复投递内容不同可识别
     received_at_utc TEXT NOT NULL
 );
+-- PR #4：GET /ingest/v12/last-received 按 dataType 取 MAX(received_at_utc)（dt1 心率 1 Hz，约 8.6 万行/天）
+CREATE INDEX IF NOT EXISTS idx_ingest_dt_time ON ingest_messages(data_type, received_at_utc);
 
 -- dt2 弹着（接收原始事实，已做单位换算/哨兵转 NULL/身份脱敏；shot_fact 由此按运动员+本地日重建）
 CREATE TABLE IF NOT EXISTS v12_shot (
