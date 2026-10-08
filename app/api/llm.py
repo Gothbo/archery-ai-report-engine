@@ -2,6 +2,7 @@
 """API · LLM 任务状态与取消（PR #3）。
 
 - GET  /api/v1/llm/status                 当前是否有 LLM 任务在跑（不含运动员身份与内容）
+                                          + PR #4：provider / backend（ready|loading|unreachable）/ backend_checked_at
 - POST /api/v1/llm/tasks/{task_id}/cancel 显式取消（真正停止上游生成；锁在上游停止后才释放）
 """
 from __future__ import annotations
@@ -13,6 +14,7 @@ from fastapi import APIRouter, Query
 from fastapi.responses import JSONResponse
 
 from app.config import get_config
+from app.llm.client import probe_backend
 from app.llm.tasks import LLMTask, busy_payload, get_registry
 
 router = APIRouter(prefix="/api/v1", tags=["llm"])
@@ -25,9 +27,13 @@ def busy_response(task: LLMTask) -> JSONResponse:
 
 
 @router.get("/llm/status")
-def llm_status() -> dict:
+async def llm_status() -> dict:
+    cfg = get_config()
     body = get_registry().status()
-    body["llm_enabled"] = get_config().llm.enabled
+    body["llm_enabled"] = cfg.llm.enabled
+    # PR #4：模型服务可达性（llm 未开启时不探测 → backend=null）
+    body["provider"] = cfg.llm.provider
+    body.update(await probe_backend(cfg.llm, cfg.timezone))
     return body
 
 

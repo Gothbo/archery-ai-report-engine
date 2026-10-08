@@ -34,6 +34,8 @@ def _reset_engine():
     cfgmod.get_config.cache_clear()
     dbmod._SINGLETON = None
     tasksmod.reset_registry()  # PR #3：LLM 单飞锁是进程内单例，用例间清空
+    import app.llm.client as clientmod
+    clientmod.reset_backend_probe_cache()  # PR #4：模型服务探测结果缓存，用例间清空
 
 
 @pytest.fixture()

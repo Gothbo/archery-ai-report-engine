@@ -32,6 +32,30 @@ from app.store.database import get_database
 logger = logging.getLogger("engine")
 
 
+def _engine_version() -> str | None:
+    """引擎版本（PR #4，/health 的 engine_version）：优先读 pyproject.toml 的 [project] version，
+    取不到（如打包后没有 pyproject）再用已安装包的元数据。版本号规则待 PM 定。"""
+    import re
+    from pathlib import Path
+
+    try:
+        text = (Path(__file__).resolve().parent.parent / "pyproject.toml").read_text(encoding="utf-8")
+        section = re.search(r"(?ms)^\[project\]\s*$(.*?)(?=^\[|\Z)", text)
+        m = re.search(r'(?m)^version\s*=\s*"([^"]+)"', section.group(1)) if section else None
+        if m:
+            return m.group(1)
+    except OSError:
+        pass
+    try:
+        from importlib.metadata import version
+        return version("suooter-archery-engine")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+ENGINE_VERSION = _engine_version()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     cfg = get_config()  # 校验失败 → 启动失败（口径 SSOT）
@@ -43,7 +67,7 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(
     title="射箭AI训练报告引擎",
-    version="0.1.0",
+    version=ENGINE_VERSION or "0.1.0",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,
@@ -104,4 +128,5 @@ def health() -> dict:
         "db": db.db_path,
         "mdc_source": "empty" if cfg.mdc_source is None else cfg.mdc_source,
         "llm_enabled": cfg.llm.enabled,  # B1：对话增强开关状态（默认关闭，P1 报告链路零影响）
+        "engine_version": ENGINE_VERSION,  # PR #4：取自 pyproject.toml；版本号规则待 PM 定
     }
