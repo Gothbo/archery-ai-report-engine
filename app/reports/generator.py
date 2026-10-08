@@ -171,17 +171,21 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         _check_session(db, athlete_id, session_id)
 
     # 缓存查找（B10：key = granularity+window_key+口径版本）
-    # PR #4：命中且有已存正文 → 返回正文（按本次视角现取备注）；PR #4 之前的旧行仍只返回 id
+    # PR #4：命中且有已存正文 → 返回正文（按本次视角现取备注）
     cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cfg.mdc_source)
+    backfill_id = None
     if cached_row and not force:
         if cached_row["report_json"]:
             return render_for_view(db, json.loads(cached_row["report_json"]), view, cached=True)
-        return {"report_id": cached_row["report_id"], "cached": True}
+        # PR #4 之前的旧行（无正文）：按未命中重新计算并补存正文（真引擎联调 #2）。
+        # 与 refresh=1 不同：保留原 report_id，不清理缓存行、不删除 / 不重写该报告已有的历史结论
+        backfill_id = cached_row["report_id"]
 
-    # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
-    # 判定会读到上一次重生成留下的重复行）
-    db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
+    if backfill_id is None:
+        # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
+        # 判定会读到上一次重生成留下的重复行）
+        db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
 
     shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id)
     session_ids = _session_ids_in_window(db, athlete_id, granularity, window_key)
@@ -196,7 +200,7 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     # 样本门槛（A4）：不足 → 降级"样本不足，仅供参考"，禁止判定词
     gate_ok = R.sample_gate(cfg, granularity, m["n_shots"], len(session_ids))
 
-    report_id = str(uuid.uuid4())
+    report_id = backfill_id or str(uuid.uuid4())
 
     sections: list[dict] = []
     conclusions: list[dict] = []
@@ -289,16 +293,17 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     # 实际取到的是「上一份报告的 3 个指标」。现在每份报告算一期（见 conclusions.compute_plateau）。
     plateau = C.compute_plateau(db, cfg, athlete_id, granularity, window_key, report_id, verdicts)
     if plateau["triggered"]:
-        from app.memory.memories import record_conclusion
         n_periods = plateau["periods"]
         plateau_text = (f"近 {n_periods} 期成绩均与锚点平稳（差值未超最小可检测变化），疑似进入平台期，"
                         "建议调整训练刺激（辅助判断，仅供参考）")
         sections.append({"key": "plateau", "title": "平台期提示", "content": [plateau_text],
                          "evidence": [{"type": "fact", "ref": f"last_{n_periods}_steady",
                                        "value": [r["window_key"] for r in plateau["recent"]]}]})
-        record_conclusion(db, athlete_id=athlete_id, report_id=report_id, granularity=granularity,
-                          conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
-                          delta_value=None, evidence="")
+        if backfill_id is None:  # 补存正文不重写历史结论
+            from app.memory.memories import record_conclusion
+            record_conclusion(db, athlete_id=athlete_id, report_id=report_id, granularity=granularity,
+                              conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
+                              delta_value=None, evidence="")
 
     # 备注注入（双视角，A2/D9）：PR #4 起不进落库正文，返回前由 render_for_view 按视角现取
 
@@ -331,6 +336,12 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
             "n_shots": rolling_dict["n_shots"], "avg_score": rolling_dict.get("avg_score"),
             "collected_at_utc": rolling_dict["collected_at_utc"],
         }
+
+    if backfill_id is not None:
+        # 补存正文：只更新这一行的 report_json / generated_at_utc；该报告已有的历史结论不删、不重写
+        db.fill_report_body(report_id, json.dumps(report, ensure_ascii=False), report["generated_at_utc"])
+        logger.info("旧报告补存正文 id=%s granularity=%s window=%s", report_id, granularity, window_key)
+        return render_for_view(db, report, view, cached=False)
 
     # 结论回写记忆（④：judgement 类落库供历史引用）
     for c in conclusions:

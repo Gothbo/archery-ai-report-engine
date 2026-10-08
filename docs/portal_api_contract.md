@@ -20,7 +20,7 @@
 | HTTP | `code` | 出现在 | 含义 |
 |---|---|---|---|
 | 404 | `REPORT-NOT-FOUND` | `GET /reports/{id}/content` | 报告 id 不存在或已失效（同窗口重新生成 / 同场次重新导入会换 id） |
-| 404 | `REPORT-BODY-MISSING` | `GET /reports/{id}/content` | 报告是本 PR 之前生成的，没有保存正文；调用生成接口（不带 `refresh`）会补存 |
+| 404 | `REPORT-BODY-MISSING` | `GET /reports/{id}/content` | 报告是本 PR 之前生成的，没有保存正文；调用生成接口（不带 `refresh`）会按当前数据重新计算并补存正文：**`report_id` 不变、该报告已有的历史结论不删不重写**，之后本接口返回 200（见 §3.4） |
 | 404 | `SESSION-NOT-FOUND` | 日报生成、`/ask`、`/guidance/stream`（日报窗口） | 该运动员没有这个场次（以前会生成一份 0 箭的空报告并写进缓存） |
 | 403 | `CROSS-SITE-BLOCKED` | 所有 POST / PUT / PATCH / DELETE | 跨站页面发起的写请求（见 §7） |
 | 404 | `PORTAL-NOT-CONFIGURED` | `GET /portal/…` | 没有配置门户产物目录，或目录里没有 `index.html` |
@@ -187,8 +187,8 @@
 
 | 场景 | 以前 | 现在 |
 |---|---|---|
-| 生成接口命中缓存 | 只返回 `{report_id, cached:true}` | 返回已存正文 + `cached:true`（本 PR 之前生成的旧缓存行仍只返回 id） |
-| `/ask`、`/guidance/stream` | 每次都强制重算报告，`report_id` 失效、历史结论被重写 | 有已存正文就直接用（`report_id`、生成时间、`context_version` 保持不变）；没有才生成 |
+| 生成接口命中缓存 | 只返回 `{report_id, cached:true}` | 返回已存正文 + `cached:true`。本 PR 之前生成的旧缓存行（没有正文）按未命中处理：重新计算并补存正文，返回完整正文 + `cached:false`；**`report_id` 不变**，缓存行 `generated_at_utc` 更新为补存时间（与正文一致），该报告已有的历史结论不删、不重写、不重复写。`refresh=1` 不同：换新 `report_id`，清掉同窗口旧报告及其历史结论后重写 |
+| `/ask`、`/guidance/stream` | 每次都强制重算报告，`report_id` 失效、历史结论被重写 | 有已存正文就直接用（`report_id`、生成时间、`context_version` 保持不变）；没有才生成（旧缓存行没有正文时同上补存，不换 `report_id`） |
 | 生成接口 `view=athlete` | 也返回 `coach_extra` | 不返回 `coach_extra` |
 | 日报不存在的 `session_id` | 生成 0 箭空报告并写缓存 | 404 `SESSION-NOT-FOUND`，不写缓存（场次属于别的运动员同样 404） |
 | 跨站页面发来的写请求 | 照常执行 | 403 `CROSS-SITE-BLOCKED`（§7） |

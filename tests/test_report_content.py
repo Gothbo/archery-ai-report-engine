@@ -129,15 +129,51 @@ class TestContentEndpoint:
         db.put_cached_report("LEGACY-1", ATHLETE, "weekly", "2026-W34", "test-consensus-v1")
         r = client.get("/api/v1/reports/LEGACY-1/content")
         assert r.status_code == 404 and r.json()["code"] == "REPORT-BODY-MISSING"
-        # 生成接口命中旧行：保持旧行为，只返回 id
+        # 生成接口（不带 refresh）命中旧行：按未命中重新计算并补存正文，report_id 不变（真引擎联调 #2）
         hit = client.post(f"{BASE}/reports/weekly", params={"week": "2026-W34"}).json()
-        assert hit == {"report_id": "LEGACY-1", "cached": True}
-        # 问答遇到旧行：强制重算一次并补存正文
+        assert hit["report_id"] == "LEGACY-1" and hit["cached"] is False and "sections" in hit
+        assert client.get("/api/v1/reports/LEGACY-1/content").status_code == 200
+        again = client.post(f"{BASE}/reports/weekly", params={"week": "2026-W34"}).json()
+        assert again["report_id"] == "LEGACY-1" and again["cached"] is True
+        # 问答复用补存后的正文
         a = client.post(f"{BASE}/ask", json={"question": "怎么样", "granularity": "weekly",
                                              "window_key": "2026-W34", "view": "coach"})
         assert a.status_code == 200
         row = db.get_cached_report_row(ATHLETE, "weekly", "2026-W34", "test-consensus-v1")
-        assert row["report_id"] != "LEGACY-1" and row["report_json"]
+        assert row["report_id"] == "LEGACY-1" and row["report_json"]
+
+    def test_body_missing_regenerate_keeps_id_and_memories(self, client):
+        """联调复现：日报正文被置空（模拟 PR #4 之前的旧行）→ 不带 refresh 生成要补存正文，
+        且不能像 refresh=1 那样清掉 / 重写该报告的历史结论。"""
+        db = get_database()
+        sid = db.query("SELECT session_id FROM session_dim WHERE athlete_id=? ORDER BY session_time_utc DESC "
+                       "LIMIT 1", (ATHLETE,))[0]["session_id"]
+        params = {"session_id": sid, "view": "coach"}
+        rep = client.post(f"{BASE}/reports/daily", params=params).json()
+        rid = rep["report_id"]
+        mems = db.query("SELECT * FROM report_memories WHERE report_id=? ORDER BY id", (rid,))
+        assert mems  # 有锚点、样本达标 → 生成时写了历史结论
+        mems = [dict(m) for m in mems]
+        db._execute("UPDATE report_cache SET report_json=NULL WHERE report_id=?", (rid,))
+        r = client.get(f"/api/v1/reports/{rid}/content", params={"view": "coach"})
+        assert r.status_code == 404 and r.json()["code"] == "REPORT-BODY-MISSING"
+
+        regen = client.post(f"{BASE}/reports/daily", params=params).json()
+        assert regen["report_id"] == rid and regen["cached"] is False
+        assert regen["metrics"] == rep["metrics"] and regen["conclusions"]["verdicts"] == rep["conclusions"]["verdicts"]
+        body = client.get(f"/api/v1/reports/{rid}/content", params={"view": "coach"})
+        assert body.status_code == 200 and body.json()["report_id"] == rid
+        assert body.json()["generated_at_utc"] == regen["generated_at_utc"] == \
+            db.get_report_row(rid)["generated_at_utc"]
+        assert [dict(m) for m in db.query("SELECT * FROM report_memories WHERE report_id=? ORDER BY id",
+                                          (rid,))] == mems  # 历史结论原样保留（不删、不重写、不重复）
+        hit = client.post(f"{BASE}/reports/daily", params=params).json()
+        assert hit["report_id"] == rid and hit["cached"] is True
+
+        # 对照：refresh=1 才会换 id 并清掉旧报告的历史结论
+        fresh = client.post(f"{BASE}/reports/daily", params={**params, "refresh": "1"}).json()
+        assert fresh["report_id"] != rid
+        assert not db.query("SELECT 1 FROM report_memories WHERE report_id=?", (rid,))
 
 
 class TestAskReusesStoredBody:

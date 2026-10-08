@@ -431,6 +431,12 @@ class Database:
             (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json),
         )
 
+    def fill_report_body(self, report_id: str, report_json: str, generated_at_utc: str) -> None:
+        """给 PR #4 之前的旧缓存行补存正文：写 report_json，生成时间与正文一致；report_id、历史结论不变。"""
+        self._execute(
+            "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
+            (report_json, generated_at_utc, report_id))
+
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
                             mdc_version: str | None) -> None:
         """重生成前清理同窗口旧缓存行及其结论记忆。
