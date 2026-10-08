@@ -11,6 +11,7 @@
 """
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -29,6 +30,55 @@ logger = logging.getLogger("engine.reports.generator")
 
 def _now_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+
+
+class SessionNotFound(ValueError):
+    """日报场次不存在或不属于该运动员（PR #4：返回 404，不再生成 0 箭空报告写进缓存）。"""
+
+
+def _check_session(db: Database, athlete_id: str, session_id: str | None) -> None:
+    if not session_id:
+        return  # 缺 session_id 由 _shots_in_window 报 ValueError（400，原行为）
+    rows = db.query("SELECT athlete_id FROM session_dim WHERE session_id=?", (session_id,))
+    if not rows or rows[0]["athlete_id"] != athlete_id:
+        raise SessionNotFound(f"场次 {session_id} 不存在或不属于该运动员（尚未导入或已重建）")
+
+
+def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
+    """已存正文 → 本次视角的报告：按视角现取「近期备注」一节，并写入 view / cached。
+
+    落库的正文不含备注（备注随时增删、按视角过滤），所以每次读取都现取。
+    coach_extra 在这里保留（问答骨架沿用）；对外接口用 public_view() 按视角剔除。
+    """
+    out = dict(body)
+    sections = [s for s in body.get("sections", []) if s.get("key") != "notes"]
+    from app.memory.notes import list_notes_for_view
+    notes = list_notes_for_view(db, body["athlete"]["id"], view)
+    if notes:
+        note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
+                      for n in notes[:5]]
+        sections.append({"key": "notes", "title": "近期备注", "content": note_lines,
+                         "evidence": [{"type": "fact", "ref": "notes", "value": len(notes)}]})
+    out["sections"] = sections
+    out["view"] = view
+    out["cached"] = cached
+    return out
+
+
+def public_view(report: dict, view: str) -> dict:
+    """对外输出（PR #4）：运动员视角在服务端剔除 coach_extra（滚动基线、警告等教练信息）。"""
+    if view == "athlete" and "coach_extra" in report:
+        report = {k: v for k, v in report.items() if k != "coach_extra"}
+    return report
+
+
+def load_stored_report(db: Database, report_id: str) -> dict | None:
+    """按 report_id 读已存正文（不含备注）。行不存在 → KeyError；旧行没有正文 → None。"""
+    row = db.get_report_row(report_id)
+    if row is None:
+        raise KeyError(report_id)
+    raw = row["report_json"]
+    return json.loads(raw) if raw else None
 
 
 def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key: str,
@@ -116,12 +166,17 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     """
     cfg = get_config()
     R.validate_rules(cfg)
+    if granularity == "daily":
+        _check_session(db, athlete_id, session_id)
 
     # 缓存查找（B10：key = granularity+window_key+口径版本）
-    cached_id = None if force else db.get_cached_report(
+    # PR #4：命中且有已存正文 → 返回正文（按本次视角现取备注）；PR #4 之前的旧行仍只返回 id
+    cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cfg.mdc_source)
-    if cached_id and not force:
-        return {"report_id": cached_id, "cached": True}
+    if cached_row and not force:
+        if cached_row["report_json"]:
+            return render_for_view(db, json.loads(cached_row["report_json"]), view, cached=True)
+        return {"report_id": cached_row["report_id"], "cached": True}
 
     # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
     # 判定会读到上一次重生成留下的重复行）
@@ -232,14 +287,7 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
                           conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
                           delta_value=None, evidence="")
 
-    # 备注注入（双视角，A2/D9）
-    from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, athlete_id, view)
-    if notes:
-        note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
-                      for n in notes[:5]]
-        sections.append({"key": "notes", "title": "近期备注", "content": note_lines,
-                         "evidence": [{"type": "fact", "ref": "notes", "value": len(notes)}]})
+    # 备注注入（双视角，A2/D9）：PR #4 起不进落库正文，返回前由 render_for_view 按视角现取
 
     report = {
         "report_id": report_id,
@@ -268,9 +316,10 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
             conclusion_key=c["judge"], conclusion=c["conclusion"], judge_basis=c["judge_basis"],
             delta_value=c["delta"], evidence=str(c["evidence"]))
 
-    db.put_cached_report(report_id, athlete_id, granularity, window_key, cfg.mdc_source)
+    db.put_cached_report(report_id, athlete_id, granularity, window_key, cfg.mdc_source,
+                         report_json=json.dumps(report, ensure_ascii=False))
     logger.info("报告已生成 id=%s granularity=%s window=%s view=%s", report_id, granularity, window_key, view)
-    return report
+    return render_for_view(db, report, view, cached=False)
 
 
 def _metric_title(metric: str) -> str:

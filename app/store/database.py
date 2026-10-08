@@ -68,6 +68,10 @@ class Database:
             ("quote_text", "TEXT"),
             ("confirmed_at_utc", "TEXT"),
         ],
+        # PR #4：报告正文落库（不含「近期备注」一节；读取时按视角现取备注、运动员视角剔除 coach_extra）
+        "report_cache": [
+            ("report_json", "TEXT"),
+        ],
     }
 
     def _migrate_columns(self) -> None:
@@ -347,12 +351,28 @@ class Database:
         )
         return rows[0]["report_id"] if rows else None
 
-    def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str, mdc_version: str | None) -> None:
+    def get_cached_report_row(self, athlete_id: str, granularity: str, window_key: str,
+                              mdc_version: str | None) -> sqlite3.Row | None:
+        """同 get_cached_report，但返回整行（含 report_json；PR #4 之前生成的旧行 report_json 为 NULL）。"""
+        rows = self._query(
+            """SELECT * FROM report_cache
+               WHERE athlete_id=? AND granularity=? AND window_key=?
+                 AND (mdc_version IS ? OR mdc_version=?)""",
+            (athlete_id, granularity, window_key, mdc_version, mdc_version),
+        )
+        return rows[0] if rows else None
+
+    def get_report_row(self, report_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM report_cache WHERE report_id=?", (report_id,))
+        return rows[0] if rows else None
+
+    def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str,
+                          mdc_version: str | None, report_json: str | None = None) -> None:
         self._execute(
             """INSERT OR REPLACE INTO report_cache
-                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc)
-               VALUES (?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now()),
+                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json)
+               VALUES (?,?,?,?,?,?,?)""",
+            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json),
         )
 
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
