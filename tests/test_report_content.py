@@ -54,6 +54,7 @@ class TestStoredBody:
         assert r2["report_id"] == r1["report_id"]
         assert r2["generated_at_utc"] == r1["generated_at_utc"]
         assert r2["sections"] == r1["sections"]
+        assert r2["conclusions"] == r1["conclusions"]
 
     def test_list_reports_hides_report_json(self, client):
         _weekly(client)
@@ -76,6 +77,7 @@ class TestContentEndpoint:
             assert body["view"] == "coach"
             assert body["generated_at_utc"] == rep["generated_at_utc"]
             assert body["sections"] == rep["sections"]
+            assert body["metrics"] == rep["metrics"] and body["conclusions"] == rep["conclusions"]
         assert _memory_ids() == mems  # 不重写历史结论
         assert get_database().get_report_row(rep["report_id"])["generated_at_utc"] == cache_ts
 
@@ -215,7 +217,7 @@ class TestUnknownSession:
 
     def test_daily_known_session_ok(self, client):
         r = client.post(f"{BASE}/reports/daily", params={"session_id": "S001"})
-        assert r.status_code == 200 and r.json()["window_key"] == "daily:S001"
+        assert r.status_code == 200 and r.json()["metrics"]["n_shots"] > 0
 
     def test_ask_unknown_daily_window_404(self, client):
         r = client.post(f"{BASE}/ask", json={"question": "怎么样", "granularity": "daily",

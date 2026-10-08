@@ -21,6 +21,7 @@ from app.metrics.environment import wind_band_avg_scores, wind_band_counts
 from app.metrics.performance import avg_score, far_miss_rate, hit_rate, inner10_rate, total_score
 from app.metrics.physiology import hr_volatility
 from app.metrics.process import dispersion_mm, mean_mcr_t, offset_mm
+from app.reports import conclusions as C
 from app.reports import rules as R
 from app.reports.window import window_bounds
 from app.store.database import Database
@@ -200,6 +201,16 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     sections: list[dict] = []
     conclusions: list[dict] = []
 
+    # PR #4：四个指标的结构化判定（门户只展示；reason 见 docs/portal_api_contract.md §3.3.1）
+    now_vals = {"avgScore": m["avg_score"], "mcrT": m["mcr_t"],
+                "hrVolatility": m["hr_volatility"], "dispersionMm": m["dispersion_mm"]}
+    anchor_vals = {"avgScore": anchor_dict.get("avg_score"), "mcrT": anchor_dict.get("mcr_t"),
+                   "hrVolatility": anchor_dict.get("hr_volatility"),
+                   "dispersionMm": anchor_dict.get("dispersion_mm")} if anchor_dict else {}
+    default_reason = "sample_insufficient" if not gate_ok else ("no_anchor" if not anchor_dict else "missing_data")
+    verdicts = {k: C.verdict_entry(cfg, k, now_vals[k], anchor_vals.get(k), reason=default_reason)
+                for k in C.METRIC_KEYS}
+
     # 今日/窗口成绩
     score_text = f"平均环 {m['avg_score']}（n={m['n_shots']}），内十率 {m['inner10_rate']}%，远弹率 {m['far_miss_rate']}%，命中率 {m['hit_rate']}%"
     if granularity == "daily":
@@ -236,6 +247,9 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
             if now_v is None or ref_v is None:
                 continue  # 缺测不出结论（B11）
             res = R.judge_metric(cfg, rule.metric, now_v, ref_v)
+            v_judge, v_reason = C.reason_of(res, comparable)
+            verdicts[rule.metric] = C.verdict_entry(cfg, rule.metric, now_v, ref_v,
+                                                    verdict=v_judge, reason=v_reason)
             if not comparable:
                 # 不可比：只描述不判定
                 res["degraded"] = True
@@ -270,19 +284,18 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         sections.append({"key": "wind_bands", "title": "风档对照", "content": band_lines,
                          "evidence": [{"type": "fact", "ref": "wind_band_avg", "value": band_avg}]})
 
-    # 平台期识别（D7-C3）：连续 3 个同粒度窗口均"平稳" → plateau（P1 标记为辅助）
-    recent = [dict(r) for r in db.query(
-        """SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?
-             AND conclusion_type='judgement' ORDER BY generated_at_utc DESC LIMIT 3""",
-        (athlete_id, granularity),
-    )]
-    if len(recent) == 3 and all(r["conclusion_key"] == "steady" for r in recent):
+    # 平台期识别（D7-C3）：连续 N（默认 3）期同粒度报告均"平稳" → plateau（P1 标记为辅助）
+    # PR #4 修正：旧逻辑取 report_memories 最近 3 行，但每份报告每个指标各写一行，
+    # 实际取到的是「上一份报告的 3 个指标」。现在每份报告算一期（见 conclusions.compute_plateau）。
+    plateau = C.compute_plateau(db, cfg, athlete_id, granularity, window_key, report_id, verdicts)
+    if plateau["triggered"]:
         from app.memory.memories import record_conclusion
-        plateau_text = ("近 3 期成绩均与锚点平稳（差值未超最小可检测变化），疑似进入平台期，"
+        n_periods = plateau["periods"]
+        plateau_text = (f"近 {n_periods} 期成绩均与锚点平稳（差值未超最小可检测变化），疑似进入平台期，"
                         "建议调整训练刺激（辅助判断，仅供参考）")
         sections.append({"key": "plateau", "title": "平台期提示", "content": [plateau_text],
-                         "evidence": [{"type": "fact", "ref": "last_3_steady",
-                                       "value": [r["generated_at_utc"] for r in recent]}]})
+                         "evidence": [{"type": "fact", "ref": f"last_{n_periods}_steady",
+                                       "value": [r["window_key"] for r in plateau["recent"]]}]})
         record_conclusion(db, athlete_id=athlete_id, report_id=report_id, granularity=granularity,
                           conclusion_key="plateau", conclusion=plateau_text, judge_basis=None,
                           delta_value=None, evidence="")
@@ -301,6 +314,17 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         "suggestions": [],
         "coach_extra": {"warnings": [], "load": {}},
         "anchor_rebuild_hint": _anchor_rebuild_hint(db, athlete_id),
+        # PR #4：结构化指标与结论（引擎计算，门户只展示；字段见 docs/portal_api_contract.md §3）
+        "metrics": {k: m[k] for k in ("n_shots", "avg_score", "inner10_rate", "far_miss_rate", "hit_rate",
+                                      "total_score", "mcr_t", "hr_volatility", "dispersion_mm")},
+        "conclusions": {
+            "schema_version": C.SCHEMA_VERSION,
+            "verdicts": verdicts,
+            "wind_gap": C.compute_wind_gap(cfg, shots),
+            "self_compare": C.compute_self_compare(db, cfg, athlete_id, granularity, window_key,
+                                                   session_id, m, shots),
+            "plateau": plateau,
+        },
     }
     if rolling_dict:
         report["coach_extra"]["rolling_baseline"] = {
