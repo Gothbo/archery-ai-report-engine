@@ -438,6 +438,15 @@ class Database:
                  AND (mdc_version IS ? OR mdc_version=?)""",
             (athlete_id, granularity, window_key, mdc_version, mdc_version))
 
+    def ingest_last_received(self, data_types) -> dict[int, str | None]:
+        """v1.2 各 dataType 最后受理时间（走索引 idx_ingest_dt_time，每类一次 MAX 查找）。"""
+        out: dict[int, str | None] = {}
+        for dt in data_types:
+            row = self._query(
+                "SELECT MAX(received_at_utc) AS t FROM ingest_messages WHERE data_type=?", (dt,))
+            out[dt] = row[0]["t"] if row else None
+        return out
+
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
         """B10①：同 session_id 重新导入 → 失效该场次缓存报告（daily 窗口键 = daily:<session_id>）。"""
         self._execute(
