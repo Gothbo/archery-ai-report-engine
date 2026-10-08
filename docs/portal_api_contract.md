@@ -29,7 +29,7 @@
 
 ## 1. 同源托管：`/portal/`
 
-- 配置 `config.json`：`"portal": {"dist_dir": "D:/service_portal/dist"}`（门户 `npm run build` 的产物目录；相对路径按引擎根目录解析）。不配置 = 不托管，`/portal/` 返回 404 `PORTAL-NOT-CONFIGURED`。
+- 配置（当前使用的那份配置文件，如 `config.llamacpp.local.json`）：`"portal": {"dist_dir": "D:/service_portal/dist"}`（门户 `npm run build` 的产物目录；相对路径按引擎根目录解析）。不配置 = 不托管，`/portal/` 返回 404 `PORTAL-NOT-CONFIGURED`。
 - 入口：`http://127.0.0.1:8000/portal/`（`/portal` 会 307 跳到 `/portal/`），宿主 WebView2 导航到 `http://127.0.0.1:8000/portal/index.html#/overview`。
 - 门户产物不提交进引擎仓库；改了配置要重启引擎（配置在启动时读取，每次请求按当前配置解析目录）。
 - **不开 CORS，不允许 `null` origin**。页面与接口同源，不需要预检，也不受 LNA 影响。
@@ -52,7 +52,7 @@
 
 | 字段 | 类型 | 可空 | 说明 |
 |---|---|---|---|
-| `display_no` | integer（≥1） | 否 | **引擎本地顺序号**：按档案在本库首次建立的先后分配 1、2、3…，库内唯一、不复用。和身份证号、HMAC、`athlete_id`、平台 spid **没有任何数学关系**。重建数据库（删 `facts.db` 后重新导入）会重新编号，已获 PM 认可。 |
+| `display_no` | integer（≥1） | 否 | **引擎本地顺序号**：按档案在本库首次建立的先后分配 1、2、3…（当前最大值 + 1），库内唯一（唯一索引）；引擎运行中不删除档案，所以编号不会变。和身份证号、HMAC、`athlete_id`、平台 spid **没有任何数学关系**。重建数据库（删 `facts.db` 后重新导入）会重新编号，已获 PM 认可。 |
 | `lane` | string | 是 | 该运动员**最近一支带靶位的箭**的靶位，原样字符串（如 `"lane-01"`），不解析成数字。来自 v1.2 dt2；SQLite / mock 源没有靶位 → `null`。 |
 | `lane_seen_at_utc` | string | 是 | 上面那支箭的时间（UTC）。`lane` 为 `null` 时也是 `null`。 |
 | `name` | string | **是** | 本 PR 起，v1.2 首次出现、没有档案的运动员**不再自动命名**为 `运动员{athlete_id 后四位}`，`name` 为 `null`，页面显示「未命名选手」。 |
@@ -162,6 +162,8 @@
 | `direction` | `"higher"` \| `"lower"` \| `"same"` | 是 | 按 `delta` 符号（`delta == 0` → `same`）。**不是 MDC 判定**，只是事实描述 |
 | `comparable` | boolean | 是 | 仅日报：前后两场弓种、距离都相同为 `true`；其他粒度 `null` |
 
+`self_compare`、`plateau` 是**生成时**算好存进正文的：之后新导入的数据、后来生成的其他报告不会改变已存正文，要更新就带 `refresh=1` 重新生成（会换 `report_id`）。
+
 #### 3.3.4 `conclusions.plateau` —— 平台期（修正版）
 
 ```json
@@ -177,7 +179,7 @@
 | `triggered` | boolean | 否 | `recent` 里 `periods` 期的 `verdict` 全是 `steady` |
 | `metric` | string | 否 | 看哪个指标的判定，默认 `avgScore`（**每期看哪一项待 PM 定义**，可在 `config.conclusions.plateau_metric` 改） |
 | `periods` | integer | 否 | 期数，默认 3 |
-| `recent` | array | 否 | **按窗口时间从旧到新，最后一项是本期**。每项 `window_key` string、`report_id` string、`verdict`（同 §3.3.1，可空） |
+| `recent` | array | 否 | **按窗口时间从旧到新，最后一项是本期**。每项 `window_key` string、`report_id` string、`verdict`（同 §3.3.1，可空）。取的是「本期之前最近 N−1 份已生成的同粒度报告」，**不要求窗口连续**（中间没生成报告的周会被跳过） |
 
 修正点：旧逻辑取 `report_memories` 最近 3 行，而每份报告每个指标各写一行，实际取到的是**上一份报告的 3 个指标**。新逻辑每份报告算一期（取它保存的 `verdicts[metric]`），按窗口时间（日报按场次时间）排序，只看本期及之前的窗口；没有保存正文的旧报告不计入。触发时仍写一条 `plateau` 历史结论、`sections` 里仍有「平台期提示」一节。
 
@@ -251,9 +253,10 @@
 
 ## 8. 备注 `actor_id`（只写清楚现状，本 PR 不改语义）
 
-- `POST /athletes/{id}/notes` 请求体的 `actor_id`：**必填**的字符串（pydantic `str`），引擎**不校验格式、不校验是否存在**，原样存进 `memory_notes.actor_id`（库注释：录入人雪花 ID，用于审计），并在 `GET …/notes` 里原样返回。
+- `POST /athletes/{id}/notes` 请求体的 `actor_id`：**必填**的字符串（pydantic `str`：缺这个键 → 422；空串也接受），引擎**不校验格式、不校验是否存在**，原样存进 `memory_notes.actor_id`（库注释：录入人雪花 ID，用于审计），并在 `GET …/notes` 里原样返回。
 - 引擎不用 `actor_id` 做权限判断：删除只校验备注属于路径里的 `athlete_id`，**不校验录入人**。「运动员只能删自己写的备注」只是门户的展示层限制。
 - 隐私：`actor_id` 会被存储并在接口里返回，**禁止传身份证号**，应传宿主的账号 / 用户 ID（雪花 ID）。
+- 以上行为由 `tests/test_notes_actor_contract.py` 固化。
 
 ---
 
