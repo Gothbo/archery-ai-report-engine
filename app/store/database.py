@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import threading
 from pathlib import Path
 
 from app.config import EngineConfig, get_config
@@ -25,11 +26,17 @@ def _iso_now() -> str:
 
 
 class Database:
-    """SQLite 访问封装。连接按线程创建（check_same_thread=False + 调用方串行），WAL 模式。"""
+    """SQLite 访问封装。单连接（check_same_thread=False），WAL 模式。
+
+    FastAPI 同步路由在线程池里并发执行：同一连接被多线程同时使用会偶发
+    InterfaceError / 结果行错乱（真引擎联调 #1）。所以连接的每次使用都在 self.lock
+    （可重入锁）内串行；直接用 .conn 的调用方（v1.2 接收端）必须先持有 db.lock。
+    """
 
     def __init__(self, db_path: str):
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
+        self.lock = threading.RLock()
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -43,13 +50,15 @@ class Database:
     # ---- 连接管理 ----
 
     def close(self) -> None:
-        try:
-            self._conn.close()
-        except sqlite3.Error:
-            pass
+        with self.lock:
+            try:
+                self._conn.close()
+            except sqlite3.Error:
+                pass
 
     @property
     def conn(self) -> sqlite3.Connection:
+        """原始连接：调用方必须在 `with db.lock:` 内使用（含事务全程）。"""
         return self._conn
 
     # ---- 列级迁移（CREATE TABLE IF NOT EXISTS 不补列；对已存在库幂等补列）----
@@ -106,21 +115,24 @@ class Database:
         if athlete_id is not None:
             sql += " AND athlete_id=?"
             params = (athlete_id,)
-        rows = self._query(sql + " ORDER BY rowid", params)
-        if not rows:
-            return
-        start = self._query("SELECT COALESCE(MAX(display_no), 0) AS m FROM athlete_profile")[0]["m"]
-        for i, r in enumerate(rows, 1):
-            self._conn.execute("UPDATE athlete_profile SET display_no=? WHERE rowid=?", (start + i, r["rid"]))
-        self._conn.commit()
+        with self.lock:  # 取 MAX + 逐行编号须整体串行，否则并发建档会撞唯一索引
+            rows = self._query(sql + " ORDER BY rowid", params)
+            if not rows:
+                return
+            start = self._query("SELECT COALESCE(MAX(display_no), 0) AS m FROM athlete_profile")[0]["m"]
+            for i, r in enumerate(rows, 1):
+                self._conn.execute("UPDATE athlete_profile SET display_no=? WHERE rowid=?", (start + i, r["rid"]))
+            self._conn.commit()
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
-        cur = self._conn.execute(sql, params)
-        self._conn.commit()
-        return cur
+        with self.lock:
+            cur = self._conn.execute(sql, params)
+            self._conn.commit()
+            return cur
 
     def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        return self._conn.execute(sql, params).fetchall()
+        with self.lock:
+            return self._conn.execute(sql, params).fetchall()
 
     def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         """公共只读查询（报告/记忆层使用）。"""
@@ -184,16 +196,17 @@ class Database:
             )
             for r in rows
         ]
-        cur = self._conn.executemany(
-            """INSERT OR IGNORE INTO shot_fact
-                 (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
-                  wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc,
-                  shot_id, score_id, lane, release_time_utc, hit_time_utc, flight_time_ms, inner_ten)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            data,
-        )
-        self._conn.commit()
-        return cur.rowcount
+        with self.lock:
+            cur = self._conn.executemany(
+                """INSERT OR IGNORE INTO shot_fact
+                     (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
+                      wind_speed, wind_dir_deg, shooting_mode, bow_type, video_ref, shot_time_utc,
+                      shot_id, score_id, lane, release_time_utc, hit_time_utc, flight_time_ms, inner_ten)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                data,
+            )
+            self._conn.commit()
+            return cur.rowcount
 
     def session_exists(self, session_id: str) -> bool:
         return bool(self._query("SELECT 1 FROM session_dim WHERE session_id=?", (session_id,)))

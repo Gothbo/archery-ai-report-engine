@@ -42,7 +42,7 @@ IN_PHASE = {1, 2, 3, 4, 7}
 RAW_ONLY = {5, 6}
 SESSION_TAG = "v"  # 场次号后缀 _v01：与 SQLite 源 _01 区分
 
-_LOCK = threading.Lock()  # Database 为单连接，接收端串行处理
+_LOCK = threading.Lock()  # 接收端批次之间串行
 
 
 def _now_utc() -> str:
@@ -55,7 +55,9 @@ def _sha256(msg: dict) -> str:
 
 def ingest_messages(db: Database, messages: list[Any], on_imported=None) -> dict:
     """处理一批 v1.2 消息 → {"summary": {...}, "results": [...]}。"""
-    with _LOCK:
+    # 直接用 db.conn 开事务：整批持有 db.lock，防止其他线程（API 线程池）在事务中途用同一连接
+    # 读 / commit / rollback（真引擎联调 #1）。db 方法内部再取同一把可重入锁不会死锁。
+    with _LOCK, db.lock:
         results: list[dict] = []
         affected: set[tuple[str, str]] = set()
         for idx, msg in enumerate(messages):
