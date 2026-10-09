@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>射箭 AI 训练报告引擎</title>
+<style>
+  :root {
+    --bg: #f5f5f7;
+    --card: #ffffff;
+    --text: #1d1d1f;
+    --text-2: #6e6e73;
+    --accent: #0071e3;
+    --border: #e5e5ea;
+    --radius: 14px;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(255,255,255,0.85);
+    backdrop-filter: saturate(180%) blur(20px);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; font-weight: 600; margin-right: auto; }
+  .segmented {
+    display: inline-flex; background: #e8e8ed; border-radius: 8px; padding: 2px;
+  }
+  .segmented button {
+    border: none; background: transparent; padding: 6px 16px;
+    font-size: 13px; color: var(--text-2); border-radius: 7px; cursor: pointer;
+    font-family: inherit;
+  }
+  .segmented button.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
+  .panel {
+    background: var(--card); border-radius: var(--radius);
+    padding: 18px 20px; margin-bottom: 16px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+  }
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  select, input, textarea {
+    font-family: inherit; font-size: 14px; color: var(--text);
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    padding: 7px 10px; outline: none;
+  }
+  select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+  .label { font-size: 12px; color: var(--text-2); margin-right: -2px; }
+  button.primary {
+    font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
+    background: var(--accent); border: none; border-radius: 8px;
+    padding: 8px 18px; cursor: pointer;
+  }
+  button.primary:hover { background: #0077ed; }
+  button.primary:disabled { background: #c7c7cc; cursor: default; }
+  button.ghost {
+    font-family: inherit; font-size: 13px; color: var(--text);
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 12px; cursor: pointer;
+  }
+  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  .granularity-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  .gran-btn {
+    font-family: inherit; font-size: 14px; font-weight: 500;
+    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 20px; cursor: pointer; color: var(--text);
+  }
+  .gran-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .gran-btn:disabled { color: #c7c7cc; border-color: #ececf0; cursor: default; }
+  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .report-card { margin-bottom: 12px; }
+  .report-card h3 { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+  .report-card p { font-size: 15px; line-height: 1.6; }
+  .meta { font-size: 12px; color: var(--text-2); margin-top: 12px; line-height: 1.7; }
+  .empty {
+    text-align: center; color: var(--text-2); font-size: 14px; padding: 48px 0;
+  }
+  .note { border-top: 1px solid var(--border); padding: 10px 0; display: flex; gap: 12px; align-items: baseline; }
+  .note:first-child { border-top: none; }
+  .note .type { font-size: 12px; color: var(--accent); font-weight: 600; min-width: 64px; }
+  .note .content { font-size: 14px; line-height: 1.5; flex: 1; }
+  .note .who { font-size: 12px; color: var(--text-2); min-width: 40px; text-align: right; }
+  .note .del { font-size: 12px; color: #c7c7cc; background: none; border: none; cursor: pointer; font-family: inherit; }
+  .note .del:hover { color: #ff3b30; }
+  .memory { font-size: 13px; line-height: 1.6; padding: 8px 0; border-top: 1px solid var(--border); }
+  .memory:first-child { border-top: none; }
+  .memory .k { color: var(--text-2); }
+  .add-note { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+  .add-note select, .add-note input { flex: 1; min-width: 120px; }
+  .add-note input.content-input { flex: 3; }
+  .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
+  #status { font-size: 12px; color: var(--text-2); }
+  /* ---- B1-6 对话窗：消息列表 / 折叠溯源 / 建议记录卡片（零依赖原生实现）---- */
+  .chat-box { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; padding: 4px 2px; }
+  .msg { display: flex; }
+  .msg.user { justify-content: flex-end; }
+  .msg.assistant { justify-content: flex-start; }
+  .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
+  .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.assistant .bubble { background: #f0f0f2; color: var(--text); border-bottom-left-radius: 4px; }
+  .bubble .degraded { font-size: 12px; color: #b2501a; margin-top: 6px; }
+  .chat-foot { display: flex; gap: 8px; margin-top: 12px; }
+  .chat-foot input { flex: 1; }
+  details.sources { margin-top: 8px; font-size: 12px; }
+  details.sources summary { color: var(--text-2); cursor: pointer; user-select: none; }
+  details.sources ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); line-height: 1.7; }
+  details.sources .src-type { color: var(--accent); font-weight: 600; }
+  .note-card {
+    margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
+    padding: 8px 12px; font-size: 12px; background: #fbfbfd;
+  }
+  .note-card .nc-head { color: var(--text-2); margin-bottom: 4px; }
+  .note-card .nc-content { font-size: 13px; line-height: 1.5; }
+  .note-card .nc-badge { float: right; color: var(--accent); font-size: 11px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>射箭 AI 训练报告引擎</h1>
+  <div class="segmented" id="viewSwitch">
+    <button data-view="coach" class="active">教练视图</button>
+    <button data-view="athlete">运动员视图</button>
+  </div>
+</header>
+
+<main>
+  <div class="panel">
+    <div class="row">
+      <span class="label">运动员</span>
+      <select id="athleteSelect" style="min-width:180px"><option value="">加载中…</option></select>
+      <span class="label" id="profileInfo"></span>
+      <span id="status" style="margin-left:auto"></span>
+    </div>
+    <div class="row" style="margin-top:12px" id="windowRow">
+      <span class="label">场次</span>
+      <select id="sessionSelect" style="min-width:200px"></select>
+    </div>
+    <div class="granularity-bar">
+      <button class="gran-btn" data-g="daily">日报告</button>
+      <button class="gran-btn" data-g="weekly">周报告</button>
+      <button class="gran-btn" data-g="monthly">月报告</button>
+      <button class="gran-btn" data-g="quarterly">季报告</button>
+      <button class="gran-btn" data-g="yearly">年报告</button>
+      <input id="windowInput" style="width:130px;margin-left:8px" placeholder="窗口（默认当前）">
+      <span class="label" id="windowHint"></span>
+    </div>
+  </div>
+
+  <div id="reportPanel" class="panel" style="display:none">
+    <div class="section-title" id="reportHead"></div>
+    <div id="reportBody"></div>
+    <div class="meta" id="reportMeta"></div>
+  </div>
+  <div id="reportEmpty" class="empty">选择运动员，点击上方按钮生成报告</div>
+
+  <div class="two-col">
+    <div class="panel">
+      <div class="section-title">备注</div>
+      <div id="notesList"><div class="empty" style="padding:16px 0">暂无备注</div></div>
+      <div class="add-note">
+        <select id="noteType">
+          <option value="injury">伤病</option>
+          <option value="goal">训练目标</option>
+          <option value="coach_obs">教练观察</option>
+        </select>
+        <input id="noteContent" class="content-input" placeholder="录入内容…">
+        <button class="primary" id="addNoteBtn">添加</button>
+      </div>
+    </div>
+    <div class="panel">
+      <div class="section-title">历史结论沉淀</div>
+      <div id="memoriesList"><div class="empty" style="padding:16px 0">暂无结论沉淀</div></div>
+    </div>
+  </div>
+
+  <div class="panel" id="chatPanel">
+    <div class="section-title">对话问询</div>
+    <div class="row" style="margin-bottom:10px">
+      <span class="label">引用报告</span>
+      <select id="chatReportSelect" style="min-width:220px"><option value="">加载中…</option></select>
+    </div>
+    <div class="chat-box" id="chatMessages">
+      <div class="empty" style="padding:20px 0">选择运动员后，可就训练表现提问（需先生成一份报告）</div>
+    </div>
+    <div class="chat-foot">
+      <input id="chatInput" placeholder="例如：这周为什么进步了？" maxlength="200">
+      <button class="primary" id="chatSendBtn">发送</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let view = 'coach';
+let athletes = [];
+let athleteId = null;
+let sessions = [];
+let lastRequest = null; // 最近一次生成的粒度：切换视角时按新视角重取同一窗口
+
+function api(path, opts) {
+  return fetch(path, opts).then(async (res) => {
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || ('HTTP ' + res.status));
+    return data;
+  });
+}
+
+function isoWeek(d) {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = (date.getUTCDay() + 6) % 7;
+  date.setUTCDate(date.getUTCDate() - dayNum + 3);
+  const firstThursday = new Date(Date.UTC(date.getUTCFullYear(), 0, 4));
+  const firstDayNum = (firstThursday.getUTCDay() + 6) % 7;
+  firstThursday.setUTCDate(firstThursday.getUTCDate() - firstDayNum + 3);
+  const week = 1 + Math.round((date - firstThursday) / (7 * 24 * 3600 * 1000));
+  return date.getUTCFullYear() + '-W' + String(week).padStart(2, '0');
+}
+
+function currentWindow() {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = now.getMonth() + 1;
+  const q = Math.floor((m - 1) / 3) + 1;
+  return {
+    week: isoWeek(now),
+    month: y + '-' + String(m).padStart(2, '0'),
+    quarter: y + 'Q' + q,
+    year: String(y),
+  };
+}
+
+function loadAthletes() {
+  api('/api/v1/athletes').then((r) => {
+    athletes = r.athletes || [];
+    const sel = $('athleteSelect');
+    sel.innerHTML = '';
+    if (!athletes.length) {
+      sel.innerHTML = '<option value="">（无运动员，请先导入数据）</option>';
+      return;
+    }
+    athletes.forEach((a) => {
+      const opt = document.createElement('option');
+      opt.value = a.athlete_id;
+      opt.textContent = a.name + (a.bow_type ? ' · ' + a.bow_type : '');
+      sel.appendChild(opt);
+    });
+    // 默认选中「最近有训练」的运动员：列表按姓名排序，取第一个可能落到久未训练的档案，
+    // 打开即「样本不足」。last_session_utc 为空的排到最后。
+    const pick = athletes.slice().sort((a, b) =>
+      (b.last_session_utc || '').localeCompare(a.last_session_utc || '')
+    )[0];
+    sel.value = pick.athlete_id;
+    onAthleteChange();
+  }).catch((e) => { $('status').textContent = '加载失败：' + e.message; });
+}
+
+function onAthleteChange() {
+  athleteId = $('athleteSelect').value;
+  if (!athleteId) return;
+  $('status').textContent = '加载中…';
+  $('reportEmpty').style.display = '';
+  $('reportPanel').style.display = 'none';
+  lastRequest = null; // 换了运动员就丢弃上一份报告的窗口，避免切视角时误触发重取
+  api('/api/v1/athletes/' + athleteId).then((r) => {
+    const p = r.profile || {};
+    const bits = [];
+    if (p.level) bits.push(p.level);
+    if (p.bow_type) bits.push(p.bow_type);
+    if (p.age) bits.push(p.age + '岁');
+    $('profileInfo').textContent = bits.join(' · ');
+    $('status').textContent = '';
+  }).catch(() => { $('status').textContent = ''; });
+
+  api('/api/v1/athletes/' + athleteId + '/sessions').then((r) => {
+    sessions = r.sessions || [];
+    const sel = $('sessionSelect');
+    sel.innerHTML = '';
+    if (!sessions.length) {
+      sel.innerHTML = '<option value="">（无场次）</option>';
+      return;
+    }
+    sessions.slice().reverse().forEach((s) => {
+      const opt = document.createElement('option');
+      opt.value = s.session_id;
+      const t = (s.session_time_utc || '').slice(0, 10);
+      opt.textContent = s.session_id + ' · ' + t + ' · ' + (s.shot_count || 0) + '箭';
+      sel.appendChild(opt);
+    });
+    sel.value = sessions[sessions.length - 1].session_id;
+  });
+
+  resetChat();
+  refreshSidePanels();
+  loadChatReports();
+}
+
+function resetChat() {
+  // 换运动员必须清空问答：否则上一位运动员的对话留在屏幕上，容易被误读成本人的数据
+  $('chatMessages').innerHTML =
+    '<div class="empty" style="padding:20px 0">选择运动员后，可就训练表现提问（需先生成一份报告）</div>';
+}
+
+function refreshSidePanels() {
+  if (!athleteId) return;
+  api('/api/v1/athletes/' + athleteId + '/notes?view=' + view).then((r) => {
+    const box = $('notesList');
+    const notes = r.notes || [];
+    if (!notes.length) { box.innerHTML = '<div class="empty" style="padding:16px 0">暂无备注</div>'; return; }
+    box.innerHTML = notes.map((n) =>
+      '<div class="note"><span class="type">' + typeLabel(n.note_type) + '</span>' +
+      '<span class="content">' + esc(n.content) + '</span>' +
+      '<span class="who">' + esc(n.author_role || '') + '</span>' +
+      '<button class="del" data-id="' + n.note_id + '">删除</button></div>'
+    ).join('');
+    box.querySelectorAll('.del').forEach((b) => b.onclick = () => deleteNote(b.dataset.id));
+  }).catch((e) => { $('notesList').innerHTML = '<div class="empty">加载失败</div>'; });
+
+  api('/api/v1/athletes/' + athleteId + '/memories').then((r) => {
+    const box = $('memoriesList');
+    const ms = r.memories || [];
+    if (!ms.length) { box.innerHTML = '<div class="empty" style="padding:16px 0">暂无结论沉淀</div>'; return; }
+    box.innerHTML = ms.slice(0, 8).map((m) =>
+      '<div class="memory"><span class="k">' + (G_NAMES[m.granularity] || m.granularity) +
+      (m.window_key ? ' · ' + esc(windowLabel(m)) : '') + '</span>：' +
+      esc(m.conclusion || m.summary || '') + '</div>'
+    ).join('');
+  }).catch(() => {});
+}
+
+function typeLabel(t) {
+  return { injury: '伤病', goal: '目标', coach_obs: '教练观察' }[t] || t;
+}
+
+/* ---- B1-6 对话窗：引用已生成报告 → ask → 回答 + 折叠溯源 + 建议记录卡片 ---- */
+const G_NAMES = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
+let chatReports = [];
+
+function windowLabel(x) {
+  const k = String(x.window_key || '');
+  return x.granularity === 'daily' ? k.replace(/^daily:/, '') : k;
+}
+
+function loadChatReports(preferKey) {
+  if (!athleteId) return;
+  const sel = $('chatReportSelect');
+  const prev = chatReports[parseInt(sel.value, 10)];
+  const keepKey = preferKey || (prev ? prev.granularity + '|' + prev.window_key : '');
+  sel.innerHTML = '<option value="">加载中…</option>';
+  api('/api/v1/athletes/' + athleteId + '/reports').then((r) => {
+    // 同一窗口只保留最新一份：重生成会留下多行缓存，否则下拉被重复项撑爆（实测周报重复 37 条）。
+    // 接口按 generated_at_utc DESC 返回，故每个窗口首次出现即为最新。
+    const seen = {};
+    chatReports = (r.reports || []).filter((x) => {
+      const k = x.granularity + '|' + x.window_key;
+      if (seen[k]) return false;
+      seen[k] = true;
+      return true;
+    });
+    if (!chatReports.length) {
+      sel.innerHTML = '<option value="">（请先生成一份报告）</option>';
+      $('chatSendBtn').disabled = true;
+      return;
+    }
+    sel.innerHTML = chatReports.map((x, i) =>
+      '<option value="' + i + '">' + (G_NAMES[x.granularity] || x.granularity) + ' · ' +
+      esc(windowLabel(x)) + ' · ' + esc((x.generated_at_utc || '').slice(0, 10)) + '</option>'
+    ).join('');
+    // 优先选中刚生成的那份；否则沿用原选中项；再否则取最新一份
+    let idx = -1;
+    if (keepKey) chatReports.forEach((x, i) => {
+      if (idx < 0 && x.granularity + '|' + x.window_key === keepKey) idx = i;
+    });
+    sel.value = String(idx >= 0 ? idx : 0);
+    $('chatSendBtn').disabled = false;
+  }).catch(() => {
+    sel.innerHTML = '<option value="">（加载失败）</option>';
+    $('chatSendBtn').disabled = true;
+  });
+}
+
+function sendChat() {
+  const q = $('chatInput').value.trim();
+  if (!q || !athleteId || $('chatSendBtn').disabled) return;
+  $('chatInput').value = '';
+  addMsg('user', q);
+  const pending = addMsg('assistant', '思考中…');
+  const body = { question: q, view: view };
+  const rep = chatReports[parseInt($('chatReportSelect').value, 10)];
+  if (rep) { body.granularity = rep.granularity; body.window_key = rep.window_key; }
+  api('/api/v1/athletes/' + athleteId + '/ask', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then((resp) => {
+    pending.innerHTML = renderAnswer(resp);
+    scrollChat();
+  }).catch((e) => {
+    pending.innerHTML = '<span class="degraded">问询失败：' + esc(e.message) + '</span>';
+  });
+}
+
+function addMsg(role, text) {
+  const box = $('chatMessages');
+  const empty = box.querySelector('.empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble';
+  bubble.textContent = text;
+  div.appendChild(bubble);
+  box.appendChild(div);
+  scrollChat();
+  return bubble;
+}
+
+function renderAnswer(resp) {
+  // 调用方（addMsg）返回的就是 .bubble 容器，这里只填内容，
+  // 否则会渲染成 bubble 套 bubble，答案被套上两层内边距
+  const html = [];
+  html.push(esc(resp.answer || ''));
+  if (resp.degraded) {
+    const reason = resp.reason || '';
+    html.push('<div class="degraded">降级：' + esc(reason) + '</div>');
+  }
+  const srcs = resp.sources || [];
+  if (srcs.length) {
+    html.push('<details class="sources"><summary>溯源（' + srcs.length + '）</summary><ul>');
+    srcs.forEach((s) => {
+      html.push('<li><span class="src-type">' + esc(s.type || '') + '</span> · ' +
+        esc(s.title || '') + '<br>' + esc((s.summary || '').slice(0, 120)) + '</li>');
+    });
+    html.push('</ul></details>');
+  }
+  const sn = resp.suggested_note;
+  if (sn) {
+    html.push('<div class="note-card"><span class="nc-badge">只读建议</span>' +
+      '<div class="nc-head">' + esc(typeLabel(sn.note_type)) + ' · 来源 ' + esc(sn.source || '') + '</div>' +
+      '<div class="nc-content">' + esc(sn.content) + '</div></div>');
+  }
+  return html.join('');
+}
+
+function scrollChat() {
+  const box = $('chatMessages');
+  box.scrollTop = box.scrollHeight;
+}
+
+$('chatSendBtn').onclick = sendChat;
+$('chatInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendChat(); });
+
+function esc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => (
+    { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+}
+
+function windowParams(g) {
+  const manual = $('windowInput').value.trim();
+  if (g === 'daily') return { session_id: $('sessionSelect').value || '' };
+  if (manual) {
+    const hints = { weekly: '2026-W34', monthly: '2026-08', quarterly: '2026Q3', yearly: '2026' };
+    $('windowHint').textContent = '格式：' + hints[g];
+    return { [g === 'weekly' ? 'week' : g === 'monthly' ? 'month' : g === 'quarterly' ? 'quarter' : 'year']: manual };
+  }
+  const w = currentWindow();
+  $('windowHint').textContent = '';
+  if (g === 'weekly') return { week: w.week };
+  if (g === 'monthly') return { month: w.month };
+  if (g === 'quarterly') return { quarter: w.quarter };
+  return { year: w.year };
+}
+
+function generate(g) {
+  if (!athleteId) return;
+  const p = windowParams(g);
+  const qs = new URLSearchParams({ view: view, refresh: '1', ...p }).toString();
+  $('status').textContent = '生成中…';
+  api('/api/v1/athletes/' + athleteId + '/reports/' + g + '?' + qs, { method: 'POST' })
+    .then((r) => {
+      lastRequest = g;
+      renderReport(r);
+      // 生成后立刻刷新「引用报告」下拉并选中这份：否则新报告不在列表里，
+      // 此前没有任何报告时对话输入框会一直处于禁用状态。
+      loadChatReports(r.granularity ? r.granularity + '|' + r.window_key : '');
+      $('status').textContent = r.cached ? '已读取缓存' : '已生成';
+    })
+    .catch((e) => { $('status').textContent = ''; alert('生成失败：' + e.message); });
+}
+
+document.querySelectorAll('.gran-btn').forEach((b) => {
+  b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
+});
+
+function renderReport(r) {
+  $('reportEmpty').style.display = 'none';
+  $('reportPanel').style.display = '';
+  const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
+  $('reportHead').textContent =
+    (r.athlete ? r.athlete.name : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
+    (view === 'coach' ? ' · 教练视角' : ' · 运动员视角');
+
+  const body = $('reportBody');
+  body.innerHTML = '';
+  (r.sections || []).forEach((s) => {
+    const card = document.createElement('div');
+    card.className = 'report-card';
+    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
+      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+    body.appendChild(card);
+  });
+
+  const meta = [];
+  const ce = r.coach_extra || {};
+  if (ce.rolling_baseline) {
+    const rb = ce.rolling_baseline;
+    meta.push('滚动基线：最近 ' + rb.n_shots + ' 箭 · 均环 ' + rb.avg_score);
+  }
+  if (ce.warnings && ce.warnings.length) meta.push('警告：' + ce.warnings.join('；'));
+  if (r.suggestions && r.suggestions.length) meta.push('建议：' + r.suggestions.join('；'));
+  if (r.anchor_rebuild_hint && r.anchor_rebuild_hint.reason) meta.push('锚点提示：' + r.anchor_rebuild_hint.reason);
+  if (r.generated_at_utc) meta.push('生成时间(UTC)：' + r.generated_at_utc);
+  $('reportMeta').textContent = meta.join('\n');
+}
+
+function deleteNote(id) {
+  api('/api/v1/athletes/' + athleteId + '/notes/' + id, { method: 'DELETE' })
+    .then(() => refreshSidePanels())
+    .catch((e) => alert('删除失败：' + e.message));
+}
+
+document.querySelectorAll('#viewSwitch button').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('#viewSwitch button').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    view = b.dataset.view;
+    refreshSidePanels();
+    // 报告正文按视角过滤备注（教练观察仅教练可见），换视角必须重取同一窗口，
+    // 否则运动员视图会继续显示教练视角那份正文
+    if (lastRequest) generate(lastRequest);
+  };
+});
+
+$('athleteSelect').onchange = onAthleteChange;
+$('addNoteBtn').onclick = () => {
+  const content = $('noteContent').value.trim();
+  if (!content || !athleteId) return;
+  const authorRole = view === 'coach' ? 'coach' : 'athlete';
+  api('/api/v1/athletes/' + athleteId + '/notes', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      note_type: $('noteType').value, content: content,
+      author_role: authorRole, actor_id: athleteId,
+    }),
+  }).then(() => { $('noteContent').value = ''; refreshSidePanels(); })
+    .catch((e) => alert('添加失败：' + e.message));
+};
+
+loadAthletes();
+</script>
+</body>
+</html>
