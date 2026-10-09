@@ -417,3 +417,42 @@ class TestPrimaryBowAggregation:
         draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
         assert "样本不足" in self._section(draft.report, "sample_gate")["content"][0]
         db.close()
+
+
+class TestWindowRangeMetadata:
+    """T5 验收：报告体含 window_start / window_end，取值与窗口边界一致（daily 用场次时间）。"""
+
+    def test_daily_uses_session_time(self, engine_env):
+        """daily：本期区间取场次时间（点区间，start == end）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert rep["window_start"] == "2026-08-03T01:00:00.000Z"
+        assert rep["window_end"] == "2026-08-03T01:00:00.000Z"
+        db.close()
+
+    def test_weekly_matches_window_bounds(self, engine_env):
+        """weekly：本期区间 = 窗口 [start, end) 边界（本地时区切窗 → UTC 存储，左闭右开）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach").report
+        assert rep["window_start"] == "2026-08-02T16:00:00.000Z"  # 2026-08-03 00:00 (Asia/Shanghai)
+        assert rep["window_end"] == "2026-08-09T16:00:00.000Z"    # 2026-08-10 00:00（右开）
+        db.close()
+
+    def test_monthly_quarterly_yearly_match_window_bounds(self, engine_env):
+        """monthly/quarterly/yearly：本期区间同样等于各自窗口 [start, end) 边界。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        expected = {
+            ("monthly", "2026-08"): ("2026-07-31T16:00:00.000Z", "2026-08-31T16:00:00.000Z"),
+            ("quarterly", "2026Q3"): ("2026-06-30T16:00:00.000Z", "2026-09-30T16:00:00.000Z"),
+            ("yearly", "2026"): ("2025-12-31T16:00:00.000Z", "2026-12-31T16:00:00.000Z"),
+        }
+        for (gran, key), (start, end) in expected.items():
+            rep = build_report(db, ATHLETE, gran, key, view="coach").report
+            assert (rep["window_start"], rep["window_end"]) == (start, end), gran
+        db.close()

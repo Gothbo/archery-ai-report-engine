@@ -73,6 +73,16 @@ def _primary_bow(shots: list[dict]) -> tuple[str | None, list[tuple[str, int]]]:
     return ranked[0][0], ranked[1:]
 
 
+def _window_range(db: Database, granularity: str, window_key: str,
+                  session_id: str | None) -> tuple[str | None, str | None]:
+    """窗口时间范围（UTC ISO）：daily 取场次时间（窗口退化为该时刻，start == end）；其余取窗口 [start, end) 边界（T5/D8）。"""
+    if granularity == "daily":
+        row = db.session_of(session_id) if session_id else None
+        t = row["session_time_utc"] if row else None
+        return t, t
+    return window_bounds(get_config(), granularity, window_key)
+
+
 def _calc_metrics(shots: list[dict]) -> dict:
     v = metric_vector(shots)
     scores = [s["score"] for s in shots]
@@ -186,6 +196,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 训练次数按主弓种过滤：仅统计贡献了主弓种箭的场次，非主弓种场次不虚增样本门槛
     session_ids = sorted({s["session_id"] for s in shots})
     m = _calc_metrics(shots)
+    window_start, window_end = _window_range(db, granularity, window_key, session_id)
 
     profile = db.get_profile(athlete_id)
     # 锚点/滚动基线按主弓种取（ADR-0004：不同项目基线不混用）
@@ -359,6 +370,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "report_id": report_id,
         "granularity": granularity,
         "window_key": window_key,
+        "window_start": window_start,
+        "window_end": window_end,
         "athlete": {"id": athlete_id, "name": profile["name"] if profile else "运动员"},
         "view": view,
         "cached": False,
