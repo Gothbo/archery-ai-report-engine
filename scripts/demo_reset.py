@@ -27,7 +27,7 @@ def main():
     db = get_database(cfg)
 
     # 1) 清空张明旧数据（幂等：可能不存在）
-    deleted_shots = db.query("SELECT COUNT(*) AS c FROM shot_fact WHERE athlete_id=?", (ATHLETE_ID,))[0]["c"]
+    deleted_shots = db._query("SELECT COUNT(*) AS c FROM shot_fact WHERE athlete_id=?", (ATHLETE_ID,))[0]["c"]
     for table in ("shot_fact", "session_dim", "baseline_snapshots", "report_cache",
                   "report_memories", "memory_notes"):
         db._execute(f"DELETE FROM {table} WHERE athlete_id=?", (ATHLETE_ID,))
@@ -46,11 +46,11 @@ def main():
           f"source={snap['source_session_id']} dist={snap['distance_m']}m wind={snap['avg_wind']}")
 
     # 4) 校验
-    n = db.query("SELECT COUNT(*) AS c FROM shot_fact WHERE athlete_id=?", (ATHLETE_ID,))[0]["c"]
-    anchors = db.query("SELECT COUNT(*) AS c FROM baseline_snapshots WHERE athlete_id=? AND snap_type='anchor'",
-                       (ATHLETE_ID,))[0]["c"]
-    rollings = db.query("SELECT COUNT(*) AS c FROM baseline_snapshots WHERE athlete_id=? AND snap_type='rolling'",
+    n = db._query("SELECT COUNT(*) AS c FROM shot_fact WHERE athlete_id=?", (ATHLETE_ID,))[0]["c"]
+    anchors = db._query("SELECT COUNT(*) AS c FROM baseline_snapshots WHERE athlete_id=? AND snap_type='anchor'",
                         (ATHLETE_ID,))[0]["c"]
+    rollings = db._query("SELECT COUNT(*) AS c FROM baseline_snapshots WHERE athlete_id=? AND snap_type='rolling'",
+                         (ATHLETE_ID,))[0]["c"]
     print(f"4) 校验：张明箭数 {n}（预期 43 场 × 30 = 1290）、锚点 {anchors}、滚动快照 {rollings}")
 
 

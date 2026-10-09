@@ -21,7 +21,7 @@ def _ingest_and_report(client, *, week="2026-W33", anchor=True):
     client.post("/api/v1/ingest/mock")
     if anchor:
         db = get_database()
-        sid = db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(db, ATHLETE, sid)
     r = client.post(f"/api/v1/athletes/{ATHLETE}/reports/weekly",
                     params={"week": week, "view": "coach", "refresh": "1"})

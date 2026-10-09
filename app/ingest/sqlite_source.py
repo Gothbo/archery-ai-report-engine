@@ -24,16 +24,15 @@ from typing import Iterator
 from zoneinfo import ZoneInfo
 
 from app.config import get_config
+from app.ingest.align import HR_WINDOW_MS, WIND_WINDOW_MS, nearest_in_window
 from app.ingest.base import SessionRaw, ShotRaw, Source
+from app.timeutil import format_utc_ms
 
 logger = logging.getLogger("engine.ingest.sqlite")
 
 _SHOT_TABLE = "ScoreInfoNew"
 _HR_TABLE = "HeartRateData"
 _WIND_TABLE = "WindSpeedDirection"
-
-HR_WINDOW_MS = 30_000
-WIND_WINDOW_MS = 60_000
 
 
 def _local_to_utc_ms(local_dt: datetime) -> int:
@@ -56,9 +55,9 @@ def _parse_local(ts: str) -> datetime | None:
 
 
 def _to_utc_iso_ms(local_dt: datetime) -> str:
+    """display_sys 本地墙钟 → UTC ISO 毫秒串（格式化口径见 timeutil）。"""
     tz = ZoneInfo(get_config().timezone)
-    utc = local_dt.replace(tzinfo=tz).astimezone(timezone.utc)
-    return utc.strftime("%Y-%m-%dT%H:%M:%S.") + f"{utc.microsecond // 1000:03d}Z"
+    return format_utc_ms(local_dt.replace(tzinfo=tz))
 
 
 def athlete_id_of(identity) -> str:
@@ -77,24 +76,6 @@ def _to_float(v) -> float | None:
         return float(v)
     except (TypeError, ValueError):
         return None
-
-
-def _nearest(shot_ms: int, samples: list[tuple[int, int]], window_ms: int) -> int | None:
-    best = None
-    for ts, val in samples:
-        gap = abs(ts - shot_ms)
-        if gap <= window_ms and (best is None or gap < abs(best[0] - shot_ms)):
-            best = (ts, val)
-    return best[1] if best else None
-
-
-def _nearest_wind(shot_ms: int, samples: list[tuple[int, float, float]], window_ms: int) -> tuple[float, float] | None:
-    best = None
-    for ts, speed, deg in samples:
-        gap = abs(ts - shot_ms)
-        if gap <= window_ms and (best is None or gap < abs(best[0] - shot_ms)):
-            best = (ts, speed, deg)
-    return (best[1], best[2]) if best else None
 
 
 class SQLiteSource(Source):
@@ -164,6 +145,8 @@ class SQLiteSource(Source):
             for i, r in enumerate(cluster, start=1):
                 dt = _parse_local(r["ShootingTime"])
                 shot_ms = _local_to_utc_ms(dt) if dt else None
+                hr_hit = nearest_in_window(shot_ms, hr_map.get(aid, []), HR_WINDOW_MS) if shot_ms else None
+                wind_hit = nearest_in_window(shot_ms, wind_map.get(aid, []), WIND_WINDOW_MS) if shot_ms else None
                 shots.append(ShotRaw(
                     athlete_id=aid,
                     session_id=session_id,
@@ -173,18 +156,14 @@ class SQLiteSource(Source):
                     x_mm=_to_float(r["X_"]),
                     y_mm=_to_float(r["Y_"]),
                     mcr_t=None,
-                    hr=_nearest(shot_ms, hr_map.get(aid, []), HR_WINDOW_MS) if shot_ms else None,
-                    wind_speed=None,
-                    wind_dir_deg=None,
+                    hr=hr_hit[1] if hr_hit else None,
+                    wind_speed=wind_hit[1] if wind_hit else None,
+                    wind_dir_deg=wind_hit[2] if wind_hit else None,
                     shooting_mode=store.shot_type_map.get(str(r["ShotType"]), 1),
                     bow_type=store.project_bow_map.get(str(r["ProjectId"]), f"proj{r['ProjectId']}"),
                     video_ref=None,
                     shot_time_utc=_to_utc_iso_ms(dt) if dt else "",
                 ))
-                if shot_ms:
-                    nearest = _nearest_wind(shot_ms, wind_map.get(aid, []), WIND_WINDOW_MS)
-                    if nearest:
-                        shots[-1].wind_speed, shots[-1].wind_dir_deg = nearest
 
             yield SessionRaw(
                 session_id=session_id,

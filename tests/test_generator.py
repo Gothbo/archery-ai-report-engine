@@ -3,21 +3,136 @@
 import pytest
 
 from app.config import get_config
-from app.reports.generator import generate_report
+from app.reports.generator import build_report, generate_report
 from app.reports.window import window_of_shot
 from app.store.database import Database
 from tests.conftest import ATHLETE, seed_anchor, seed_session
 
+CANONICAL_SIX = ["window_score", "level", "data_integrity", "wind_bands", "sample_gate", "auxiliary"]
+
+
+def _keys(rep: dict) -> list[str]:
+    return [s["key"] for s in rep["sections"]]
+
+
+def _texts(rep: dict) -> str:
+    return " ".join(" ".join(str(c) for c in s["content"]) for s in rep["sections"])
+
+
+class TestSixSectionSkeleton:
+    """T1 验收：build_report() 恒输出固定六段骨架，顺序即优先级；缺失即标注。"""
+
+    def test_canonical_six_keys_and_order(self, engine_env):
+        """正常窗口（含风速）：六段 key 恒出现且顺序固定（score→level→integrity→wind→gate→aux）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert _keys(draft.report) == CANONICAL_SIX
+        db.close()
+
+    def test_no_notes_yields_explicit_empty_auxiliary(self, engine_env):
+        """无备注：auxiliary 照常出现，内容为显式空说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        aux = [s for s in draft.report["sections"] if s["key"] == "auxiliary"][0]
+        assert aux["content"] and "暂无" in aux["content"][0]
+        db.close()
+
+    def test_no_wind_merges_into_data_integrity(self, engine_env):
+        """无风速数据：wind_bands 不单独成段，缺失并入 data_integrity 显式说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=None)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        keys = _keys(draft.report)
+        assert "wind_bands" not in keys
+        integrity = [s for s in draft.report["sections"] if s["key"] == "data_integrity"][0]
+        assert "无风速数据" in integrity["content"][0]
+        db.close()
+
+    def test_with_wind_data_emits_wind_bands(self, engine_env):
+        """有风速数据：wind_bands 独立成段，data_integrity 不重复标注缺失。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30,
+                     wind=[0.5 + (i % 5) * 0.3 for i in range(30)])
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        keys = _keys(draft.report)
+        assert "wind_bands" in keys
+        integrity = [s for s in draft.report["sections"] if s["key"] == "data_integrity"][0]
+        assert "无风速数据" not in integrity["content"][0]
+        db.close()
+
+    def test_sample_gate_says_ok_when_met(self, engine_env):
+        """样本达标：sample_gate 显式出现「样本达标」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        gate = [s for s in draft.report["sections"] if s["key"] == "sample_gate"][0]
+        assert "样本达标" in gate["content"][0]
+        db.close()
+
+    def test_sample_gate_warns_when_below(self, engine_env):
+        """样本不达标：sample_gate 出提示（仍不出判定词）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 20
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        gate = [s for s in draft.report["sections"] if s["key"] == "sample_gate"][0]
+        assert "样本不足" in gate["content"][0]
+        db.close()
+
+    def test_empty_window_is_explicitly_flagged(self, engine_env):
+        """窗口无任何箭：各段不静默消失，data_integrity 显式说明空窗口。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        assert _keys(draft.report) == [k for k in CANONICAL_SIX if k != "wind_bands"]
+        texts = _texts(draft.report)
+        assert "空窗口" in texts
+        db.close()
+
+    def test_build_report_is_side_effect_free(self, engine_env):
+        """build_report() 不写库：无缓存行、无结论记忆。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert db.cached_reports_of_athlete(ATHLETE) == []
+        assert db.list_memories(ATHLETE) == []
+        assert draft.conclusions == []
+        db.close()
+
+    def test_judgement_landed_in_level_section(self, engine_env):
+        """有锚点且 MDC 判定存在：判定结论落入 level 段，不再以 avg_vs_anchor 等散段出现。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        keys = _keys(draft.report)
+        assert keys == CANONICAL_SIX
+        assert not {"avg_vs_anchor", "mcr_vs_anchor", "dispersion_vs_anchor"} & set(keys)
+        level = [s for s in draft.report["sections"] if s["key"] == "level"][0]
+        assert "较锚点" in level["content"][0] or "与锚点" in level["content"][0]
+        db.close()
+
 
 class TestIngestIdempotency:
     def test_reimport_skips_shots(self, mock_db):
-        n1 = mock_db.query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
+        n1 = mock_db._query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
         # 重新导入同一 mock 源 → 幂等（0 新增）
         from app.ingest import ingest_source
         from app.ingest.mock_source import MockSource
         from app.memory.baseline import refresh_rolling_after_import
         stats = ingest_source(mock_db, MockSource(), on_imported=refresh_rolling_after_import)
-        n2 = mock_db.query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
+        n2 = mock_db._query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
         assert stats["inserted_shots"] == 0 and stats["skipped_shots"] == 390
         assert n1 == n2
 
@@ -29,7 +144,7 @@ class TestIngestIdempotency:
 
 class TestGeneratorMock:
     def test_daily_report(self, mock_db):
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         rep = generate_report(mock_db, ATHLETE, "daily", f"daily:{sid}", session_id=sid, view="athlete")
         keys = {s["key"] for s in rep["sections"]}
         assert "window_score" in keys
@@ -60,11 +175,11 @@ class TestGeneratorMock:
         assert "sample_gate" in keys  # 390 < 1040 门槛 → 不出判定词
 
     def test_anchor_mdc_judgement_and_persistence(self, mock_db):
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(mock_db, ATHLETE, sid)
         rep = generate_report(mock_db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
         keys = {s["key"] for s in rep["sections"]}
-        assert "avg_vs_anchor" in keys  # 有锚点 → 出 MDC 段
+        assert "level" in keys  # 有锚点 → level 段出 MDC 判定
         mems = mock_db.list_memories(ATHLETE)
         assert mems, "结论应回写记忆"
         assert any(m["conclusion_type"] == "judgement" for m in mems)
@@ -75,7 +190,7 @@ class TestGeneratorMock:
         from app.ingest.mock_source import MockSource
         db = Database(degraded_env[1])
         ingest_source(db, MockSource())
-        sid = db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(db, ATHLETE, sid)
         rep = generate_report(db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
         texts = " ".join(s["content"][0] for s in rep["sections"])

@@ -3,13 +3,11 @@
 from app.ingest.align import (
     HR_WINDOW_MS,
     WIND_WINDOW_MS,
-    _nearest_int,
-    _nearest_sample,
-    _nearest_wind,
-    _parse_utc_ms,
     align_session,
+    nearest_in_window,
 )
 from app.ingest.base import SessionRaw, ShotRaw
+from app.timeutil import parse_iso_utc_ms
 
 
 def _mk_session(shots: list[ShotRaw]) -> SessionRaw:
@@ -24,16 +22,18 @@ def _shot(score: float, **kw) -> ShotRaw:
     return ShotRaw(**base)
 
 
-class TestParseUtcMs:
+class TestParseIsoUtcMs:
+    """时间解析口径（timeutil）：UTC ISO 毫秒串 → epoch 毫秒。"""
+
     def test_parse_iso_z(self):
         # 2026-08-03T09:00:00.123Z = 1785747600123 ms（UTC epoch）
-        assert _parse_utc_ms("2026-08-03T09:00:00.123Z") == 1785747600123
+        assert parse_iso_utc_ms("2026-08-03T09:00:00.123Z") == 1785747600123
 
     def test_parse_naive_as_utc(self):
-        assert _parse_utc_ms("2026-08-03T09:00:00.123") == 1785747600123
+        assert parse_iso_utc_ms("2026-08-03T09:00:00.123") == 1785747600123
 
     def test_parse_invalid(self):
-        assert _parse_utc_ms("not-a-time") is None
+        assert parse_iso_utc_ms("not-a-time") is None
 
 
 class TestAlignPassthrough:
@@ -83,9 +83,10 @@ class TestWindowMatching:
         _, rows = align_session(s, hr_samples=None, wind_samples=wind_samples)
         assert rows[0]["wind_speed"] is None
 
-    def test_nearest_helpers(self):
-        assert _nearest_int(1000, [(900, 5), (1500, 9)], 1000) == 5
-        assert _nearest_int(1000, [(2000, 9)], 500) is None
-        assert _nearest_sample(1000, [(900, 1.5)], 500) == 1.5
-        assert _nearest_wind(1000, [(900, 1.5, 45.0)], 500) == (1.5, 45.0)
-        assert _nearest_wind(1000, [(900, 1.5, 45.0)], 50) is None
+    def test_nearest_in_window(self):
+        # 窗口内取时间最近；窗口外 None；返回整条样本（附加字段随行）
+        assert nearest_in_window(1000, [(900, 5), (1500, 9)], 1000) == (900, 5)
+        assert nearest_in_window(1000, [(2000, 9)], 500) is None
+        assert nearest_in_window(1000, [(900, 1.5)], 500) == (900, 1.5)
+        assert nearest_in_window(1000, [(900, 1.5, 45.0)], 500) == (900, 1.5, 45.0)
+        assert nearest_in_window(1000, [(900, 1.5, 45.0)], 50) is None

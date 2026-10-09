@@ -61,8 +61,8 @@ def main():
     print("weekly 段:", keys)
     texts = " ".join(s["content"][0] for s in wk["sections"])
     assert "平均环" in texts
-    assert "avg_vs_anchor" not in keys  # 无锚点 → 不出 MDC 判定段
-    print("无锚点不出判定段: True")
+    assert "level" in keys and "无锚点" in texts  # 无锚点 → level 段为占位（不静默省略）
+    print("无锚点 level 占位: True")
 
     print("\n== 4b 建锚点后周报走降级模板（mdc_source=null，M4.5 前只描述不判定）==")
     st, anc = call("POST", f"/athletes/{ATHLETE}/baseline/anchor",
@@ -73,7 +73,7 @@ def main():
     st, wk2 = call("POST", f"/athletes/{ATHLETE}/reports/weekly", params={"week": "2026-W32", "refresh": "true"})
     assert st == 200
     keys2 = [s["key"] for s in wk2["sections"]]
-    assert "avg_vs_anchor" in keys2, keys2
+    assert "level" in keys2, keys2
     texts2 = " ".join(s["content"][0] for s in wk2["sections"])
     assert "未判定" in texts2 or "MDC 口径待专家共识" in texts2, texts2
     print("weekly 段:", keys2)

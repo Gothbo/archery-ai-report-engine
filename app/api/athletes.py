@@ -25,10 +25,7 @@ def list_athletes() -> dict:
     db = get_database()
     # last_session_utc：供前端默认选中「最近有训练」的运动员（列表按姓名排序，
     # 直接取第一个可能落到久未训练的档案 → 打开即「样本不足」）
-    rows = db.query(
-        "SELECT p.athlete_id, p.name, p.bow_type, p.level, "
-        "(SELECT MAX(s.session_time_utc) FROM session_dim s WHERE s.athlete_id = p.athlete_id) "
-        "AS last_session_utc FROM athlete_profile p ORDER BY p.name")
+    rows = db.athletes_with_last_session()
     return {"athletes": [dict(r) for r in rows]}
 
 

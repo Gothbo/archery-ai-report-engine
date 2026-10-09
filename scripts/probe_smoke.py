@@ -18,7 +18,7 @@ cfg = get_config()
 stats = ingest_source(db, MockSource(), on_imported=refresh_rolling_after_import)
 print("ingest stats:", stats)
 
-rows = db.query("SELECT session_id, session_time_utc FROM session_dim ORDER BY session_time_utc")
+rows = db._query("SELECT session_id, session_time_utc FROM session_dim ORDER BY session_time_utc")
 print("sessions:")
 for r in rows:
     print(" ", r["session_id"], r["session_time_utc"])
@@ -74,6 +74,6 @@ for gran, kw in [("daily", {"session_id": sid0}),
 rep2 = generate_report(db, aid, "weekly", "2026-W32", view="coach")
 print("cache hit:", rep2.get("cached"), rep2.get("report_id"))
 
-print("memories:", db.query("SELECT conclusion_key, delta_value, judge_basis FROM report_memories")[:5])
+print("memories:", db._query("SELECT conclusion_key, delta_value, judge_basis FROM report_memories")[:5])
 print("snapshots:", [(r["snap_type"], r["n_shots"], r["avg_score"]) for r in db.list_snapshots(aid)])
 db.close()

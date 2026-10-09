@@ -11,17 +11,13 @@ import sqlite3
 from pathlib import Path
 
 from app.config import EngineConfig, get_config
+from app.reports.window import WindowKey
 from app.store.schema import SCHEMA_DDL
+from app.timeutil import iso_now_utc
 
 logger = logging.getLogger("engine.store")
 
 _SINGLETON: "Database | None" = None
-
-
-def _iso_now() -> str:
-    from datetime import datetime, timezone
-
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 class Database:
@@ -47,10 +43,6 @@ class Database:
         except sqlite3.Error:
             pass
 
-    @property
-    def conn(self) -> sqlite3.Connection:
-        return self._conn
-
     # ---- 列级迁移（CREATE TABLE IF NOT EXISTS 不补列；对已存在库幂等补列）----
 
     _ADD_COLUMNS: dict[str, list[tuple[str, str]]] = {
@@ -75,10 +67,6 @@ class Database:
 
     def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         return self._conn.execute(sql, params).fetchall()
-
-    def query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
-        """公共只读查询（报告/记忆层使用）。"""
-        return self._query(sql, params)
 
     # ---- M2：事实层 ----
 
@@ -159,6 +147,59 @@ class Database:
             "SELECT * FROM session_dim WHERE athlete_id=? ORDER BY session_time_utc", (athlete_id,)
         )
 
+    def shots_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+        """窗口箭集：本地时间窗 [start, end) 内该运动员的全部箭。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? ORDER BY shot_time_utc""",
+            (athlete_id, start_iso, end_iso),
+        )
+
+    def session_ids_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[str]:
+        """窗口内的训练场次 id（样本门槛按「训练次数」计数用）。"""
+        rows = self._query(
+            """SELECT DISTINCT session_id FROM session_dim
+               WHERE athlete_id=? AND session_time_utc>=? AND session_time_utc<?""",
+            (athlete_id, start_iso, end_iso),
+        )
+        return [r["session_id"] for r in rows]
+
+    def sessions_by_ids(self, session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        marks = ",".join("?" * len(session_ids))
+        return self._query(
+            f"SELECT * FROM session_dim WHERE session_id IN ({marks})", tuple(session_ids))
+
+    def session_of(self, session_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM session_dim WHERE session_id=?", (session_id,))
+        return rows[0] if rows else None
+
+    def recent_scoring_shots(self, athlete_id: str, bow_type: str, limit: int) -> list[sqlite3.Row]:
+        """最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线口径）。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1
+               ORDER BY shot_time_utc DESC LIMIT ?""",
+            (athlete_id, bow_type, limit),
+        )
+
+    def scoring_shots_of_session(self, session_id: str) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
+
+    def bow_types_of_athlete(self, athlete_id: str) -> list[str]:
+        rows = self._query(
+            "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,))
+        return [r["bow_type"] for r in rows]
+
+    def athletes_with_last_session(self) -> list[sqlite3.Row]:
+        """档案列表 + 最近训练时间（供前端默认选中最近有训练的运动员）。"""
+        return self._query(
+            "SELECT p.athlete_id, p.name, p.bow_type, p.level, "
+            "(SELECT MAX(s.session_time_utc) FROM session_dim s WHERE s.athlete_id = p.athlete_id) "
+            "AS last_session_utc FROM athlete_profile p ORDER BY p.name")
+
     # ---- M2b：记忆层 ----
 
     def upsert_profile(self, profile: dict) -> None:
@@ -181,7 +222,7 @@ class Database:
                 profile.get("bow_type"),
                 profile.get("hand"),
                 profile.get("level"),
-                _iso_now(),
+                iso_now_utc(),
             ),
         )
 
@@ -265,7 +306,7 @@ class Database:
         """软删（B1）：DELETE → status='closed'，保留审计；归属校验 WHERE athlete_id=?。"""
         cur = self._execute(
             "UPDATE memory_notes SET status='closed', closed_at_utc=? WHERE id=? AND athlete_id=? AND status='active'",
-            (_iso_now(), note_id, athlete_id),
+            (iso_now_utc(), note_id, athlete_id),
         )
         return cur.rowcount > 0
 
@@ -308,6 +349,20 @@ class Database:
         )
         return rows[0] if rows else None
 
+    def recent_judgements(self, athlete_id: str, granularity: str, limit: int,
+                          with_delta: bool = False) -> list[sqlite3.Row]:
+        """最近 N 条同粒度 judgement（时间倒序）。
+
+        with_delta=True 只取带 delta_value 的判定（锚点重建触发④要求「提升均超 MDC」，
+        delta 为空的行不参与）。平台期识别与锚点重建共用此方法。
+        """
+        sql = ("SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?"
+               " AND conclusion_type='judgement'")
+        if with_delta:
+            sql += " AND delta_value IS NOT NULL"
+        sql += " ORDER BY generated_at_utc DESC LIMIT ?"
+        return self._query(sql, (athlete_id, granularity, limit))
+
     def list_memories(self, athlete_id: str) -> list[sqlite3.Row]:
         # window_key 取自报告缓存（report_memories 本身不存窗口键），供前端标注结论属于哪个窗口
         return self._query(
@@ -320,21 +375,27 @@ class Database:
 
     # ---- 报告缓存（B10/B12）----
 
-    def get_cached_report(self, athlete_id: str, granularity: str, window_key: str, mdc_version: str | None) -> str | None:
+    def _cached_report_ids(self, athlete_id: str, granularity: str, window_key: str,
+                           mdc_version: str | None) -> list[str]:
+        """同窗口缓存报告 id（口径版本匹配：NULL 只匹配 NULL）。查找与清理共用。"""
         rows = self._query(
             """SELECT report_id FROM report_cache
                WHERE athlete_id=? AND granularity=? AND window_key=?
                  AND (mdc_version IS ? OR mdc_version=?)""",
             (athlete_id, granularity, window_key, mdc_version, mdc_version),
         )
-        return rows[0]["report_id"] if rows else None
+        return [r["report_id"] for r in rows]
+
+    def get_cached_report(self, athlete_id: str, granularity: str, window_key: str, mdc_version: str | None) -> str | None:
+        ids = self._cached_report_ids(athlete_id, granularity, window_key, mdc_version)
+        return ids[0] if ids else None
 
     def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str, mdc_version: str | None) -> None:
         self._execute(
             """INSERT OR REPLACE INTO report_cache
                  (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc)
                VALUES (?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now()),
+            (report_id, athlete_id, granularity, window_key, mdc_version, iso_now_utc()),
         )
 
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
@@ -344,12 +405,7 @@ class Database:
         report_id 是 uuid 主键，INSERT OR REPLACE 永远只会追加，同窗口重生成会堆积（周报实测 37 行）：
         前端「引用报告」下拉被重复项撑爆，且「近 3 期 / 近 4 周」判定会读到同一份报告的重复行。
         """
-        old_ids = [r["report_id"] for r in self._query(
-            """SELECT report_id FROM report_cache
-               WHERE athlete_id=? AND granularity=? AND window_key=?
-                 AND (mdc_version IS ? OR mdc_version=?)""",
-            (athlete_id, granularity, window_key, mdc_version, mdc_version))]
-        for rid in old_ids:
+        for rid in self._cached_report_ids(athlete_id, granularity, window_key, mdc_version):
             self._execute("DELETE FROM report_memories WHERE report_id=?", (rid,))
         self._execute(
             """DELETE FROM report_cache
@@ -357,11 +413,29 @@ class Database:
                  AND (mdc_version IS ? OR mdc_version=?)""",
             (athlete_id, granularity, window_key, mdc_version, mdc_version))
 
+    def cached_report_by_id(self, report_id: str) -> sqlite3.Row | None:
+        """按 report_id 读取缓存行（GET /reports/{id} 校验报告是否仍有效）。"""
+        rows = self._query("SELECT * FROM report_cache WHERE report_id=?", (report_id,))
+        return rows[0] if rows else None
+
+    def cached_reports_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
+        """该运动员全部缓存报告，时间倒序（前端「引用报告」列表）。"""
+        return self._query(
+            "SELECT * FROM report_cache WHERE athlete_id=? ORDER BY generated_at_utc DESC",
+            (athlete_id,))
+
+    def latest_report_window(self, athlete_id: str) -> sqlite3.Row | None:
+        """最近一份已生成报告的 (granularity, window_key)（对话未指定窗口时的兜底）。"""
+        rows = self._query(
+            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=?"
+            " ORDER BY generated_at_utc DESC LIMIT 1", (athlete_id,))
+        return rows[0] if rows else None
+
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
         """B10①：同 session_id 重新导入 → 失效该场次缓存报告（daily 窗口键 = daily:<session_id>）。"""
         self._execute(
             "DELETE FROM report_cache WHERE athlete_id=? AND granularity='daily' AND window_key=?",
-            (athlete_id, f"daily:{session_id}"),
+            (athlete_id, WindowKey.daily(session_id).text),
         )
 
 

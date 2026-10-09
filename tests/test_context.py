@@ -70,7 +70,7 @@ class TestContextAssembly:
 
     def test_history_conclusion_appears(self, mock_db):
         # 建锚点 + 生成两次报告 → 有同粒度 judgement 历史结论
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(mock_db, ATHLETE, sid)
         generate_report(mock_db, ATHLETE, "weekly", "2026-W32", view="coach", force=True)
         generate_report(mock_db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
@@ -79,7 +79,7 @@ class TestContextAssembly:
         assert any(s["type"] == "memory" for s in ctx["sources"])
 
     def test_anchor_enables_judgement_section(self, mock_db):
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(mock_db, ATHLETE, sid)
         generate_report(mock_db, ATHLETE, "weekly", "2026-W32", view="coach", force=True)
         ctx = assemble_context(mock_db, ATHLETE, "有进步吗？", view="coach")

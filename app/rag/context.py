@@ -25,6 +25,7 @@ from typing import Callable
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
 from app.reports.generator import generate_report
+from app.reports.window import WindowKey
 from app.store.database import Database
 
 logger = logging.getLogger("engine.rag.context")
@@ -54,15 +55,13 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         _granularity, _window_key = granularity, window_key
     else:
         # 未指定 → 最近一份已生成报告（先到先得，未生成则报错引导先生成）
-        latest = db.query(
-            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=? "
-            "ORDER BY generated_at_utc DESC LIMIT 1", (athlete_id,))
+        latest = db.latest_report_window(athlete_id)
         if not latest:
             raise ValueError("运动员暂无已生成报告：请先在报告区生成一份，再发起对话")
-        _granularity, _window_key = latest[0]["granularity"], latest[0]["window_key"]
+        _granularity, _window_key = latest["granularity"], latest["window_key"]
 
     report = generate_report(db, athlete_id, _granularity, _window_key,
-                             session_id=_window_key[6:] if _granularity == "daily" else None,
+                             session_id=WindowKey.parse(_granularity, _window_key).session_id,
                              view=view, force=True)
 
     notes = list_notes_for_view(db, athlete_id, view)

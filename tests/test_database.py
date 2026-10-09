@@ -7,7 +7,7 @@ from app.store.database import Database
 
 class TestSchema:
     def test_tables_created(self, db):
-        rows = db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        rows = db._query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
         names = {r["name"] for r in rows}
         assert {"session_dim", "shot_fact", "athlete_profile", "baseline_snapshots",
                 "memory_notes", "report_memories", "report_cache"} <= names
@@ -30,8 +30,7 @@ class TestFactLayer:
         db.upsert_session({"session_id": "S1", "athlete_id": "A1", "session_time_utc": "2026-08-03T00:00:00.000Z",
                            "distance_m": 70, "shot_count": 36, "mode_composition": "记分36"})
         assert db.session_exists("S1")
-        rows = db.query("SELECT shot_count FROM session_dim WHERE session_id='S1'")
-        assert rows[0]["shot_count"] == 36  # 覆盖
+        assert db.session_of("S1")["shot_count"] == 36  # 覆盖
 
     def test_insert_shots_idempotent(self, db):
         row = {"athlete_id": "A1", "session_id": "S1", "shot_seq": 1, "score": 9.6, "hit": 1,
@@ -65,7 +64,7 @@ class TestMemoryLayer:
         assert db.close_note(nid, "A1") is False  # 已关闭
         assert db.close_note(nid, "OTHER") is False  # 归属校验
         assert len(db.list_notes("A1", status="active")) == 0
-        closed = db.query("SELECT status FROM memory_notes WHERE id=?", (nid,))
+        closed = db._query("SELECT status FROM memory_notes WHERE id=?", (nid,))
         assert closed[0]["status"] == "closed"
 
     def test_baseline_snapshot_prune(self, db):

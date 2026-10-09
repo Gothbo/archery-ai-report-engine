@@ -13,19 +13,13 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from app.config import get_config
-from app.metrics.performance import avg_score
-from app.metrics.physiology import hr_volatility
-from app.metrics.process import dispersion_mm, mean_mcr_t
+from app.metrics.vector import metric_vector
 from app.store.database import Database
+from app.timeutil import iso_now_utc
 
 logger = logging.getLogger("engine.memory.baseline")
-
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def _shots_as_dicts(rows) -> list[dict]:
@@ -36,12 +30,7 @@ def compute_rolling_snapshot(db: Database, athlete_id: str, bow_type: str) -> di
     """重算滚动基线：最近 N 支记分箭（shootingMode=1）按时间倒序取。"""
     cfg = get_config()
     n = cfg.rolling_window_shots
-    rows = db.query(
-        """SELECT * FROM shot_fact
-           WHERE athlete_id=? AND bow_type=? AND shooting_mode=1
-           ORDER BY shot_time_utc DESC LIMIT ?""",
-        (athlete_id, bow_type, n),
-    )
+    rows = db.recent_scoring_shots(athlete_id, bow_type, n)
     shots = _shots_as_dicts(rows)
     if not shots:
         return None
@@ -56,16 +45,13 @@ def compute_rolling_snapshot(db: Database, athlete_id: str, bow_type: str) -> di
 def create_anchor_snapshot(db: Database, athlete_id: str, bow_type: str, source_session_id: str) -> dict:
     """建立锚点（赛季初/入队测试/换弓种）：取来源场次的记分箭，并落可比性元数据（A3）。"""
     cfg = get_config()
-    session_rows = db.query(
-        """SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1""",
-        (source_session_id,),
-    )
+    session_rows = db.scoring_shots_of_session(source_session_id)
     shots = _shots_as_dicts(session_rows)
     if not shots:
         raise ValueError(f"来源场次 {source_session_id} 无记分箭，锚点无法建立")
 
-    dim_rows = db.query("SELECT * FROM session_dim WHERE session_id=?", (source_session_id,))
-    dim = dict(dim_rows[0]) if dim_rows else {}
+    dim_row = db.session_of(source_session_id)
+    dim = dict(dim_row) if dim_row else {}
     snap = _snapshot_values(athlete_id, bow_type, "anchor", shots)
     snap["source_session_id"] = source_session_id
     snap["distance_m"] = dim.get("distance_m")
@@ -77,40 +63,26 @@ def create_anchor_snapshot(db: Database, athlete_id: str, bow_type: str, source_
 
 
 def _snapshot_values(athlete_id: str, bow_type: str, snap_type: str, shots: list[dict]) -> dict:
-    """从箭集计算指标快照（复用 metrics 纯函数；单指标缺测存 NULL 而非 0）。"""
-    cfg = get_config()
-    mdc = cfg.mdc
-    snap: dict = {
+    """从箭集计算指标快照（复用指标向量口径；单指标缺测存 NULL 而非 0）。"""
+    v = metric_vector(shots)
+    return {
         "athlete_id": athlete_id,
         "bow_type": bow_type,
         "snap_type": snap_type,
         "n_shots": len(shots),
-        "collected_at_utc": _now_utc(),
+        "collected_at_utc": iso_now_utc(),
+        "avg_score": v.avg_score,
+        "mcr_t": v.mcr_t,
+        "hr_volatility": v.hr_volatility,
+        "dispersion_mm": v.dispersion_mm,
     }
-    if "avgScore" in mdc and shots:
-        snap["avg_score"] = round(avg_score([s["score"] for s in shots]), 3)
-    else:
-        snap["avg_score"] = None
-
-    mcr_vals = [s["mcr_t"] for s in shots if s.get("mcr_t") is not None]
-    snap["mcr_t"] = round(mean_mcr_t(mcr_vals), 3) if mcr_vals else None
-
-    hr_vals = [s["hr"] for s in shots if s.get("hr") is not None]
-    snap["hr_volatility"] = round(hr_volatility(hr_vals), 1) if hr_vals else None
-
-    xs = [s["x_mm"] for s in shots if s.get("x_mm") is not None and s.get("y_mm") is not None]
-    ys = [s["y_mm"] for s in shots if s.get("x_mm") is not None and s.get("y_mm") is not None]
-    snap["dispersion_mm"] = round(dispersion_mm(xs, ys), 1) if len(xs) >= 2 else None
-    return snap
 
 
 def refresh_rolling_after_import(db: Database, athlete_id: str, session_ids: list[str]) -> None:
     """导入成功回调：重算滚动基线 + 清理旧滚动快照（B8）。"""
     cfg = get_config()
     # 取该运动员出现过的弓种（当前以档案为主，缺少则用事实表 distinct）
-    bow_types = [r["bow_type"] for r in db.query(
-        "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,)
-    )]
+    bow_types = db.bow_types_of_athlete(athlete_id)
     for bow in bow_types:
         snap = compute_rolling_snapshot(db, athlete_id, bow)
         if snap:

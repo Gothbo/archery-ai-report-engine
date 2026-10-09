@@ -19,18 +19,18 @@ print("profiles:", len(profiles), list(profiles.items())[:3])
 stats = ingest_source(db, src, on_imported=refresh_rolling_after_import)
 print("ingest stats:", stats)
 
-print("sessions:", db.query("SELECT COUNT(*) FROM session_dim")[0][0])
-print("shots:", db.query("SELECT COUNT(*) FROM shot_fact")[0][0])
-print("athletes:", db.query("SELECT DISTINCT athlete_id FROM shot_fact"))
-print("session sample:", db.query("SELECT session_id, athlete_id, session_time_utc, distance_m, shot_count, avg_wind FROM session_dim LIMIT 3"))
-print("shot sample:", db.query("SELECT athlete_id, score, hit, x_mm, y_mm, mcr_t, hr, wind_speed, shooting_mode, bow_type, shot_time_utc FROM shot_fact LIMIT 3"))
-print("rolling:", db.query("SELECT athlete_id, bow_type, n_shots, avg_score, collected_at_utc FROM baseline_snapshots WHERE snap_type='rolling' LIMIT 5"))
+print("sessions:", db._query("SELECT COUNT(*) FROM session_dim")[0][0])
+print("shots:", db._query("SELECT COUNT(*) FROM shot_fact")[0][0])
+print("athletes:", db._query("SELECT DISTINCT athlete_id FROM shot_fact"))
+print("session sample:", db._query("SELECT session_id, athlete_id, session_time_utc, distance_m, shot_count, avg_wind FROM session_dim LIMIT 3"))
+print("shot sample:", db._query("SELECT athlete_id, score, hit, x_mm, y_mm, mcr_t, hr, wind_speed, shooting_mode, bow_type, shot_time_utc FROM shot_fact LIMIT 3"))
+print("rolling:", db._query("SELECT athlete_id, bow_type, n_shots, avg_score, collected_at_utc FROM baseline_snapshots WHERE snap_type='rolling' LIMIT 5"))
 
 # 挑一个 2024+ 有 HR 的运动员（422802198808030396）测报告
 aid = athlete_id_of("422802198808030396")
 print("\ntest athlete:", aid)
 from app.reports.window import window_of_shot
-rows = db.query("SELECT DISTINCT session_time_utc FROM session_dim WHERE athlete_id=?", (aid,))
+rows = db._query("SELECT DISTINCT session_time_utc FROM session_dim WHERE athlete_id=?", (aid,))
 for r in rows[:3]:
     print("  session time:", r["session_time_utc"], "-> weekly", window_of_shot(get_config(), r["session_time_utc"], "weekly"))
 

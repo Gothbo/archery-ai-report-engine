@@ -10,19 +10,15 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from app.config import get_config
 from app.store.database import Database
+from app.timeutil import iso_now_utc
 
 logger = logging.getLogger("engine.memory.notes")
 
 VALID_NOTE_TYPES = ("injury", "goal", "coach_note", "other")
 VALID_ROLES = ("athlete", "coach")
-
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def add_note(db: Database, athlete_id: str, note_type: str, content: str,
@@ -39,7 +35,7 @@ def add_note(db: Database, athlete_id: str, note_type: str, content: str,
         "content": content,
         "author_role": author_role,
         "actor_id": actor_id,
-        "created_at_utc": _now_utc(),
+        "created_at_utc": iso_now_utc(),
     }
     nid = db.insert_note(note)
     logger.info("备注已录入 id=%d athlete=%s type=%s role=%s", nid, athlete_id, note_type, author_role)

@@ -12,52 +12,25 @@ from __future__ import annotations
 from statistics import fmean, pstdev
 
 from app.ingest.base import SessionRaw, ShotRaw
+from app.timeutil import parse_iso_utc_ms
 
 HR_WINDOW_MS = 30_000
 WIND_WINDOW_MS = 60_000
 
 
-def _parse_utc_ms(iso: str) -> int | None:
-    """ISO8601 UTC 毫秒（如 2026-08-03T09:00:00.123Z）→ epoch 毫秒。"""
-    from datetime import datetime, timezone
+def nearest_in_window(shot_ms: int, samples: list[tuple], window_ms: int) -> tuple | None:
+    """窗口内时间最近样本：取 |t_shot - t_sample| 最小且 <= window_ms 的一条，无则 None。
 
-    try:
-        norm = iso.replace("Z", "+00:00") if iso.endswith(("Z", "z")) else iso
-        dt = datetime.fromisoformat(norm)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return int(dt.timestamp() * 1000)
-    except ValueError:
-        return None
-
-
-def _nearest_sample(shot_ms: int, samples: list[tuple[int, float]], window_ms: int) -> float | None:
-    """窗口内最近采样：取 |t_shot - t_sample| 最小且 <= window_ms 的样本值。"""
-    best: tuple[int, float] | None = None
-    for ts, val in samples:
-        gap = abs(ts - shot_ms)
-        if gap <= window_ms and (best is None or gap < abs(best[0] - shot_ms)):
-            best = (ts, val)
-    return best[1] if best else None
-
-
-def _nearest_wind(shot_ms: int, samples: list[tuple[int, float, float]], window_ms: int) -> tuple[float, float] | None:
-    """风速样本结构 (ms, speed, dir_deg)；返回窗口内最近一条的 (speed, dir)。"""
-    best: tuple[int, float, float] | None = None
-    for ts, speed, deg in samples:
-        gap = abs(ts - shot_ms)
-        if gap <= window_ms and (best is None or gap < abs(best[0] - shot_ms)):
-            best = (ts, speed, deg)
-    return (best[1], best[2]) if best else None
-
-
-def _nearest_int(shot_ms: int, samples: list[tuple[int, int]], window_ms: int) -> int | None:
-    best: tuple[int, int] | None = None
-    for ts, val in samples:
-        gap = abs(ts - shot_ms)
-        if gap <= window_ms and (best is None or gap < abs(best[0] - shot_ms)):
-            best = (ts, val)
-    return best[1] if best else None
+    samples 为 (ms, ...) 元组列表，按首个元素比较；并列取先出现者（时间序稳定）。
+    对齐口径唯一来源：HR(30s)/风(60s) 及逐箭匹配都走这里，避免多处实现漂移。
+    """
+    best: tuple | None = None
+    best_gap: int | None = None
+    for s in samples:
+        gap = abs(s[0] - shot_ms)
+        if gap <= window_ms and (best_gap is None or gap < best_gap):
+            best, best_gap = s, gap
+    return best
 
 
 def _mode_composition(shots: list[ShotRaw]) -> str:
@@ -82,17 +55,18 @@ def align_session(session: SessionRaw, hr_samples: dict[str, list[tuple[int, int
     fact_rows: list[dict] = []
     wind_vals: list[float] = []
     for idx, sh in enumerate(shots, start=1):
-        shot_ms = _parse_utc_ms(sh.shot_time_utc)
+        shot_ms = parse_iso_utc_ms(sh.shot_time_utc)
         # 透传或窗口匹配
         if hr_samples is None:
             hr = sh.hr
         else:
-            hr = _nearest_int(shot_ms, hr_map.get(session.athlete_id, []), HR_WINDOW_MS) if shot_ms is not None else None
+            hr_hit = nearest_in_window(shot_ms, hr_map.get(session.athlete_id, []), HR_WINDOW_MS) if shot_ms is not None else None
+            hr = hr_hit[1] if hr_hit else None
         if wind_samples is None:
             wind_speed, wind_dir = sh.wind_speed, sh.wind_dir_deg
         else:
-            nearest = _nearest_wind(shot_ms, wind_map.get(session.athlete_id, []), WIND_WINDOW_MS) if shot_ms is not None else None
-            wind_speed, wind_dir = (nearest[0], nearest[1]) if nearest else (None, None)
+            wind_hit = nearest_in_window(shot_ms, wind_map.get(session.athlete_id, []), WIND_WINDOW_MS) if shot_ms is not None else None
+            wind_speed, wind_dir = (wind_hit[1], wind_hit[2]) if wind_hit else (None, None)
         if wind_speed is not None:
             wind_vals.append(wind_speed)
         fact_rows.append(

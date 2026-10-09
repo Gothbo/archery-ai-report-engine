@@ -6,42 +6,44 @@
 """
 from __future__ import annotations
 
+from collections.abc import Sequence
 from statistics import fmean
 
-from app.config import get_config
 
+def wind_band_of(wind_speed: float, bands: Sequence[Sequence[float]]) -> int:
+    """返回风档索引；不在任何档 → 抛 ValueError（左闭右开连续性由 config 校验保证）。
 
-def wind_band_of(wind_speed: float) -> int:
-    """返回风档索引；不在任何档 → 抛 ValueError（左闭右开连续性由 config 校验保证）。"""
-    bands = get_config().wind_bands
+    风档由调用方注入（config.wind_bands），本函数为纯函数、不读全局配置。
+    """
     for i, (lo, hi) in enumerate(bands):
         if lo <= wind_speed < hi:
             return i
     raise ValueError(f"风速 {wind_speed} 不在任何风档（左闭右开）")
 
 
-def wind_band_avg_scores(shots: list[dict], band_index: int | None = None) -> dict[int, float]:
+def wind_band_avg_scores(shots: list[dict], bands: Sequence[Sequence[float]],
+                         band_index: int | None = None) -> dict[int, float]:
     """按风档统计均环：{band_index: avg_score}；band_index=None 返回全部档。"""
     grouped: dict[int, list[float]] = {}
     for sh in shots:
         ws = sh.get("wind_speed")
         if ws is None:
             continue
-        b = wind_band_of(ws)
+        b = wind_band_of(ws, bands)
         if band_index is not None and b != band_index:
             continue
         grouped.setdefault(b, []).append(sh["score"])
     return {b: round(fmean(v), 3) for b, v in grouped.items() if v}
 
 
-def wind_band_counts(shots: list[dict]) -> dict[int, int]:
+def wind_band_counts(shots: list[dict], bands: Sequence[Sequence[float]]) -> dict[int, int]:
     """每档箭数（样本门槛核验用）。"""
     counts: dict[int, int] = {}
     for sh in shots:
         ws = sh.get("wind_speed")
         if ws is None:
             continue
-        b = wind_band_of(ws)
+        b = wind_band_of(ws, bands)
         counts[b] = counts.get(b, 0) + 1
     return counts
 
