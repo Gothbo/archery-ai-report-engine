@@ -59,7 +59,7 @@ def main():
     assert st == 200
     keys = [s["key"] for s in wk["sections"]]
     print("weekly 段:", keys)
-    texts = " ".join(s["content"][0] for s in wk["sections"])
+    texts = " ".join(" ".join(str(c) for c in s["content"]) for s in wk["sections"])
     assert "含脱靶均环" in texts
     assert "level" in keys and "无锚点" in texts  # 无锚点 → level 段为占位（不静默省略）
     print("无锚点 level 占位: True")
@@ -74,8 +74,9 @@ def main():
     assert st == 200
     keys2 = [s["key"] for s in wk2["sections"]]
     assert "level" in keys2, keys2
-    texts2 = " ".join(s["content"][0] for s in wk2["sections"])
-    assert "未判定" in texts2 or "MDC 口径待专家共识" in texts2, texts2
+    texts2 = " ".join(" ".join(str(c) for c in s["content"]) for s in wk2["sections"])
+    assert "降级期" in texts2 and "暂无进步/退步判定" in texts2, texts2  # 降级提示（ADR-0002）
+    assert "未判定" in texts2, texts2  # 锚点降级模板：只描述不判定
     print("weekly 段:", keys2)
     print("降级模板（只描述不判定）: True")
 

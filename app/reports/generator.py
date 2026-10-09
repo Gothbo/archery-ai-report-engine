@@ -37,6 +37,9 @@ logger = logging.getLogger("engine.reports.generator")
 # 报告固定六段骨架（ADR-0003）：顺序即优先级。wind_bands 无风数据时并入 data_integrity。
 SECTION_ORDER = ("window_score", "level", "data_integrity", "wind_bands", "sample_gate", "auxiliary")
 
+# 降级期提示（ADR-0002）：显式声明不出方向判定，避免「无结论」被误读为「有结论」
+DEGRADE_HINT = "降级期，暂无进步/退步判定（MDC 阈值口径试行中，本段只描述水平、不判定方向）"
+
 _SCORE_TITLES = {"daily": "本场成绩", "weekly": "本周成绩", "monthly": "本月成绩",
                  "quarterly": "本季成绩", "yearly": "本年成绩"}
 
@@ -201,10 +204,13 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "evidence": [{"type": "calc", "ref": "window_score", "value": {"n": m["n_shots"]}}],
     }
 
-    # ② level：水平对比（有锚点且样本达标出方向判定；否则显式占位，不静默省略）
+    # ② level：水平对比（有锚点且样本达标出方向判定；降级期出降级提示 + 滚动基线描述；
+    # 否则显式占位，不静默省略）
     level_lines: list[str] = []
     level_evidence: list[dict] = []
     if gate_ok and anchor_dict:
+        # 降级期（mdc_source 为空）仍走此分支：方向判定由 rules.judge_metric 统一降级（B3 SSOT），
+        # 此处只渲染"只描述不判定"的 degrade 模板，故降级期不会出现方向判定词。
         comparable = _comparability(db, shots, anchor_dict)
         # 锚点日期优先取源场次（入队测试日），快照创建日仅兜底
         anchor_date = (anchor_dict["collected_at_utc"] or "")[:10]
@@ -239,7 +245,22 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 rendered["conclusion"] = "条件不同（距离/风况与锚点不可比），不做判定。"
             level_lines.append(rendered["conclusion"])
             level_evidence.append(rendered["evidence"])
-    if not level_lines:
+    if cfg.mdc_source is None:
+        # 降级期（ADR-0002）：显式声明不出方向判定，改用滚动基线描述水平（只描述、不判定）
+        level_lines.insert(0, DEGRADE_HINT)
+        if rolling_dict and rolling_dict.get("avg_score") is not None:
+            base_avg = rolling_dict["avg_score"]
+            delta = round(m["avg_score"] - base_avg, 2)
+            level_lines.append(
+                f"滚动基线（近 {rolling_dict['n_shots']} 箭，"
+                f"{(rolling_dict.get('collected_at_utc') or '')[:10]} 采集）均环 {base_avg:.2f}，"
+                f"本窗口均环 {m['avg_score']:.2f}，差值 {delta:+.2f} 环（水平描述，非判定）")
+            level_evidence.append({"type": "fact", "ref": "rolling_baseline",
+                                   "value": {"n_shots": rolling_dict["n_shots"], "avg_score": base_avg,
+                                             "delta_vs_window": delta}})
+        if len(level_lines) == 1:
+            level_lines.append("本窗口无锚点比对、亦无滚动基线快照，暂无可描述的水平")
+    elif not level_lines:
         level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
     by_key["level"] = {"key": "level", "title": "水平对比",
                        "content": level_lines, "evidence": level_evidence}

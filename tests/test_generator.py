@@ -193,8 +193,10 @@ class TestGeneratorMock:
         sid = db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(db, ATHLETE, sid)
         rep = generate_report(db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
-        texts = " ".join(s["content"][0] for s in rep["sections"])
-        assert "未判定" in texts or "MDC 口径待专家共识" in texts  # 降级：只描述不判定
+        level = [s for s in rep["sections"] if s["key"] == "level"][0]
+        text = " ".join(level["content"])
+        assert "降级期" in text and "暂无进步/退步判定" in text  # 降级提示（ADR-0002）
+        assert "未判定" in text  # 锚点降级模板：只描述不判定
         db.close()
 
 
@@ -286,4 +288,59 @@ class TestDualCaliberScore:
         r3 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
         assert r3["cached"] is False
         assert r3["report_id"] != r1["report_id"]
+        db.close()
+
+
+class TestDegradedLevelSection:
+    """T3 验收：降级期 level 段出降级提示 + 滚动基线水平描述；有 MDC 仍出方向判定（ADR-0002）。"""
+
+    # 方向判定词：降级期除提示行外不得出现
+    DIRECTION_WORDS = ("进步", "退步", "提升", "下降", "收窄", "增大", "回落", "升高", "缩短", "延长")
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_degraded_level_shows_hint_without_direction_judgement(self, degraded_env):
+        """降级期：level 段出现「降级期，暂无进步/退步判定」提示，其余行不含任何方向判定词。"""
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        lines = self._level(draft.report)["content"]
+        hint = [ln for ln in lines if "降级期" in ln]
+        assert hint, "降级期 level 段应出现降级提示"
+        assert "暂无进步/退步判定" in hint[0]
+        for line in [ln for ln in lines if "降级期" not in ln]:
+            assert not any(w in line for w in self.DIRECTION_WORDS), f"降级期不应出方向判定词：{line}"
+        db.close()
+
+    def test_degraded_level_describes_rolling_baseline(self, degraded_env):
+        """降级期且存在滚动基线快照：level 段给出水平描述（基线均环 + 与本窗口差值，非判定）。"""
+        from app.memory.baseline import refresh_rolling_after_import
+
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        refresh_rolling_after_import(db, ATHLETE, ["S-A", "S-B"])
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "滚动基线" in text
+        assert "9.25" in text   # 近 60 箭均环 (9.0*30 + 9.5*30)/60
+        assert "+0.25" in text  # 本窗口 9.50 较基线 +0.25
+        db.close()
+
+    def test_mdc_configured_still_judges_direction(self, engine_env):
+        """有 MDC 配置：level 段仍出方向判定（较锚点/与锚点），且不出现降级提示（回归不破）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        lines = self._level(draft.report)["content"]
+        assert any(("较锚点" in ln) or ("与锚点" in ln) for ln in lines)
+        assert not any("降级期" in ln for ln in lines)
         db.close()
