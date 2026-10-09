@@ -364,7 +364,26 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     by_key["auxiliary"] = {"key": "auxiliary", "title": "辅助信息",
                            "content": aux_lines, "evidence": aux_evidence}
 
-    sections = [by_key[k] for k in SECTION_ORDER if k in by_key]
+    # 正文与运维分离（ADR-0005）：sections 只含 key/title/content，两视图内容一致
+    # （备注按视图过滤是既定例外）；运维字段（evidence 明细、anchor_rebuild_hint）仅 coach 返回。
+    evidence_by_key: dict[str, list[dict]] = {}
+    sections: list[dict] = []
+    for k in SECTION_ORDER:
+        if k not in by_key:
+            continue
+        sec = by_key[k]
+        evidence_by_key[k] = sec.get("evidence", [])
+        sections.append({"key": sec["key"], "title": sec["title"], "content": sec["content"]})
+
+    coach_extra: dict = {"warnings": [], "load": {}}
+    if rolling_dict:
+        coach_extra["rolling_baseline"] = {
+            "n_shots": rolling_dict["n_shots"], "avg_score": rolling_dict.get("avg_score"),
+            "collected_at_utc": rolling_dict["collected_at_utc"],
+        }
+    if view == "coach":
+        coach_extra["evidence"] = evidence_by_key
+        coach_extra["anchor_rebuild_hint"] = _anchor_rebuild_hint(db, athlete_id)
 
     report = {
         "report_id": report_id,
@@ -378,15 +397,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "generated_at_utc": iso_now_utc(),
         "sections": sections,
         "suggestions": [],
-        "coach_extra": {"warnings": [], "load": {}},
-        "anchor_rebuild_hint": _anchor_rebuild_hint(db, athlete_id),
+        "coach_extra": coach_extra,
         "bow_type": primary_bow,
     }
-    if rolling_dict:
-        report["coach_extra"]["rolling_baseline"] = {
-            "n_shots": rolling_dict["n_shots"], "avg_score": rolling_dict.get("avg_score"),
-            "collected_at_utc": rolling_dict["collected_at_utc"],
-        }
     return ReportDraft(report=report, conclusions=conclusions)
 
 

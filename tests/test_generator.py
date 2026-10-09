@@ -456,3 +456,74 @@ class TestWindowRangeMetadata:
             rep = build_report(db, ATHLETE, gran, key, view="coach").report
             assert (rep["window_start"], rep["window_end"]) == (start, end), gran
         db.close()
+
+
+class TestViewCoachExtraGating:
+    """T6 验收：正文两视图内容一致（备注为既定例外）；运维字段仅 coach 返回（ADR-0005）。"""
+
+    def _section(self, report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_sections_identical_across_views(self, engine_env):
+        """双方可见备注（injury/goal）场景：coach / athlete 的 sections 逐字一致。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        add_note(db, ATHLETE, "injury", "右肩轻微酸痛", "athlete", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert rep_a["sections"] == rep_c["sections"]
+        db.close()
+
+    def test_ops_fields_gated_to_coach(self, engine_env):
+        """运维字段（anchor_rebuild_hint / evidence 明细）只在 coach 的 coach_extra；
+        正文 sections 不含 evidence 明细，顶层也不再挂 anchor_rebuild_hint。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        # coach：附注区含运维字段
+        assert "anchor_rebuild_hint" in rep_c["coach_extra"]
+        assert rep_c["coach_extra"]["evidence"]
+        # athlete：附注区保留非运维键，但不含运维字段
+        assert set(rep_a["coach_extra"]) <= {"warnings", "load", "rolling_baseline"}
+        assert "anchor_rebuild_hint" not in rep_a["coach_extra"]
+        assert "evidence" not in rep_a["coach_extra"]
+        # 正文两视图都不再携带 evidence 明细；顶层 anchor_rebuild_hint 已移除
+        assert all("evidence" not in s for s in rep_c["sections"])
+        assert "anchor_rebuild_hint" not in rep_c
+        db.close()
+
+    def test_athlete_notes_only_injury_goal(self, engine_env):
+        """备注过滤沿用 notes_visibility：athlete 只见 injury/goal，coach 全量。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        add_note(db, ATHLETE, "coach_note", "私密教练观察", "coach", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        aux_a = " ".join(self._section(rep_a, "auxiliary")["content"])
+        aux_c = " ".join(self._section(rep_c, "auxiliary")["content"])
+        assert "私密教练观察" not in aux_a
+        assert "私密教练观察" in aux_c
+        db.close()
+
+    def test_only_coach_extra_and_notes_differ(self, engine_env):
+        """两视图差异只发生在 coach_extra 与 auxiliary 备注：其余五段逐字一致。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        add_note(db, ATHLETE, "coach_note", "私密教练观察", "coach", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert _keys(rep_a) == _keys(rep_c) == CANONICAL_SIX
+        for key in CANONICAL_SIX:
+            if key == "auxiliary":  # 备注为既定例外
+                continue
+            assert self._section(rep_a, key) == self._section(rep_c, key), key
+        assert rep_a["coach_extra"] != rep_c["coach_extra"]
+        db.close()

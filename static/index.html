@@ -524,7 +524,7 @@ function renderReport(r) {
   }
   if (ce.warnings && ce.warnings.length) meta.push('警告：' + ce.warnings.join('；'));
   if (r.suggestions && r.suggestions.length) meta.push('建议：' + r.suggestions.join('；'));
-  if (r.anchor_rebuild_hint && r.anchor_rebuild_hint.reason) meta.push('锚点提示：' + r.anchor_rebuild_hint.reason);
+  if (ce.anchor_rebuild_hint && ce.anchor_rebuild_hint.reason) meta.push('锚点提示：' + ce.anchor_rebuild_hint.reason);
   if (r.generated_at_utc) meta.push('生成时间(UTC)：' + r.generated_at_utc);
   $('reportMeta').textContent = meta.join('\n');
 }

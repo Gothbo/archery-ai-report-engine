@@ -9,8 +9,12 @@
 _Avoid_: 报表、分析
 
 **段（Section）**：
-报告的最小内容单元，携带 key / title / content / evidence。
+报告的最小内容单元，携带 key / title / content；evidence 明细归入附注区。
 _Avoid_: 章节、块、卡片
+
+**附注区（coach_extra）**：
+报告正文之外的附注容器，两视图均返回（含 `warnings` / `load` / `rolling_baseline`）；其中运维字段（evidence 明细、锚点重建提示 `anchor_rebuild_hint`）仅 coach 视图注入。
+_Avoid_: 附加区、备注区（备注另有所指）
 
 **窗口（Window）**：
 报告覆盖的时间范围，粒度为日 / 周 / 月 / 季 / 年。

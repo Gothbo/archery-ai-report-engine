@@ -102,13 +102,15 @@ def _skeleton_text(report: dict, notes: list[dict], history) -> str:
 
 
 def _skeleton_json(report: dict, notes: list[dict], history) -> str:
-    """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源。"""
+    """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源；evidence 明细按 ADR-0005 仅 coach 视图注入，athlete 下各段为空属契约而非缺数据。"""
+    evidence_by_key = report.get("coach_extra", {}).get("evidence", {})
     payload = {
         "granularity": report["granularity"],
         "window_key": report["window_key"],
         "athlete": report["athlete"],
         "sections": [
-            {"title": s["title"], "content": s["content"], "evidence": s["evidence"]}
+            {"title": s["title"], "content": s["content"],
+             "evidence": evidence_by_key.get(s["key"], [])}
             for s in report["sections"]
         ],
         "notes": [{"note_type": n["note_type"], "content": n["content"],
