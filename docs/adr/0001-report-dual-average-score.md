@@ -20,4 +20,5 @@
 
 - 指标层新增 `effective_avg_score` 与 `miss_rate`。
 - `window_score` 段契约变更，前端与阶段 1 验收标准需同步。
-- 报告缓存按 `mdc_source` 版本失效；口径变更须递增该版本，否则旧缓存仍返回单口径。
+- 报告缓存按口径版本失效；口径变更须递增该版本，否则旧缓存仍返回单口径。
+- 修订（2026-10-09，T2 #7）：口径版本从 `mdc_source` 解耦为独立配置 `report_caliber_version`。原因：`mdc_source` 为空是降级期（ADR-0002）触发条件，复用它递增会误退出降级期。缓存键 = `mdc_source` + `report_caliber_version`（`_cache_version()`）。

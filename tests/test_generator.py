@@ -242,3 +242,48 @@ class TestAntiHardcoding:
         assert "8.83" in t1 and "10.4" in t2  # 数字来自数据而非硬编码
         assert t1 != t2
         db.close()
+
+
+class TestDualCaliberScore:
+    """T2 验收：window_score 并列双口径 + 脱靶率；口径版本递增使旧缓存失效（ADR-0001）。"""
+
+    def test_dual_average_score_display(self, engine_env):
+        """已知脱靶样本：含脱靶均环 / 有效箭均环 / 脱靶率并列且数值正确，内十/远弹/命中保留。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 10 箭脱靶（0 环）+ 20 箭 8 环：含脱靶 160/30=5.33，有效箭 8.00，脱靶率 10/30=33.3%
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [0.0] * 10 + [8.0] * 20,
+                     wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        ws = [s for s in draft.report["sections"] if s["key"] == "window_score"][0]
+        text = ws["content"][0]
+        assert "含脱靶均环 5.33" in text
+        assert "有效箭均环 8.00" in text
+        assert "脱靶率 33.3%" in text
+        assert "内十率" in text and "远弹率" in text and "命中率" in text
+        db.close()
+
+    def test_cache_invalidation_on_caliber_version_bump(self, engine_env, tmp_path):
+        """递增报告口径版本 → 旧缓存不再命中，重新生成返回新 report_id。"""
+        import json
+
+        import app.config as cfgmod
+
+        cfg_dict, db_path = engine_env
+        cfg_path = tmp_path / "config.json"
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+
+        r1 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r1["cached"] is False
+        r2 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r2["cached"] is True and r2["report_id"] == r1["report_id"]
+
+        cfg_dict["report_caliber_version"] = "v-next"
+        cfg_path.write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        cfgmod.get_config.cache_clear()
+
+        r3 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r3["cached"] is False
+        assert r3["report_id"] != r1["report_id"]
+        db.close()

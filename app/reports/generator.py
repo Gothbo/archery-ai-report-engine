@@ -17,7 +17,14 @@ from dataclasses import dataclass
 
 from app.config import EngineConfig, get_config
 from app.metrics.environment import wind_band_avg_scores, wind_band_counts
-from app.metrics.performance import far_miss_rate, hit_rate, inner10_rate, total_score
+from app.metrics.performance import (
+    effective_avg_score,
+    far_miss_rate,
+    hit_rate,
+    inner10_rate,
+    miss_rate,
+    total_score,
+)
 from app.metrics.process import offset_mm
 from app.metrics.vector import metric_vector
 from app.reports import rules as R
@@ -58,6 +65,7 @@ def _calc_metrics(shots: list[dict]) -> dict:
     v = metric_vector(shots)
     scores = [s["score"] for s in shots]
     hits = [bool(s["hit"]) for s in shots]
+    eff_avg = effective_avg_score(scores)
     pairs = [(s["x_mm"], s["y_mm"]) for s in shots
              if s.get("x_mm") is not None and s.get("y_mm") is not None]
     xs = [p[0] for p in pairs]
@@ -65,6 +73,8 @@ def _calc_metrics(shots: list[dict]) -> dict:
     return {
         "n_shots": len(shots),
         "avg_score": v.avg_score,
+        "effective_avg_score": round(eff_avg, 2) if eff_avg is not None else None,
+        "miss_rate": round(miss_rate(scores), 1),
         "inner10_rate": round(inner10_rate(scores), 1),
         "far_miss_rate": round(far_miss_rate(scores), 1),
         "hit_rate": round(hit_rate(hits), 1),
@@ -100,6 +110,14 @@ def _comparability(db: Database, shots: list[dict], ref: dict) -> bool:
     return True
 
 
+def _report_cache_version(cfg: EngineConfig) -> str:
+    """报告缓存口径键（B10/B12）：MDC 阈值来源 + 报告口径版本，任一变更即作废旧缓存。
+
+    与 mdc_source 解耦：口径升级只递增 report_caliber_version，不改变 mdc_source（降级期）。
+    """
+    return f"mdc={cfg.mdc_source or 'empty'};caliber={cfg.report_caliber_version}"
+
+
 def generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
                     session_id: str | None = None, view: str = "athlete", force: bool = False) -> dict:
     """生成（或读缓存）一份报告：缓存查找 → 清理旧窗口 → 组装 → 持久化。
@@ -108,16 +126,17 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     """
     cfg = get_config()
     R.validate_rules(cfg)
+    cache_version = _report_cache_version(cfg)
 
     # 缓存查找（B10：key = granularity+window_key+口径版本）
     if not force:
-        cached_id = db.get_cached_report(athlete_id, granularity, window_key, cfg.mdc_source)
+        cached_id = db.get_cached_report(athlete_id, granularity, window_key, cache_version)
         if cached_id:
             return {"report_id": cached_id, "cached": True}
 
     # 同窗口重生成：先清理旧缓存与旧结论记忆（必须在写新记忆之前，否则「近 3 期/近 4 周」
     # 判定会读到上一次重生成留下的重复行）
-    db.purge_report_window(athlete_id, granularity, window_key, cfg.mdc_source)
+    db.purge_report_window(athlete_id, granularity, window_key, cache_version)
 
     draft = build_report(db, athlete_id, granularity, window_key, session_id, view)
     persist_report(db, draft)
@@ -168,9 +187,14 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # wind_bands 特例：无风数据时并入 data_integrity，不单独成段。
     by_key: dict[str, dict] = {}
 
-    # ① window_score：本窗口成绩
-    score_text = (f"平均环 {m['avg_score']}（n={m['n_shots']}），内十率 {m['inner10_rate']}%，"
-                  f"远弹率 {m['far_miss_rate']}%，命中率 {m['hit_rate']}%")
+    # ① window_score：本窗口成绩（双口径：含脱靶均环 + 有效箭均环 + 脱靶率，ADR-0001）
+    eff = m["effective_avg_score"]
+    eff_txt = f"{eff:.2f}" if eff is not None else "—"
+    score_text = (
+        f"含脱靶均环 {m['avg_score']:.2f}，有效箭均环 {eff_txt}，脱靶率 {m['miss_rate']:.1f}%，"
+        f"内十率 {m['inner10_rate']:.1f}%，远弹率 {m['far_miss_rate']:.1f}%，"
+        f"命中率 {m['hit_rate']:.1f}%（n={m['n_shots']}）"
+    )
     by_key["window_score"] = {
         "key": "window_score", "title": _SCORE_TITLES.get(granularity, "成绩"),
         "content": [score_text],
@@ -326,7 +350,7 @@ def persist_report(db: Database, draft: ReportDraft) -> None:
             conclusion=c["conclusion"], judge_basis=c["judge_basis"],
             delta_value=c["delta_value"], evidence=c["evidence"])
     db.put_cached_report(report["report_id"], athlete_id, report["granularity"],
-                         report["window_key"], get_config().mdc_source)
+                         report["window_key"], _report_cache_version(get_config()))
 
 
 def _anchor_rebuild_hint(db: Database, athlete_id: str) -> dict:

@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import re
 
-_AVG_RE = re.compile(r"平均环\s*([\d.]+)")
+_AVG_RE = re.compile(r"(?:含脱靶均环|平均环)\s*([\d.]+)")
 _N_RE = re.compile(r"n=(\d+)")
 _PROGRESS_RE = re.compile(r"进步\s*([\d.]+)\s*环")
 _REGRESS_RE = re.compile(r"退步\s*([\d.]+)\s*环")

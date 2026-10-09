@@ -60,7 +60,7 @@ def main():
     keys = [s["key"] for s in wk["sections"]]
     print("weekly 段:", keys)
     texts = " ".join(s["content"][0] for s in wk["sections"])
-    assert "平均环" in texts
+    assert "含脱靶均环" in texts
     assert "level" in keys and "无锚点" in texts  # 无锚点 → level 段为占位（不静默省略）
     print("无锚点 level 占位: True")
 

@@ -5,7 +5,15 @@ import math
 import pytest
 
 from app.metrics.environment import wind_band_avg_scores, wind_band_counts, wind_band_of, wind_gap
-from app.metrics.performance import avg_score, far_miss_rate, hit_rate, inner10_rate, total_score
+from app.metrics.performance import (
+    avg_score,
+    effective_avg_score,
+    far_miss_rate,
+    hit_rate,
+    inner10_rate,
+    miss_rate,
+    total_score,
+)
 from app.metrics.physiology import hr_volatility
 from app.metrics.process import dispersion_mm, mean_mcr_t, offset_mm
 from app.metrics.vector import metric_vector
@@ -33,6 +41,23 @@ class TestPerformance:
 
     def test_total_score(self):
         assert total_score([9.1, 8.2, 10.0]) == 27.3
+
+    def test_effective_avg_score_excludes_misses(self):
+        # 剔除 0 环后取均环：8 与 10 → 9.0
+        assert effective_avg_score([0.0, 8.0, 10.0]) == 9.0
+
+    def test_effective_avg_score_all_miss_is_none(self):
+        assert effective_avg_score([0.0, 0.0]) is None
+
+    def test_effective_avg_score_empty_is_none(self):
+        assert effective_avg_score([]) is None
+
+    def test_miss_rate(self):
+        # 0 环占比：2/4 = 50%
+        assert miss_rate([0.0, 0.0, 9.0, 10.0]) == 50.0
+
+    def test_miss_rate_empty(self):
+        assert miss_rate([]) == 0.0
 
 
 class TestProcess:

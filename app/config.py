@@ -103,6 +103,9 @@ class EngineConfig(BaseSettings):
     wind_bands: list[list[float]]
     mdc: dict[str, MDCSpec]
     mdc_source: str | None = None
+    # 报告口径版本（B10/B12 缓存键的一部分）：成绩段口径变更须递增，作废旧口径缓存。
+    # 与 mdc_source（MDC 阈值来源，空=降级期）解耦，避免口径升级误触/误退降级期。
+    report_caliber_version: str = "v1"
     forbidden_phrases: list[str] = Field(default_factory=list)
     rolling_window_shots: int = Field(gt=0)
     notes_visibility: NotesVisibility
@@ -167,6 +170,7 @@ class EngineConfig(BaseSettings):
             "wind_bands": self.wind_bands,
             "mdc": {k: v.model_dump() for k, v in self.mdc.items()},
             "mdc_source": self.mdc_source,
+            "report_caliber_version": self.report_caliber_version,
             "rolling_window_shots": self.rolling_window_shots,
             "memory": self.memory.model_dump(),
             "llm": {"enabled": self.llm.enabled, "provider": self.llm.provider, "model": self.llm.model},
