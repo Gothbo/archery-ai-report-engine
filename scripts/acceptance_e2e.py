@@ -61,8 +61,9 @@ def main():
     print("weekly 段:", keys)
     texts = " ".join(" ".join(str(c) for c in s["content"]) for s in wk["sections"])
     assert "含脱靶均环" in texts
-    assert "level" in keys and "无锚点" in texts  # 无锚点 → level 段为占位（不静默省略）
-    print("无锚点 level 占位: True")
+    # 无锚点 → level 段不静默省略：降级期出提示（+ 有滚动基线时附水平描述）
+    assert "level" in keys and "降级期" in texts
+    print("无锚点 level 占位（降级期提示）: True")
 
     print("\n== 4b 建锚点后周报走降级模板（mdc_source=null，M4.5 前只描述不判定）==")
     st, anc = call("POST", f"/athletes/{ATHLETE}/baseline/anchor",

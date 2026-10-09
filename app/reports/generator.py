@@ -57,11 +57,20 @@ def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key
     return [dict(r) for r in rows]
 
 
-def _session_ids_in_window(db: Database, athlete_id: str, granularity: str, window_key: str) -> list[str]:
-    if granularity == "daily":
-        return []
-    start_iso, end_iso = window_bounds(get_config(), granularity, window_key)
-    return db.session_ids_in_window(athlete_id, start_iso, end_iso)
+def _primary_bow(shots: list[dict]) -> tuple[str | None, list[tuple[str, int]]]:
+    """主弓种（箭数最多）+ 其余弓种箭数，供窗口按主弓种聚合（ADR-0004）。
+
+    箭数并列时按弓种名升序取首个，保证同一窗口跨次生成结果一致；无箭返回 (None, [])。
+    """
+    counts: dict[str, int] = {}
+    for s in shots:
+        bow = s.get("bow_type")
+        if bow:
+            counts[bow] = counts.get(bow, 0) + 1
+    if not counts:
+        return None, []
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    return ranked[0][0], ranked[1:]
 
 
 def _calc_metrics(shots: list[dict]) -> dict:
@@ -170,12 +179,18 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     R.validate_rules(cfg)
 
     shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id)
-    session_ids = _session_ids_in_window(db, athlete_id, granularity, window_key)
+    # 主弓种聚合（ADR-0004）：指标只算主弓种箭，其余弓种在 data_integrity 标注不计入
+    primary_bow, other_bows = _primary_bow(shots)
+    if primary_bow is not None:
+        shots = [s for s in shots if s.get("bow_type") == primary_bow]
+    # 训练次数按主弓种过滤：仅统计贡献了主弓种箭的场次，非主弓种场次不虚增样本门槛
+    session_ids = sorted({s["session_id"] for s in shots})
     m = _calc_metrics(shots)
 
     profile = db.get_profile(athlete_id)
-    anchor = db.latest_snapshot(athlete_id, "anchor")
-    rolling = db.latest_snapshot(athlete_id, "rolling")
+    # 锚点/滚动基线按主弓种取（ADR-0004：不同项目基线不混用）
+    anchor = db.latest_snapshot(athlete_id, "anchor", primary_bow)
+    rolling = db.latest_snapshot(athlete_id, "rolling", primary_bow)
     anchor_dict = dict(anchor) if anchor else None
     rolling_dict = dict(rolling) if rolling else None
 
@@ -277,6 +292,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         integrity_lines.append("本窗口无心率数据，心率波动指标不可用")
     if not integrity_lines:
         integrity_lines.append("本窗口采样数据完整（风速 / 心率均有覆盖）")
+    # 其余弓种显式标注不计入（ADR-0004）
+    for bow, n in other_bows:
+        integrity_lines.append(f"另有 {n} 箭为 {bow} 弓种，未计入")
     by_key["data_integrity"] = {
         "key": "data_integrity", "title": "数据完整性", "content": integrity_lines,
         "evidence": [{"type": "fact", "ref": "data_integrity",
@@ -349,6 +367,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "suggestions": [],
         "coach_extra": {"warnings": [], "load": {}},
         "anchor_rebuild_hint": _anchor_rebuild_hint(db, athlete_id),
+        "bow_type": primary_bow,
     }
     if rolling_dict:
         report["coach_extra"]["rolling_baseline"] = {

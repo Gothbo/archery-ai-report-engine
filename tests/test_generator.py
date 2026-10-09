@@ -344,3 +344,76 @@ class TestDegradedLevelSection:
         assert any(("较锚点" in ln) or ("与锚点" in ln) for ln in lines)
         assert not any("降级期" in ln for ln in lines)
         db.close()
+
+
+class TestPrimaryBowAggregation:
+    """T4 验收：窗口按主弓种（箭数最多）聚合，其余弓种显式标注不计入，报告体带 bow_type（ADR-0004）。"""
+
+    @staticmethod
+    def _section(report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_single_bow_window_counts_all_shots(self, engine_env):
+        """单弓种窗口：全部箭计入指标，bow_type 为该弓种，无「未计入」标注。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, bow_type="反曲弓")
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        rep = draft.report
+        assert rep["bow_type"] == "反曲弓"
+        assert "（n=30）" in self._section(rep, "window_score")["content"][0]
+        assert "未计入" not in " ".join(self._section(rep, "data_integrity")["content"])
+        db.close()
+
+    def test_multi_bow_window_filters_to_primary_and_annotates_others(self, engine_env):
+        """多弓种窗口：仅主弓种参与指标，其余弓种在 data_integrity 标注箭数与名称。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [5.0] * 10, bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        rep = draft.report
+        assert rep["bow_type"] == "反曲弓"
+        score = self._section(rep, "window_score")["content"][0]
+        assert "（n=20）" in score  # 只计入主弓种 20 箭
+        assert "9.00" in score     # 均环取自主弓种，未被 5.0 的复合弓拉低
+        integrity = " ".join(self._section(rep, "data_integrity")["content"])
+        assert "另有 10 箭为 复合弓 弓种，未计入" in integrity
+        db.close()
+
+    def test_primary_bow_tie_break_is_deterministic(self, engine_env):
+        """箭数并列时按弓种名升序取主弓种，保证跨次生成结果一致。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 10, bow_type="复合弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [9.5] * 10, bow_type="反曲弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        assert draft.report["bow_type"] == "反曲弓"  # 并列时 '反' < '复'（码点序）
+        db.close()
+
+    def test_level_ignores_anchor_of_other_bow(self, engine_env):
+        """主弓种窗口不拿另一弓种的锚点做对比（ADR-0004：不同项目基线不混用）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 窗口：反曲弓两场（过周报 ≥2 场门槛）；唯一锚点却属于复合弓
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-C", "2026-08-05T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-07-01T01:00:00.000Z", [8.0] * 30, bow_type="复合弓")
+        seed_anchor(db, ATHLETE, "S-B", bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        text = " ".join(self._section(draft.report, "level")["content"])
+        assert "较锚点" not in text and "与锚点" not in text  # 不跨弓种对比
+        assert "无锚点" in text  # 本弓种无锚点 → 显式说明
+        assert draft.report["bow_type"] == "反曲弓"
+        db.close()
+
+    def test_sample_gate_counts_only_primary_bow_sessions(self, engine_env):
+        """样本门槛的训练次数按主弓种过滤：非主弓种场次不计入周报 ≥2 场护栏。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 反曲弓 1 场 30 箭（主弓种）；复合弓 1 场 30 箭 → 主弓种仅 1 场，未达周报 ≥2 场
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [5.0] * 30, bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        assert "样本不足" in self._section(draft.report, "sample_gate")["content"][0]
+        db.close()

@@ -155,15 +155,6 @@ class Database:
             (athlete_id, start_iso, end_iso),
         )
 
-    def session_ids_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[str]:
-        """窗口内的训练场次 id（样本门槛按「训练次数」计数用）。"""
-        rows = self._query(
-            """SELECT DISTINCT session_id FROM session_dim
-               WHERE athlete_id=? AND session_time_utc>=? AND session_time_utc<?""",
-            (athlete_id, start_iso, end_iso),
-        )
-        return [r["session_id"] for r in rows]
-
     def sessions_by_ids(self, session_ids: list[str]) -> list[sqlite3.Row]:
         if not session_ids:
             return []
