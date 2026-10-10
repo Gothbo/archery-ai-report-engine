@@ -369,6 +369,144 @@ class TestDegradedLevelSection:
         db.close()
 
 
+class TestAnchorGuidance:
+    """P1 无锚点引导：level 段显式说明缺锚点；coach_extra.anchor_setup 给出候选场次（仅教练，ADR-0005）。"""
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_no_anchor_hint_and_setup_candidates(self, engine_env):
+        """无锚点：level 段出「无锚点」说明；coach_extra.anchor_setup 候选只含早于窗口的场次。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        rep = draft.report
+        assert "无锚点" in " ".join(self._level(rep)["content"])
+        setup = rep["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True and setup["primary_bow"] == "反曲弓"
+        assert [c["session_id"] for c in setup["candidates"]] == ["S-A"]  # 窗口内的 S-B 不作候选
+        assert setup["candidates"][0]["distance_m"] == 70
+        db.close()
+
+    def test_setup_absent_when_anchor_exists(self, engine_env):
+        """已有锚点：anchor_setup.needs_anchor=False 且无候选（不重复引导）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        db.close()
+
+    def test_setup_only_in_coach_view(self, engine_env):
+        """anchor_setup 属运维字段：仅 coach 返回，运动员视图不泄露（ADR-0005）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete")
+        assert "anchor_setup" not in draft.report["coach_extra"]
+        db.close()
+
+    def test_setup_suppressed_when_sample_insufficient(self, engine_env):
+        """样本不足：不出无锚点引导（建立后仍需样本达标），level 段显式说明样本不足。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 20
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        assert "样本不足" in setup["reason"]
+        text = " ".join(self._level(draft.report)["content"])
+        assert "样本不足" in text and "无锚点" not in text
+        db.close()
+
+    def test_setup_suppressed_in_degraded_period(self, degraded_env):
+        """降级期：建立锚点不解锁判定，抑制无锚点引导并说明降级原因。"""
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        assert "降级期" in setup["reason"]
+        text = " ".join(self._level(draft.report)["content"])
+        assert "降级期" in text and "无锚点" not in text
+        db.close()
+
+    def test_candidate_excludes_session_without_usable_metadata(self, engine_env):
+        """候选与 create_anchor_snapshot 元数据校验对齐：元数据不可用的场次不作候选（避免死候选）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # S-A 距离为 0（不可用元数据，建立时必失败）；S-B 正常作窗口
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, distance_m=0)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True
+        assert setup["candidates"] == []  # S-A 元数据不可用 → 不作候选
+        db.close()
+
+    def test_candidate_excludes_thin_session(self, engine_env):
+        """候选记分箭最小样本门槛：早于窗口但记分箭不足（<6）的场次不作候选，reason 说明原因。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < min_shots_for_description
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True
+        assert setup["candidates"] == []  # 记分箭过少 → 不作候选
+        assert "记分箭均不足" in setup["reason"]
+        db.close()
+
+    def test_candidate_keeps_session_at_threshold(self, engine_env):
+        """门槛为闭区间：恰好 6 支记分箭的场次仍作候选（不误伤边界）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 6)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert [c["session_id"] for c in setup["candidates"]] == ["S-A"]
+        db.close()
+
+
+class TestAnchorCreationMinShots:
+    """锚点建立记分箭最小样本门槛：与候选过滤对齐，过小场次拒绝建锚（避免噪声底过高拖累判定）。"""
+
+    def test_create_anchor_rejects_thin_session(self, engine_env):
+        from app.memory.baseline import create_anchor_snapshot
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 6
+        with pytest.raises(ValueError, match="记分箭不足"):
+            create_anchor_snapshot(db, ATHLETE, "反曲弓", "S-A")
+        db.close()
+
+
+class TestAnchorCreationBowIsolation:
+    """锚点建立只取目标弓种记分箭（ADR-0004）：场次含多弓种时不混算。"""
+
+    def test_create_anchor_uses_only_target_bow(self, engine_env):
+        """同场次混弓：按反曲弓建锚点只取反曲弓 10 箭（9.0），不被复合弓 1.0 拉低。"""
+        from app.memory.baseline import create_anchor_snapshot
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 10 + [1.0] * 20)
+        # 后 20 箭改标为复合弓（同一场次内混弓）
+        db._execute("UPDATE shot_fact SET bow_type='复合弓' WHERE session_id=? AND shot_seq>10", ("S-A",))
+        snap = create_anchor_snapshot(db, ATHLETE, "反曲弓", "S-A")
+        assert snap["n_shots"] == 10
+        assert snap["avg_score"] == 9.0  # 只用反曲弓；未混算复合弓
+        db.close()
+
+
 class TestPrimaryBowAggregation:
     """T4 验收：窗口按主弓种（箭数最多）聚合，其余弓种显式标注不计入，报告体带 bow_type（ADR-0004）。"""
 

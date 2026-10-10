@@ -1,11 +1,16 @@
 # -*- coding: utf-8 -*-
-"""M6 端到端验收：通过 HTTP 全链路验证（健康/导入/五档报告/档案/备注）。"""
+"""M6 端到端验收：通过 HTTP 全链路验证（健康/导入/五档报告/档案/备注）。
+
+注意：脚本包含「无锚点」分支用例（4c/4d）且 4b 会建立锚点，故**必须对全新库运行**
+（空 facts.db）。对已建锚点的库重跑会在 4c 断言失败——锚点残留使 level 段出方向判定而非
+滚动基线。运行方式：指向一个临时 config（store.db_path 为空库）启动服务后再执行本脚本。
+"""
 import json
 import os
 import time
 import urllib.request
 
-BASE = "http://127.0.0.1:8000/api/v1"
+BASE = os.environ.get("ENGINE_BASE", "http://127.0.0.1:8000/api/v1")
 ATHLETE = "1963169497552654337"
 # 真库运动员 ID 不硬编码（athlete_id = "1" + 身份证号，可逆，属 PII）：运行前用 REAL_ATHLETE_ID 注入
 REAL_ATHLETE = os.environ.get("REAL_ATHLETE_ID")
@@ -75,6 +80,21 @@ def main():
     texts33 = " ".join(" ".join(str(c) for c in s["content"]) for s in wk33["sections"])
     assert "滚动基线" in texts33 and "水平描述，非判定" in texts33, texts33
     print("无锚点后续窗口→滚动基线描述: True")
+
+    print("\n== 4d 无锚点引导：教练附注区给出可建锚点的候选场次（早于窗口）==")
+    st, wk33c = call("POST", f"/athletes/{ATHLETE}/reports/weekly",
+                     params={"week": "2026-W33", "view": "coach", "refresh": "true"})
+    assert st == 200, wk33c
+    setup = wk33c["coach_extra"]["anchor_setup"]
+    assert setup["needs_anchor"] is True and setup["candidates"], setup
+    assert all(c["session_time_utc"] < wk33c["window_start"] for c in setup["candidates"]), setup
+    print("候选场次数:", len(setup["candidates"]), "| 首个:",
+          setup["candidates"][0]["session_id"], setup["candidates"][0]["session_time_utc"][:10])
+    # 运动员视角不泄露运维字段
+    st, wk33a = call("POST", f"/athletes/{ATHLETE}/reports/weekly",
+                     params={"week": "2026-W33", "view": "athlete", "refresh": "true"})
+    assert "anchor_setup" not in wk33a["coach_extra"], wk33a
+    print("运动员视角不含 anchor_setup: True")
 
     print("\n== 4b 建锚点后周报出变化判定（试行口径 v1-trial，标注「试行中」）==")
     st, anc = call("POST", f"/athletes/{ATHLETE}/baseline/anchor",

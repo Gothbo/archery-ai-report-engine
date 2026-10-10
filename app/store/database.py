@@ -185,14 +185,40 @@ class Database:
             (athlete_id, bow_type, before_iso, limit),
         )
 
-    def scoring_shots_of_session(self, session_id: str) -> list[sqlite3.Row]:
+    def scoring_shots_of_session(self, session_id: str, bow_type: str | None = None) -> list[sqlite3.Row]:
+        """场次记分箭（shooting_mode=1）；指定 bow_type 时只取该弓种（锚点不混弓，ADR-0004）。"""
+        if bow_type is None:
+            return self._query(
+                "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
         return self._query(
-            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
+            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1 AND bow_type=?",
+            (session_id, bow_type))
 
     def bow_types_of_athlete(self, athlete_id: str) -> list[str]:
         rows = self._query(
             "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,))
         return [r["bow_type"] for r in rows]
+
+    def anchor_candidate_sessions(self, athlete_id: str, bow_type: str) -> list[sqlite3.Row]:
+        """可作锚点来源的场次：含该弓种记分箭，且具备可比性元数据（distance_m/mode_composition）。
+
+        供「建立锚点」引导列出候选（A3 要求来源场次元数据必填）；按时间升序，赛季初场次在前。
+        元数据校验与 create_anchor_snapshot 的真值判定对齐（distance_m>0 且 mode_composition 非空），
+        避免列出建立时必失败的「死候选」。
+        """
+        return self._query(
+            """SELECT s.session_id, s.session_time_utc, s.distance_m, s.mode_composition,
+                      (SELECT COUNT(*) FROM shot_fact f
+                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                      AS scoring_shots
+               FROM session_dim s
+               WHERE s.athlete_id=? AND s.distance_m IS NOT NULL AND s.distance_m > 0
+                 AND s.mode_composition IS NOT NULL AND s.mode_composition != ''
+                 AND EXISTS (SELECT 1 FROM shot_fact f
+                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+               ORDER BY s.session_time_utc""",
+            (bow_type, athlete_id, bow_type),
+        )
 
     def athletes_with_last_session(self) -> list[sqlite3.Row]:
         """档案列表 + 最近训练时间（供前端默认选中最近有训练的运动员）。"""

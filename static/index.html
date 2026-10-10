@@ -8,17 +8,20 @@
   :root {
     --bg: #f5f5f7;
     --card: #ffffff;
+    --header-bg: rgba(255,255,255,0.85);
     --text: #1d1d1f;
     --text-2: #6e6e73;
-    --accent: #0071e3;
-    --accent-hover: #0077ed;
+    --accent: #0068d6;
+    --accent-solid: #0068d6;
+    --accent-solid-hover: #0071e3;
     --accent-soft: rgba(0,113,227,.06);
     --accent-line: rgba(0,113,227,.16);
     --accent-ring: rgba(0,113,227,.22);
     --border: #e5e5ea;
     --fill-1: #e8e8ed;
     --fill-2: #c7c7cc;
-    --fill-3: #ececf0;
+    --disabled-bg: #8e8e93;
+    --seg-thumb: #ffffff;
     --bubble: #f0f0f2;
     --card-soft: #fbfbfd;
     --danger: #ff3b30;
@@ -31,6 +34,34 @@
     --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
     --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   }
+  /* ---- 暗色模式：仅覆盖 token，组件规则不动 ---- */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #000000;
+      --card: #1c1c1e;
+      --header-bg: rgba(28,28,30,0.8);
+      --text: #f5f5f7;
+      --text-2: #98989d;
+      --accent: #409cff;
+      --accent-solid: #0a6ad0;
+      --accent-solid-hover: #0a6fd6;
+      --accent-soft: rgba(10,132,255,.14);
+      --accent-line: rgba(10,132,255,.30);
+      --accent-ring: rgba(10,132,255,.40);
+      --border: #38383a;
+      --fill-1: #2c2c2e;
+      --fill-2: #48484a;
+      --disabled-bg: #48484a;
+      --seg-thumb: #636366;
+      --bubble: #2c2c2e;
+      --card-soft: #232325;
+      --danger: #ff453a;
+      --warn: #ff9f0a;
+      --shadow-1: 0 1px 2px rgba(0,0,0,.5);
+      --shadow-2: 0 8px 24px rgba(0,0,0,.6);
+    }
+  }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
@@ -40,7 +71,7 @@
   }
   header {
     position: sticky; top: 0; z-index: 10;
-    background: rgba(255,255,255,0.85);
+    background: var(--header-bg);
     backdrop-filter: saturate(180%) blur(20px);
     border-bottom: 1px solid var(--border);
     padding: 12px 24px;
@@ -48,23 +79,28 @@
   }
   header h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin-right: auto; }
 
-  /* ---- 分段控件（视角切换）：滑动指示块 ---- */
+  /* ---- 分段控件（视角切换 / 报告粒度）：滑动指示块 ---- */
   .segmented {
+    --seg-count: 2; --seg-item-w: 88px;
     position: relative; display: inline-flex; background: var(--fill-1);
     border-radius: var(--radius-sm); padding: 2px;
   }
   .seg-thumb {
-    position: absolute; top: 2px; left: 2px; width: calc(50% - 2px); height: calc(100% - 4px);
-    background: #fff; border-radius: 7px; box-shadow: var(--shadow-1);
+    position: absolute; top: 2px; left: 2px;
+    width: calc((100% - 4px) / var(--seg-count)); height: calc(100% - 4px);
+    background: var(--seg-thumb); border-radius: 7px; box-shadow: var(--shadow-1);
     transition: transform 180ms var(--ease-out);
   }
   .segmented button {
-    position: relative; z-index: 1; width: 88px;
+    position: relative; z-index: 1; width: var(--seg-item-w);
     border: none; background: transparent; padding: 6px 0;
     font-size: 13px; color: var(--text-2); border-radius: 7px; cursor: pointer;
-    font-family: inherit; transition: color 160ms ease;
+    font-family: inherit;
+    transition: color 160ms ease, transform 160ms var(--ease-out);
   }
   .segmented button.active { color: var(--text); font-weight: 600; }
+  .segmented button:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-ring); }
+  #granSwitch { --seg-count: 5; --seg-item-w: 64px; }
 
   main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
   .panel {
@@ -75,7 +111,7 @@
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   select, input, textarea {
     font-family: inherit; font-size: 14px; color: var(--text);
-    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 7px 10px; outline: none;
     transition: border-color 160ms ease, box-shadow 160ms ease;
   }
@@ -85,29 +121,21 @@
   .label { font-size: 12px; color: var(--text-2); margin-right: -2px; }
   button.primary {
     font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
-    background: var(--accent); border: none; border-radius: var(--radius-sm);
+    background: var(--accent-solid); border: none; border-radius: var(--radius-sm);
     padding: 8px 18px; cursor: pointer;
     transition: transform 160ms var(--ease-out), background 160ms ease;
   }
-  button.primary:disabled { background: var(--fill-2); cursor: default; }
+  button.primary:disabled { background: var(--disabled-bg); cursor: default; }
   button.ghost {
     font-family: inherit; font-size: 13px; color: var(--text);
-    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 6px 12px; cursor: pointer;
     transition: transform 160ms var(--ease-out), color 120ms ease, border-color 120ms ease;
   }
-  button.primary:focus-visible, button.ghost:focus-visible, .gran-btn:focus-visible {
+  button.primary:focus-visible, button.ghost:focus-visible {
     outline: none; box-shadow: 0 0 0 3px var(--accent-ring);
   }
-  .granularity-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
-  .gran-btn {
-    font-family: inherit; font-size: 14px; font-weight: 500;
-    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    padding: 8px 20px; cursor: pointer; color: var(--text);
-    transition: transform 160ms var(--ease-out), color 120ms ease, border-color 120ms ease, background 160ms ease;
-  }
-  .gran-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
-  .gran-btn:disabled { color: var(--fill-2); border-color: var(--fill-3); cursor: default; }
+  .granularity-bar { display: flex; gap: 10px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
 
   /* ---- 状态 chip：靠近触发点，生成中呼吸 ---- */
   #status {
@@ -166,6 +194,28 @@
     background: var(--card-soft); border: 1px solid var(--border);
     border-radius: var(--radius-xs); padding: 8px 10px;
   }
+  /* 风档对照：对齐小表（不写成三行句子） */
+  .sec .wb-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+  .sec .wb-table th, .sec .wb-table td {
+    text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border);
+  }
+  .sec .wb-table th { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
+  .sec .wb-table th.num, .sec .wb-table td.num { text-align: right; }
+  .sec .wb-table td.num { color: var(--text); font-weight: 500; }
+  .sec .wb-table tbody tr:last-child td { border-bottom: none; }
+
+  /* ---- 建立锚点引导（教练视图；无锚点时紧接水平对比段）---- */
+  .anchor-setup {
+    margin-top: 12px; padding: 14px 16px; border-radius: 12px;
+    background: var(--card-soft); border: 1px solid var(--border);
+  }
+  .anchor-setup h3 { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .anchor-setup p { font-size: 13px; line-height: 1.6; color: var(--text-2); }
+  .anchor-setup .as-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .anchor-setup select { flex: 1; min-width: 170px; }
 
   .meta {
     margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
@@ -178,7 +228,20 @@
   .meta-line .mv { color: var(--text); }
 
   .empty { text-align: center; color: var(--text-2); font-size: 14px; padding: 32px 0; }
-  #reportEmpty { padding: 44px 0; }
+  /* 报告区空态：高度收紧 + 一句主文案 + 一个引导动作 */
+  .empty-state {
+    display: flex; flex-direction: column; align-items: center; gap: 14px;
+    padding: 28px 16px; text-align: center;
+  }
+  .empty-state .es-title { font-size: 14px; color: var(--text-2); }
+  /* 侧栏空态：左对齐、小圆点 + 一句灰字，高度贴合内容 */
+  .empty-inline {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 2px; font-size: 13px; color: var(--text-2);
+  }
+  .empty-inline::before {
+    content: ''; flex: none; width: 6px; height: 6px; border-radius: 50%; background: var(--fill-2);
+  }
 
   .note { border-top: 1px solid var(--border); padding: 10px 0; display: flex; gap: 12px; align-items: baseline; }
   .note:first-child { border-top: none; }
@@ -204,7 +267,7 @@
   .msg.user { justify-content: flex-end; }
   .msg.assistant { justify-content: flex-start; }
   .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
-  .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.user .bubble { background: var(--accent-solid); color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant .bubble { background: var(--bubble); color: var(--text); border-bottom-left-radius: 4px; }
   .bubble .degraded { font-size: 12px; color: var(--warn); margin-top: 6px; }
   .bubble.thinking { display: inline-flex; align-items: center; gap: 4px; padding: 13px 14px; }
@@ -243,14 +306,14 @@
   .enter { animation: riseIn 200ms var(--ease-out) both; }
 
   @media (hover: hover) and (pointer: fine) {
-    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.primary:hover:not(:disabled) { background: var(--accent-solid-hover); }
     button.ghost:hover { border-color: var(--accent); color: var(--accent); }
-    .gran-btn:hover:not(:disabled):not(.active) { border-color: var(--accent); color: var(--accent); }
+    .segmented button:hover:not(.active) { color: var(--text); }
     .note .del:hover { color: var(--danger); }
   }
   button.primary:active:not(:disabled),
   button.ghost:active,
-  .gran-btn:active:not(:disabled) { transform: scale(.97); }
+  .segmented button:active { transform: scale(.97); }
 
   @media (prefers-reduced-motion: reduce) {
     .enter { animation-name: fadeIn; }
@@ -258,7 +321,7 @@
     .seg-thumb { transition: none; }
     button.primary:active:not(:disabled),
     button.ghost:active,
-    .gran-btn:active:not(:disabled) { transform: none; }
+    .segmented button:active { transform: none; }
   }
 </style>
 </head>
@@ -284,12 +347,15 @@
       <select id="sessionSelect" style="min-width:200px"></select>
     </div>
     <div class="granularity-bar">
-      <button class="gran-btn" data-g="daily">日报告</button>
-      <button class="gran-btn" data-g="weekly">周报告</button>
-      <button class="gran-btn" data-g="monthly">月报告</button>
-      <button class="gran-btn" data-g="quarterly">季报告</button>
-      <button class="gran-btn" data-g="yearly">年报告</button>
-      <input id="windowInput" style="width:130px;margin-left:8px" placeholder="窗口（默认当前）">
+      <div class="segmented" id="granSwitch">
+        <span class="seg-thumb"></span>
+        <button data-g="daily">日报告</button>
+        <button data-g="weekly" class="active">周报告</button>
+        <button data-g="monthly">月报告</button>
+        <button data-g="quarterly">季报告</button>
+        <button data-g="yearly">年报告</button>
+      </div>
+      <input id="windowInput" style="width:130px" placeholder="窗口（默认当前）">
       <span class="label" id="windowHint"></span>
       <span id="status"></span>
     </div>
@@ -302,12 +368,15 @@
     <div id="reportBody"></div>
     <div class="meta" id="reportMeta"></div>
   </div>
-  <div id="reportEmpty" class="empty">选择运动员，点击上方按钮生成报告</div>
+  <div id="reportEmpty" class="empty-state">
+    <div class="es-title">尚未生成报告</div>
+    <button class="primary" id="emptyGenBtn" disabled>生成周报告</button>
+  </div>
 
   <div class="two-col">
     <div class="panel">
       <div class="section-title">备注</div>
-      <div id="notesList"><div class="empty" style="padding:16px 0">暂无备注</div></div>
+      <div id="notesList"><div class="empty-inline">暂无备注</div></div>
       <div class="add-note">
         <select id="noteType">
           <option value="injury">伤病</option>
@@ -320,7 +389,7 @@
     </div>
     <div class="panel">
       <div class="section-title">历史结论沉淀</div>
-      <div id="memoriesList"><div class="empty" style="padding:16px 0">暂无结论沉淀</div></div>
+      <div id="memoriesList"><div class="empty-inline">暂无结论沉淀</div></div>
     </div>
   </div>
 
@@ -387,6 +456,12 @@ function currentWindow() {
   };
 }
 
+function setReportEmpty(title, canGenerate) {
+  const t = $('reportEmpty').querySelector('.es-title');
+  if (t) t.textContent = title;
+  $('emptyGenBtn').disabled = !canGenerate;
+}
+
 function loadAthletes() {
   api('/api/v1/athletes').then((r) => {
     athletes = r.athletes || [];
@@ -394,6 +469,7 @@ function loadAthletes() {
     sel.innerHTML = '';
     if (!athletes.length) {
       sel.innerHTML = '<option value="">（无运动员，请先导入数据）</option>';
+      setReportEmpty('暂无运动员数据，请先导入', false);
       return;
     }
     athletes.forEach((a) => {
@@ -417,6 +493,7 @@ function onAthleteChange() {
   if (!athleteId) return;
   setStatus('加载中…', true);
   $('reportEmpty').style.display = '';
+  setReportEmpty('尚未生成报告', true);
   $('reportPanel').style.display = 'none';
   lastRequest = null; // 换了运动员就丢弃上一份报告的窗口，避免切视角时误触发重取
   api('/api/v1/athletes/' + athleteId).then((r) => {
@@ -463,7 +540,7 @@ function refreshSidePanels() {
   api('/api/v1/athletes/' + athleteId + '/notes?view=' + view).then((r) => {
     const box = $('notesList');
     const notes = r.notes || [];
-    if (!notes.length) { box.innerHTML = '<div class="empty" style="padding:16px 0">暂无备注</div>'; return; }
+    if (!notes.length) { box.innerHTML = '<div class="empty-inline">暂无备注</div>'; return; }
     box.innerHTML = notes.map((n) =>
       '<div class="note"><span class="type">' + typeLabel(n.note_type) + '</span>' +
       '<span class="content">' + esc(n.content) + '</span>' +
@@ -471,12 +548,12 @@ function refreshSidePanels() {
       '<button class="del" data-id="' + n.note_id + '">删除</button></div>'
     ).join('');
     box.querySelectorAll('.del').forEach((b) => b.onclick = () => deleteNote(b.dataset.id));
-  }).catch(() => { $('notesList').innerHTML = '<div class="empty">加载失败</div>'; });
+  }).catch(() => { $('notesList').innerHTML = '<div class="empty-inline">加载失败</div>'; });
 
   api('/api/v1/athletes/' + athleteId + '/memories').then((r) => {
     const box = $('memoriesList');
     const ms = r.memories || [];
-    if (!ms.length) { box.innerHTML = '<div class="empty" style="padding:16px 0">暂无结论沉淀</div>'; return; }
+    if (!ms.length) { box.innerHTML = '<div class="empty-inline">暂无结论沉淀</div>'; return; }
     box.innerHTML = ms.slice(0, 8).map((m) =>
       '<div class="memory"><span class="k">' + (G_NAMES[m.granularity] || m.granularity) +
       (m.window_key ? ' · ' + esc(windowLabel(m)) : '') + '</span>：' +
@@ -648,7 +725,8 @@ function generate(g) {
   if (!athleteId) return;
   const p = windowParams(g);
   const qs = new URLSearchParams({ view: view, refresh: '1', ...p }).toString();
-  document.querySelectorAll('.gran-btn').forEach((b) => b.classList.toggle('active', b.dataset.g === g));
+  $('granSwitch').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.g === g));
+  moveThumb($('granSwitch'));
   setStatus('生成中…', true);
   api('/api/v1/athletes/' + athleteId + '/reports/' + g + '?' + qs, { method: 'POST' })
     .then((r) => {
@@ -662,9 +740,10 @@ function generate(g) {
     .catch((e) => { setStatus(''); alert('生成失败：' + e.message); });
 }
 
-document.querySelectorAll('.gran-btn').forEach((b) => {
+$('granSwitch').querySelectorAll('button').forEach((b) => {
   b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
 });
+$('emptyGenBtn').onclick = () => generate('weekly');
 
 /* ---- 报告渲染：数字主角 → 建议 → 支撑（层级重排，核心数字脱离句子）---- */
 
@@ -725,6 +804,43 @@ function sectionCard(s) {
   return card;
 }
 
+/* 风档对照：把「…档：均环 X（n=Y）」解析成对齐小表；非该格式的行按普通/缺失样式呈现 */
+const WB_RE = /^(.*?档)\s*[：:]\s*均环\s*([\d.]+)\s*[（(]\s*n\s*=\s*(\d+)\s*[）)]\s*$/;
+function windBandsCard(s) {
+  const card = document.createElement('div');
+  card.className = 'sec enter';
+  const h = document.createElement('h3');
+  h.textContent = s.title;
+  card.appendChild(h);
+  const rows = [];
+  (s.content || []).forEach((c) => {
+    const m = c.match(WB_RE);
+    if (m) {
+      rows.push({ band: m[1], avg: m[2], n: m[3] });
+    } else {
+      const p = document.createElement('p');
+      p.textContent = c;
+      if (NOTICE_RE.test(c)) p.className = 'notice';
+      card.appendChild(p);
+    }
+  });
+  if (rows.length) {
+    const t = document.createElement('table');
+    t.className = 'wb-table';
+    t.innerHTML = '<thead><tr><th>风档</th><th class="num">均环</th><th class="num">n</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    rows.forEach((r) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(r.band) + '</td><td class="num">' + esc(r.avg) +
+        '</td><td class="num">' + esc(r.n) + '</td>';
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+  }
+  return card;
+}
+
 function adviceCard(suggestions) {
   const card = document.createElement('div');
   card.className = 'advice enter';
@@ -739,6 +855,60 @@ function adviceCard(suggestions) {
   });
   card.appendChild(ul);
   return card;
+}
+
+/* ---- 建立锚点引导：无锚点时教练可直接从候选场次建锚点 ---- */
+function anchorSetupCard(setup) {
+  const card = document.createElement('div');
+  card.className = 'anchor-setup enter';
+  const h = document.createElement('h3');
+  h.textContent = '建立锚点';
+  card.appendChild(h);
+  const p = document.createElement('p');
+  p.textContent = setup.reason || '当前无锚点，无法判定方向。';
+  card.appendChild(p);
+  const cands = setup.candidates || [];
+  if (!cands.length) {
+    const note = document.createElement('p');
+    note.textContent = '暂无可作锚点的场次（需早于当前窗口、含距离信息，且记分箭达最小样本）。';
+    card.appendChild(note);
+    return card;
+  }
+  const row = document.createElement('div');
+  row.className = 'as-row';
+  const sel = document.createElement('select');
+  cands.forEach((c) => {
+    const o = document.createElement('option');
+    o.value = c.session_id;
+    o.textContent = (c.session_time_utc || '').slice(0, 10) + ' · ' + (c.distance_m || '?') + 'm · ' +
+      (c.scoring_shots || 0) + '箭 · ' + (c.mode_composition || '');
+    sel.appendChild(o);
+  });
+  const btn = document.createElement('button');
+  btn.className = 'primary';
+  btn.textContent = '建立锚点';
+  btn.onclick = () => createAnchor(setup.primary_bow, sel.value, btn);
+  row.appendChild(sel);
+  row.appendChild(btn);
+  card.appendChild(row);
+  return card;
+}
+
+function createAnchor(bowType, sessionId, btn) {
+  if (!athleteId || !sessionId) return;
+  btn.disabled = true;
+  setStatus('建立锚点…', true);
+  api('/api/v1/athletes/' + athleteId + '/baseline/anchor', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ bow_type: bowType, source_session_id: sessionId }),
+  }).then(() => {
+    setStatus('锚点已建立');
+    if (lastRequest) generate(lastRequest);  // 重生成：锚点建立后本窗口应出方向判定
+  }).catch((e) => {
+    btn.disabled = false;
+    setStatus('');
+    alert('建立锚点失败：' + e.message);
+  });
 }
 
 function renderMeta(r) {
@@ -806,9 +976,18 @@ function renderReport(r) {
   ['level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary'].forEach((k, i) => {
     const s = byKey[k];
     if (!s) return;
-    const card = sectionCard(s);
+    const card = (k === 'wind_bands') ? windBandsCard(s) : sectionCard(s);
     card.style.animationDelay = (100 + 40 * i) + 'ms';
     body.appendChild(card);
+    // 无锚点引导紧接水平对比段（仅教练视角；动作字段来自 coach_extra）
+    if (k === 'level' && view === 'coach') {
+      const setup = (r.coach_extra || {}).anchor_setup;
+      if (setup && setup.needs_anchor) {
+        const ac = anchorSetupCard(setup);
+        ac.style.animationDelay = (120 + 40 * i) + 'ms';
+        body.appendChild(ac);
+      }
+    }
   });
 
   renderMeta(r);
@@ -820,18 +999,19 @@ function deleteNote(id) {
     .catch((e) => alert('删除失败：' + e.message));
 }
 
-function setViewThumb() {
-  const btns = document.querySelectorAll('#viewSwitch button');
+function moveThumb(seg) {
+  const btns = seg.querySelectorAll('button');
   let idx = 0;
   btns.forEach((b, i) => { if (b.classList.contains('active')) idx = i; });
-  document.querySelector('#viewSwitch .seg-thumb').style.transform = 'translateX(' + (idx * 100) + '%)';
+  const thumb = seg.querySelector('.seg-thumb');
+  if (thumb) thumb.style.transform = 'translateX(' + (idx * 100) + '%)';
 }
 
 document.querySelectorAll('#viewSwitch button').forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll('#viewSwitch button').forEach((x) => x.classList.remove('active'));
     b.classList.add('active');
-    setViewThumb();
+    moveThumb($('viewSwitch'));
     view = b.dataset.view;
     refreshSidePanels();
     // 报告正文按视角过滤备注（教练观察仅教练可见），换视角必须重取同一窗口，
@@ -839,7 +1019,8 @@ document.querySelectorAll('#viewSwitch button').forEach((b) => {
     if (lastRequest) generate(lastRequest);
   };
 });
-setViewThumb();
+moveThumb($('viewSwitch'));
+moveThumb($('granSwitch'));
 
 $('athleteSelect').onchange = onAthleteChange;
 $('addNoteBtn').onclick = () => {

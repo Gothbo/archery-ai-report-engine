@@ -43,12 +43,22 @@ def compute_rolling_snapshot(db: Database, athlete_id: str, bow_type: str) -> di
 
 
 def create_anchor_snapshot(db: Database, athlete_id: str, bow_type: str, source_session_id: str) -> dict:
-    """建立锚点（赛季初/入队测试/换弓种）：取来源场次的记分箭，并落可比性元数据（A3）。"""
+    """建立锚点（赛季初/入队测试/换弓种）：取来源场次的记分箭，并落可比性元数据（A3）。
+
+    只取该弓种的记分箭（ADR-0004：不同项目基线不混用）；场次含多弓种时不混算。
+    记分箭须达最小样本（`data_quality.min_shots_for_description`），否则锚点噪声底过高、
+    会拖累后续方向判定——门槛与「建立锚点」引导的候选过滤对齐（ADR-0006）。
+    """
     cfg = get_config()
-    session_rows = db.scoring_shots_of_session(source_session_id)
+    session_rows = db.scoring_shots_of_session(source_session_id, bow_type)
     shots = _shots_as_dicts(session_rows)
     if not shots:
-        raise ValueError(f"来源场次 {source_session_id} 无记分箭，锚点无法建立")
+        raise ValueError(f"来源场次 {source_session_id} 无 {bow_type} 记分箭，锚点无法建立")
+    min_shots = cfg.data_quality.min_shots_for_description
+    if len(shots) < min_shots:
+        raise ValueError(
+            f"来源场次 {source_session_id} 的 {bow_type} 记分箭不足（{len(shots)} < {min_shots}），"
+            "样本过小噪声底过高，不可作锚点参照")
 
     dim_row = db.session_of(source_session_id)
     dim = dict(dim_row) if dim_row else {}

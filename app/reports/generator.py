@@ -44,6 +44,8 @@ SECTION_ORDER = ("window_score", "level", "data_integrity", "wind_bands", "sampl
 DEGRADE_HINT = "降级期，暂无进步/退步判定（MDC 阈值口径试行中，本段只描述水平、不判定方向）"
 # 试行口径提示（B13）：判定已解锁但为草案值，须标注可撤回
 TRIAL_HINT = "（变化判定口径 {src}，试行中：方向结论为初步判定，待专家签署后定稿）"
+# 无锚点提示（P1）：正文只说明缺锚点导致无方向判定（信息），「建立锚点」动作在 coach_extra（ADR-0005）
+NO_ANCHOR_HINT = "当前无锚点：锚点是方向判定的参照系，尚无锚点则本窗口不出方向判定"
 
 _SCORE_TITLES = {"daily": "本场成绩", "weekly": "本周成绩", "monthly": "本月成绩",
                  "quarterly": "本季成绩", "yearly": "本年成绩"}
@@ -334,13 +336,25 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         if not data_ok:
             # 数据质量护栏（P0）：分布存在结构性矛盾 → 抑制方向判定并显式说明原因
             level_lines = ["数据存疑：分布存在结构性矛盾，本窗口不出方向判定"]
-        elif rolling_dict and rolling_dict.get("avg_score") is not None:
-            # 无锚点可比（或样本不足）：不静默省略，改述窗口前滚动基线水平（只描述、不判定）
-            line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
-            level_lines.append(line)
-            level_evidence.append(ev)
+        elif not gate_ok:
+            # 样本不足：不引导建立锚点（建立后仍需样本达标才判定），显式说明并改述滚动基线
+            level_lines.append("样本不足，本窗口不出方向判定（待样本达标后再判定方向）")
+            if rolling_dict and rolling_dict.get("avg_score") is not None:
+                line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
+                level_lines.append(line)
+                level_evidence.append(ev)
         else:
-            level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
+            # 样本达标、数据可信：无锚点则显式说明缺锚点导致无方向判定（不静默省略）
+            if primary_bow is not None and anchor_dict is None:
+                # 无锚点引导（P1）：正文说明缺锚点；建立动作在 coach_extra（ADR-0005）
+                level_lines.append(NO_ANCHOR_HINT)
+            if rolling_dict and rolling_dict.get("avg_score") is not None:
+                # 改述窗口前滚动基线水平（只描述、不判定）
+                line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
+                level_lines.append(line)
+                level_evidence.append(ev)
+            if not level_lines:
+                level_lines = ["本窗口暂无可判定的水平对比（指标缺测或样本不足）"]
     elif cfg.change_caliber_trial:
         # 试行口径（B13）：判定已解锁但为草案值，末行标注口径版本与「试行中」
         level_lines.append(TRIAL_HINT.format(src=cfg.mdc_source))
@@ -455,6 +469,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         coach_extra["evidence"] = evidence_by_key
         coach_extra["advice_evidence"] = adv["evidence"]
         coach_extra["anchor_rebuild_hint"] = _anchor_rebuild_hint(db, athlete_id)
+        coach_extra["anchor_setup"] = _anchor_setup_hint(
+            db, athlete_id, primary_bow, window_start, anchor_dict,
+            gate_ok=gate_ok, data_ok=data_ok)
 
     report = {
         "report_id": report_id,
@@ -488,6 +505,59 @@ def persist_report(db: Database, draft: ReportDraft) -> None:
             delta_value=c["delta_value"], evidence=c["evidence"])
     db.put_cached_report(report["report_id"], athlete_id, report["granularity"],
                          report["window_key"], _report_cache_version(get_config()))
+
+
+def _anchor_setup_hint(db: Database, athlete_id: str, primary_bow: str | None,
+                       window_start: str | None, anchor_dict: dict | None,
+                       *, gate_ok: bool, data_ok: bool) -> dict:
+    """无锚点时的建立引导（仅教练附注区，ADR-0005）：给出可作锚点来源的候选场次。
+
+    候选限定「早于当前窗口起点」——锚点是窗口前的参照系，用窗口内场次会让差值恒为 0；
+    与滚动基线同一时间语义，保证建立后的方向判定有意义。按时间升序（赛季初场次在前）。
+
+    仅当「建立锚点确实能让本窗口出方向判定」时才引导：降级期 / 样本不足 / 数据存疑时，
+    即便建立锚点也不会解锁判定，故抑制引导并说明真实原因（避免给出无效动作）。
+
+    候选还需满足记分箭最小样本（`data_quality.min_shots_for_description`）：过小的场次作锚点
+    噪声底过高，会使后续方向判定长期不可信；门槛与 `create_anchor_snapshot` 的校验对齐。
+    """
+    if primary_bow is None:
+        return {"needs_anchor": False, "primary_bow": None, "candidates": [],
+                "reason": "本窗口无箭，无法确定弓种"}
+    if anchor_dict:
+        return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
+                "reason": "该弓种已有锚点"}
+    if get_config().mdc_source is None:
+        return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
+                "reason": "降级期（MDC 阈值口径试行中），建立锚点暂不会解锁方向判定"}
+    if not data_ok:
+        return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
+                "reason": "本窗口数据存疑（分布存在结构性矛盾），先核查数据再建立锚点"}
+    if not gate_ok:
+        return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
+                "reason": "本窗口样本不足，建立锚点后仍需样本达标才出方向判定"}
+    rows = db.anchor_candidate_sessions(athlete_id, primary_bow)
+    before_window = [
+        r for r in rows
+        if window_start is None or (r["session_time_utc"] or "") < window_start
+    ]
+    min_shots = get_config().data_quality.min_shots_for_description
+    candidates = [
+        {"session_id": r["session_id"], "session_time_utc": r["session_time_utc"],
+         "distance_m": r["distance_m"], "mode_composition": r["mode_composition"],
+         "scoring_shots": r["scoring_shots"]}
+        for r in before_window
+        if (r["scoring_shots"] or 0) >= min_shots
+    ][:10]
+    if candidates:
+        reason = "当前无锚点：锚点是方向判定的参照系，建议选赛季初/入队测试场次建立"
+    elif before_window:
+        reason = (f"当前无锚点，且早于本窗口的场次记分箭均不足 {min_shots} 支，"
+                  "样本过小不足以作锚点参照")
+    else:
+        reason = "当前无锚点，且无早于本窗口的候选场次可作参照"
+    return {"needs_anchor": True, "primary_bow": primary_bow,
+            "candidates": candidates, "reason": reason}
 
 
 def _anchor_rebuild_hint(db: Database, athlete_id: str) -> dict:
