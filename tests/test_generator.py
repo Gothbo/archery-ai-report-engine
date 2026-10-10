@@ -527,3 +527,52 @@ class TestViewCoachExtraGating:
             assert self._section(rep_a, key) == self._section(rep_c, key), key
         assert rep_a["coach_extra"] != rep_c["coach_extra"]
         db.close()
+
+
+class TestDataQualityGuardrail:
+    """P0 验收：不可能分布 / 过小样本在 data_integrity 显式标注「数据存疑」；
+    结构矛盾时抑制 level 段方向判定，避免用不可信数据误导教练。"""
+
+    @staticmethod
+    def _section(report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_small_sample_flagged_in_data_integrity(self, engine_env):
+        """过小样本（n=5 < 6）：data_integrity 显式标注「数据存疑」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" in integrity and "过小" in integrity
+        db.close()
+
+    def test_clean_sample_not_flagged(self, engine_env):
+        """分布自洽、样本充足：data_integrity 不出现「数据存疑」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" not in integrity
+        db.close()
+
+    def test_contradiction_suppresses_direction_judgement(self, engine_env, monkeypatch):
+        """结构矛盾（护栏判 block）：level 段不出方向判定并显式说明，data_integrity 展示原因。"""
+        import app.reports.generator as gen
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        monkeypatch.setattr(gen.Q, "assess_quality", lambda m, dq: {
+            "suspect": True, "block_judgement": True,
+            "reasons": ["远弹率 0.0% 低于脱靶率 61.5%（0 环箭必为远弹）"]})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        level = " ".join(self._section(draft.report, "level")["content"])
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" in level and "不出方向判定" in level
+        assert "数据存疑" in integrity and "低于脱靶率" in integrity
+        # 结构矛盾时不落任何强断言方向结论
+        assert not any(c["conclusion_key"] in ("progress", "regression") for c in draft.conclusions)
+        db.close()

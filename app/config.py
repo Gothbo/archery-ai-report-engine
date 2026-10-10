@@ -58,6 +58,17 @@ class MDCSpec(BaseModel):
         return self
 
 
+class DataQuality(BaseModel):
+    """数据质量护栏（P0）：对不可能的分布与过小样本显式标注「数据存疑」。
+
+    - min_shots_for_description：描述性统计的最小样本；低于此值统计量不可靠；
+    - score_max：单箭环值上限，用于校验含脱靶均环是否越界。
+    """
+
+    min_shots_for_description: int = Field(gt=0)
+    score_max: float = Field(gt=0)
+
+
 class SampleThreshold(BaseModel):
     daily: int = Field(gt=0)
     weekly: int = Field(gt=0)
@@ -135,6 +146,8 @@ class EngineConfig(BaseSettings):
     # 报告口径版本（B10/B12 缓存键的一部分）：成绩段口径变更须递增，作废旧口径缓存。
     # 与 mdc_source（MDC 阈值来源，空=降级期）解耦，避免口径升级误触/误退降级期。
     report_caliber_version: str = "v1"
+    # 数据质量护栏（P0）：描述性统计最小样本 + 分布不变量（见 app/reports/quality.py）
+    data_quality: DataQuality
     forbidden_phrases: list[str] = Field(default_factory=list)
     rolling_window_shots: int = Field(gt=0)
     notes_visibility: NotesVisibility
@@ -200,6 +213,7 @@ class EngineConfig(BaseSettings):
             "mdc": {k: v.model_dump() for k, v in self.mdc.items()},
             "mdc_source": self.mdc_source,
             "change_caliber_trial": self.change_caliber_trial,
+            "data_quality": self.data_quality.model_dump(),
             "report_caliber_version": self.report_caliber_version,
             "rolling_window_shots": self.rolling_window_shots,
             "memory": self.memory.model_dump(),

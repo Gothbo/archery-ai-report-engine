@@ -32,6 +32,11 @@
   "change_caliber_trial_note": "试行口径（B13）：判定已解锁但为草案值，报告在 level 段标注「试行中」；专家签署后置 false 并升 mdc_source 正式版本。",
   "report_caliber_version": "v2",
   "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
+  "data_quality": {
+    "min_shots_for_description": 6,
+    "score_max": 10.9
+  },
+  "data_quality_note": "数据质量护栏（P0）：min_shots_for_description=描述性统计最小样本（低于此值统计量不可靠）；score_max=单箭环值上限。分布不变量（0环⊆远弹、内十与远弹互斥、含脱靶均环∈[0,score_max] 且 ≤(1−脱靶率)×score_max）恒校验；命中即出「数据存疑」，结构矛盾时抑制方向判定（见 app/reports/quality.py）。不校验「命中率+脱靶率=100%」：hit（命中）与 score（环值）为独立信号，二者不互补。",
   "forbidden_phrases": ["练它即提分"],
   "rolling_window_shots": 288,
   "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },

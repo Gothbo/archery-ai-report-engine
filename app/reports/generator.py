@@ -27,6 +27,7 @@ from app.metrics.performance import (
 )
 from app.metrics.process import offset_mm
 from app.metrics.vector import metric_vector
+from app.reports import quality as Q
 from app.reports import rules as R
 from app.reports.window import window_bounds
 from app.store.database import Database
@@ -210,6 +211,11 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 样本门槛（A4）：不足 → 降级"样本不足，仅供参考"，禁止判定词
     gate_ok = R.sample_gate(cfg, granularity, m["n_shots"], len(session_ids))
 
+    # 数据质量护栏（P0）：不可能分布 / 过小样本显式标注「数据存疑」；
+    # 结构矛盾时抑制方向判定（data_ok=False），避免用不可信数据出结论误导教练
+    dq = Q.assess_quality(m, cfg.data_quality)
+    data_ok = not dq["block_judgement"]
+
     report_id = str(uuid.uuid4())
 
     conclusions: list[dict] = []
@@ -236,7 +242,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 否则显式占位，不静默省略）
     level_lines: list[str] = []
     level_evidence: list[dict] = []
-    if gate_ok and anchor_dict:
+    if gate_ok and data_ok and anchor_dict:
         # 降级期（mdc_source 为空）仍走此分支：方向判定由 rules.judge_metric 统一降级（B3 SSOT），
         # 此处只渲染"只描述不判定"的 degrade 模板，故降级期不会出现方向判定词。
         comparable = _comparability(db, shots, anchor_dict)
@@ -297,14 +303,18 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         if len(level_lines) == 1:
             level_lines.append("本窗口无锚点比对、亦无滚动基线快照，暂无可描述的水平")
     elif not level_lines:
-        level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
+        if not data_ok:
+            # 数据质量护栏（P0）：分布存在结构性矛盾 → 抑制方向判定并显式说明原因
+            level_lines = ["数据存疑：分布存在结构性矛盾，本窗口不出方向判定"]
+        else:
+            level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
     elif cfg.change_caliber_trial:
         # 试行口径（B13）：判定已解锁但为草案值，末行标注口径版本与「试行中」
         level_lines.append(TRIAL_HINT.format(src=cfg.mdc_source))
     by_key["level"] = {"key": "level", "title": "水平对比",
                        "content": level_lines, "evidence": level_evidence}
 
-    # ③ data_integrity：采样缺失显式标注（无风数据时风档并入此段）
+    # ③ data_integrity：采样缺失 + 数据质量存疑显式标注（无风数据时风档并入此段）
     has_wind = any(s.get("wind_speed") is not None for s in shots)
     has_hr = any(s.get("hr") is not None for s in shots)
     integrity_lines: list[str] = []
@@ -314,15 +324,22 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         integrity_lines.append("本窗口无风速数据，风档对照不可用")
     if not has_hr:
         integrity_lines.append("本窗口无心率数据，心率波动指标不可用")
-    if not integrity_lines:
+    if has_wind and has_hr:
         integrity_lines.append("本窗口采样数据完整（风速 / 心率均有覆盖）")
+    # 数据质量存疑（P0）：不可能分布 / 过小样本显式标注；结构矛盾时说明已抑制方向判定
+    for reason in dq["reasons"]:
+        integrity_lines.append(f"数据存疑：{reason}")
+    if dq["block_judgement"]:
+        integrity_lines.append("数据存疑：分布存在结构性矛盾，已抑制方向判定")
     # 其余弓种显式标注不计入（ADR-0004）
     for bow, n in other_bows:
         integrity_lines.append(f"另有 {n} 箭为 {bow} 弓种，未计入")
     by_key["data_integrity"] = {
         "key": "data_integrity", "title": "数据完整性", "content": integrity_lines,
         "evidence": [{"type": "fact", "ref": "data_integrity",
-                      "value": {"has_wind": has_wind, "has_hr": has_hr, "n_shots": m["n_shots"]}}],
+                      "value": {"has_wind": has_wind, "has_hr": has_hr, "n_shots": m["n_shots"],
+                                "quality_suspect": dq["suspect"],
+                                "block_judgement": dq["block_judgement"]}}],
     }
 
     # ④ wind_bands：有风数据时独立成段；无则并入 data_integrity（上一步已标注），不单独成段
