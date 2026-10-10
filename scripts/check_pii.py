@@ -39,7 +39,11 @@ def _tracked_files() -> list[str]:
 
 def main() -> int:
     hits: list[str] = []
+    self_rel = os.path.relpath(os.path.abspath(__file__), ROOT).replace(os.sep, "/")
     for rel in _tracked_files():
+        # 本闸门脚本自身持有黑名单（真实姓名/派生 ID），不参与扫描
+        if rel.replace(os.sep, "/") == self_rel:
+            continue
         path = os.path.join(ROOT, rel)
         if not os.path.isfile(path):
             continue
