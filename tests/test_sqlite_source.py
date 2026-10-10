@@ -168,3 +168,63 @@ class TestSqliteIngestPipeline:
         profile = db.get_profile(AID)
         assert profile["name"] == "葛靖"
         db.close()
+
+
+def _make_interleaved_db(path: str) -> None:
+    """两名运动员在同一时段交替射击（模拟多人同场测试）。"""
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE ScoreInfoNew (
+            Id INTEGER, Score TEXT, IsGood INTEGER, X_ TEXT, Y_ TEXT,
+            ProjectId INTEGER, ShotType INTEGER, ShootingTime TEXT, IdentityID TEXT,
+            RegisterNum TEXT, MatchType TEXT, Num INTEGER);
+        CREATE TABLE HeartRateData (
+            IdentityID TEXT, HeartRate INTEGER, CreateDate TEXT);
+        CREATE TABLE WindSpeedDirection (
+            RegisterNum TEXT, AthleteName TEXT, WindSpeed REAL, WindDirection TEXT, CreateTime TEXT);
+    """)
+    # 全局时间序每 15s 交替；同一运动员相邻箭间隔 30s（远小于 90min）
+    rows = [
+        (1, "9.10", "2024-06-20 09:00:00.000", IDENT),
+        (2, "8.20", "2024-06-20 09:00:15.000", IDENT_X),
+        (3, "9.30", "2024-06-20 09:00:30.000", IDENT),
+        (4, "8.40", "2024-06-20 09:00:45.000", IDENT_X),
+        (5, "9.50", "2024-06-20 09:01:00.000", IDENT),
+        (6, "8.60", "2024-06-20 09:01:15.000", IDENT_X),
+    ]
+    conn.executemany("""INSERT INTO ScoreInfoNew
+        (Id, Score, IsGood, X_, Y_, ProjectId, ShotType, ShootingTime, IdentityID, RegisterNum, MatchType, Num)
+        VALUES (?,?,0,'0.0','0.0',171,3,?,?,?,'Qualification',?)""",
+        [(i, sc, t, ident, ident, i) for i, sc, t, ident in rows])
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def interleaved_db(engine_env):
+    path = engine_env[1].replace("facts.db", "interleaved.db")
+    _make_interleaved_db(path)
+    return path
+
+
+class TestConcurrentAthleteClustering:
+    """多人同时射击时，聚类须按运动员各自成场，不被全局时间序打碎。"""
+
+    def test_interleaved_shots_not_fragmented(self, interleaved_db):
+        src = SQLiteSource(interleaved_db)
+        sessions = list(src.iter_sessions())
+        # 两人各 1 场（各 3 箭）；被交替打碎则会是 6 场
+        assert len(sessions) == 2
+        a = _sessions_of(src, AID)
+        b = _sessions_of(src, AID_X)
+        assert len(a) == 1 and len(b) == 1
+        assert len(a[0].shots) == 3
+        assert len(b[0].shots) == 3
+
+    def test_shots_keep_time_order_within_session(self, interleaved_db):
+        src = SQLiteSource(interleaved_db)
+        a = _sessions_of(src, AID)[0]
+        shots = sorted(a.shots, key=lambda s: s.shot_seq)
+        assert [s.score for s in shots] == [9.1, 9.3, 9.5]
+        times = [s.shot_time_utc for s in shots]
+        assert times == sorted(times)

@@ -114,23 +114,29 @@ class SQLiteSource(Source):
             hr_map = self._load_hr(conn)
             wind_map = self._load_wind(conn)
 
-        # 场次聚类：同运动员同日、相邻箭间隔 <= gap 归为一场（按时间序保证顺序）
+        # 场次聚类：同运动员同日、相邻箭间隔 <= gap 归为一场。
+        # 逐运动员独立跟踪其当前簇——score_rows 是全局时间序，多人同场交替射击时
+        # 若以"全局上一个簇"作参照会错配，把同一场打成数十个单箭场。
         clusters: list[list[sqlite3.Row]] = []
+        open_cluster: dict[str, int] = {}      # athlete_id -> 其当前簇下标
+        last_dt_of: dict[str, datetime] = {}   # athlete_id -> 其当前簇内最后一箭时间
         for r in score_rows:
             local_dt = _parse_local(r["ShootingTime"])
             if local_dt is None:
                 logger.warning("跳过无法解析时间的箭 id=%s", r["Id"])
                 continue
             aid = athlete_id_of(r["IdentityID"])
-            if clusters:
-                prev = clusters[-1][-1]
-                prev_dt = _parse_local(prev["ShootingTime"])
-                prev_aid = athlete_id_of(prev["IdentityID"])
-                if (prev_dt is not None and prev_aid == aid and prev_dt.date() == local_dt.date()
+            idx = open_cluster.get(aid)
+            if idx is not None:
+                prev_dt = last_dt_of[aid]
+                if (prev_dt.date() == local_dt.date()
                         and local_dt - prev_dt <= timedelta(minutes=store.session_gap_minutes)):
-                    clusters[-1].append(r)
+                    clusters[idx].append(r)
+                    last_dt_of[aid] = local_dt
                     continue
             clusters.append([r])
+            open_cluster[aid] = len(clusters) - 1
+            last_dt_of[aid] = local_dt
 
         date_seq: dict[tuple[str, str], int] = {}
         for cluster in clusters:
