@@ -88,9 +88,20 @@ class TestWindAdvice:
     def test_wind_band_delta_triggers(self):
         """两档达标样本且档间均环差超阈值：提示风况适应，且用可读档标签。"""
         r = _build(_m(), wind_band_avg={0: 9.5, 1: 8.0}, wind_band_counts={0: 20, 1: 20})
-        assert any("风档" in s for s in r["suggestions"])
-        assert any("[0,1.5)" in s and "[1.5,2.0)" in s for s in r["suggestions"])
+        text = " ".join(r["suggestions"])
+        assert "风档" in text
+        # 档标签由 band_label 归一（1 位小数），展示层与建议层一致
+        assert "[0.0,1.5)" in text and "[1.5,2.0)" in text
+        # 高风档更低 → 风况适应问题，给出风感训练建议
+        assert "增加风感与瞄准补偿训练" in text
         assert any(e["ref"] == "advice_wind" for e in r["evidence"])
+
+    def test_wind_band_calm_worse_not_advised_as_wind_training(self):
+        """低风档反而更低（与风况影响方向相反）：不套用风感训练建议，避免自相矛盾文案。"""
+        r = _build(_m(), wind_band_avg={0: 8.0, 1: 9.5}, wind_band_counts={0: 20, 1: 20})
+        text = " ".join(r["suggestions"])
+        assert "风档" in text and "方向相反" in text
+        assert "增加风感与瞄准补偿训练" not in text
 
     def test_wind_band_below_min_shots_ignored(self):
         """档样本不足：不参与比较，不出风况建议。"""

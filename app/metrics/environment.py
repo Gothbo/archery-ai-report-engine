@@ -51,3 +51,12 @@ def wind_band_counts(shots: list[dict], bands: Sequence[Sequence[float]]) -> dic
 def wind_gap(wind_avg: float, no_wind_avg: float) -> float:
     """风对成绩影响：高风均环 - 低风均环（负值 = 风拖低成绩）。"""
     return round(wind_avg - no_wind_avg, 3)
+
+
+def band_label(lo: float, hi: float) -> str:
+    """风档区间 → 可读标签（如 [0.0,1.5)；末档 hi>=99 记为 ≥lo）。
+
+    统一保留 1 位小数：config 经 pydantic 归一为 float，若直接插值会出现
+    「[0.0,1.5)」与硬编码「[0,1.5)」并存的展示/建议不一致，故此处归一格式。
+    """
+    return f"≥{lo:.1f}" if hi >= 99 else f"[{lo:.1f},{hi:.1f})"

@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 
 from app.config import EngineConfig, get_config
-from app.metrics.environment import wind_band_avg_scores, wind_band_counts
+from app.metrics.environment import band_label, wind_band_avg_scores, wind_band_counts
 from app.metrics.performance import (
     effective_avg_score,
     far_miss_rate,
@@ -405,7 +405,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     band_avg = wind_band_avg_scores(shots, cfg.wind_bands)
     band_counts = wind_band_counts(shots, cfg.wind_bands)
     if band_avg:
-        band_names = ["[0,1.5)", "[1.5,2.0)", "[2.0,2.5)", "≥2.5"]
+        # 档标签由 config.wind_bands 派生（与建议层共用 band_label），不再硬编码，
+        # 避免 config 调整档位后展示错位/越界
+        band_labels = [band_label(lo, hi) for lo, hi in cfg.wind_bands]
         band_lines = []
         for b, v in sorted(band_avg.items()):
             n = band_counts.get(b, 0)
@@ -413,7 +415,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             # 避免小样本噪声被读成「该风况下更好 / 更差」
             tail = (f"n={n}，样本偏少未参与风档比较"
                     if n < cfg.advice.min_band_shots else f"n={n}")
-            band_lines.append(f"{band_names[b]} 档：均环 {v}（{tail}）")
+            band_lines.append(f"{band_labels[b]} 档：均环 {v}（{tail}）")
         by_key["wind_bands"] = {"key": "wind_bands", "title": "风档对照", "content": band_lines,
                                 "evidence": [{"type": "fact", "ref": "wind_band_avg", "value": band_avg}]}
 

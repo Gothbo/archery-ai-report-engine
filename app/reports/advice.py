@@ -20,12 +20,13 @@
 from __future__ import annotations
 
 from app.config import EngineConfig
+from app.metrics.environment import band_label
 
 
 def _band_label(cfg: EngineConfig, idx: int) -> str:
-    """风档索引 → 可读区间标签（如 [0,1.5)；末档 hi>=99 记为 ≥lo）。"""
+    """风档索引 → 可读区间标签（与展示层共用 band_label，保证两处一致）。"""
     lo, hi = cfg.wind_bands[idx]
-    return f"≥{lo}" if hi >= 99 else f"[{lo},{hi})"
+    return band_label(lo, hi)
 
 
 def _trend(conclusion_keys: list[str]) -> tuple[str | None, bool]:
@@ -104,11 +105,15 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
         hi_b, hi_v = bands[-1]
         delta = round(hi_v - lo_v, 2)
         if abs(delta) >= a.wind_band_delta:
-            worse = hi_b if delta < 0 else lo_b
+            # 措辞随方向变化：高风档更低 = 风况适应问题（风感训练可改善）；
+            # 低风档反而更低与风况影响方向相反，若仍套用风感训练建议会自相矛盾，改为提示核查
+            if delta < 0:
+                worse, remedy = hi_b, "建议增加风感与瞄准补偿训练"
+            else:
+                worse, remedy = lo_b, "与风况影响方向相反，建议核查该档样本"
             suggestions.append(
                 f"风档 {_band_label(cfg, lo_b)} 与 {_band_label(cfg, hi_b)} 均环相差 "
-                f"{abs(delta):.2f} 环（{_band_label(cfg, worse)} 更低）；"
-                "建议增加风感与瞄准补偿训练")
+                f"{abs(delta):.2f} 环（{_band_label(cfg, worse)} 更低）；{remedy}")
             evidence.append({"type": "fact", "ref": "advice_wind",
                              "value": {"band_avg": wind_band_avg,
                                        "band_counts": wind_band_counts, "delta": delta}})

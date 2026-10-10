@@ -75,7 +75,7 @@ class TestSixSectionSkeleton:
         draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
         wb = [s for s in draft.report["sections"] if s["key"] == "wind_bands"][0]
         lines = {c.split(" 档")[0]: c for c in wb["content"]}
-        assert "样本偏少" not in lines["[0,1.5)"]
+        assert "样本偏少" not in lines["[0.0,1.5)"]
         assert "样本偏少" in lines["[1.5,2.0)"]
         db.close()
 
