@@ -159,6 +159,7 @@
   }
   .report-head .rh-name { font-size: 15px; font-weight: 600; color: var(--text); }
   .report-head .rh-sep { color: var(--fill-2); margin: 0 3px; }
+  .report-head .rh-range { flex-basis: 100%; font-size: 12px; color: var(--text-2); margin-top: 2px; font-variant-numeric: tabular-nums; }
   .hero { margin-bottom: 4px; }
   .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 12px; }
   @media (max-width: 720px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
@@ -574,6 +575,17 @@ function windowLabel(x) {
   const k = String(x.window_key || '');
   return x.granularity === 'daily' ? k.replace(/^daily:/, '') : k;
 }
+// 窗口起止（北京时间）：window_end 为开区间下界（下一期起点），末日在展示时回退 1ms 取当日
+function windowRange(r) {
+  if (!r || !r.window_start || !r.window_end) return '';
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const s = new Date(r.window_start), e0 = new Date(r.window_end);
+  if (isNaN(s) || isNaN(e0)) return '';
+  const sd = fmt.format(s), ed = fmt.format(new Date(e0.getTime() - 1));
+  return (sd === ed ? sd : sd + ' ~ ' + ed) + '（北京时间）';
+}
 
 function loadChatReports(preferKey) {
   if (!athleteId) return;
@@ -932,11 +944,13 @@ function renderReport(r) {
   $('reportPanel').style.display = '';
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
   const who = r.athlete ? r.athlete.name : '';
+  const rng = windowRange(r);
   $('reportHead').innerHTML =
     '<span class="rh-name">' + esc(who) + '</span>' +
     '<span class="rh-sep">·</span>' + esc(names[r.granularity] || r.granularity) + '报告' +
-    '<span class="rh-sep">·</span>' + esc(r.window_key) +
-    '<span class="rh-sep">·</span>' + (view === 'coach' ? '教练视角' : '运动员视角');
+    '<span class="rh-sep">·</span>' + esc(windowLabel(r)) +
+    '<span class="rh-sep">·</span>' + (view === 'coach' ? '教练视角' : '运动员视角') +
+    (rng ? '<span class="rh-range">' + esc(rng) + '</span>' : '');
 
   const byKey = {};
   (r.sections || []).forEach((s) => { byKey[s.key] = s; });
