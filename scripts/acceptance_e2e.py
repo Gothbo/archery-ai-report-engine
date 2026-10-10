@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
 """M6 端到端验收：通过 HTTP 全链路验证（健康/导入/五档报告/档案/备注）。"""
 import json
+import os
 import time
 import urllib.request
 
 BASE = "http://127.0.0.1:8000/api/v1"
 ATHLETE = "1963169497552654337"
+# 真库运动员 ID 不硬编码（athlete_id = "1" + 身份证号，可逆，属 PII）：运行前用 REAL_ATHLETE_ID 注入
+REAL_ATHLETE = os.environ.get("REAL_ATHLETE_ID")
 
 
 def call(method: str, path: str, body: dict | None = None, params: dict | None = None):
@@ -61,9 +64,17 @@ def main():
     print("weekly 段:", keys)
     texts = " ".join(" ".join(str(c) for c in s["content"]) for s in wk["sections"])
     assert "含脱靶均环" in texts
-    # 无锚点 → level 段不静默省略：显式占位
+    # 无锚点 → level 段不静默省略：首窗口无先前箭，显式占位
     assert "level" in keys and ("暂无可判定" in texts or "暂无" in texts)
     print("无锚点 level 占位: True")
+
+    print("\n== 4c 无锚点·后续窗口：level 段改述窗口前滚动基线水平（只描述、不判定）==")
+    st, wk33 = call("POST", f"/athletes/{ATHLETE}/reports/weekly",
+                    params={"week": "2026-W33", "refresh": "true"})
+    assert st == 200, wk33
+    texts33 = " ".join(" ".join(str(c) for c in s["content"]) for s in wk33["sections"])
+    assert "滚动基线" in texts33 and "水平描述，非判定" in texts33, texts33
+    print("无锚点后续窗口→滚动基线描述: True")
 
     print("\n== 4b 建锚点后周报出变化判定（试行口径 v1-trial，标注「试行中」）==")
     st, anc = call("POST", f"/athletes/{ATHLETE}/baseline/anchor",
@@ -98,13 +109,16 @@ def main():
     st, sess = call("GET", f"/athletes/{ATHLETE}/sessions")
     print("张明场次数:", len(sess["sessions"]))
 
-    print("\n== 6b 真库运动员建议层（葛靖月报）==")
-    st, rp = call("POST", "/athletes/1422802198808030396/reports/monthly",
-                  params={"month": "2025-01", "view": "coach", "refresh": "true"})
-    assert st == 200, rp
-    sugg = rp["suggestions"]
-    assert isinstance(sugg, list) and len(sugg) >= 1, rp
-    print("建议条数:", len(sugg), "| 示例:", sugg[0])
+    print("\n== 6b 真库运动员建议层（真实月报）==")
+    if not REAL_ATHLETE:
+        print("跳过：未设置 REAL_ATHLETE_ID（避免在仓库内硬编码真实运动员 ID）")
+    else:
+        st, rp = call("POST", f"/athletes/{REAL_ATHLETE}/reports/monthly",
+                      params={"month": "2025-01", "view": "coach", "refresh": "true"})
+        assert st == 200, rp
+        sugg = rp["suggestions"]
+        assert isinstance(sugg, list) and len(sugg) >= 1, rp
+        print("建议条数:", len(sugg), "| 示例:", sugg[0])
 
     print("\n== 7 备注双视角 + 软删 ==")
     st, c = call("POST", f"/athletes/{ATHLETE}/notes",

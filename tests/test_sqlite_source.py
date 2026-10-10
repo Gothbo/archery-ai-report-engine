@@ -9,8 +9,8 @@ from app.ingest.sqlite_source import SQLiteSource, athlete_id_of
 from app.memory.baseline import refresh_rolling_after_import
 from app.store.database import Database
 
-IDENT = "422802198808030396"      # 纯数字 18 位
-IDENT_X = "42112319910309643X"    # 含 X 校验位
+IDENT = "110101200001011234"      # 纯数字 18 位（合成身份号，非真实 PII）
+IDENT_X = "11010119900101123X"    # 含 X 校验位（合成）
 AID = athlete_id_of(IDENT)
 AID_X = athlete_id_of(IDENT_X)
 
@@ -49,8 +49,8 @@ def _make_fake_real_db(path: str) -> None:
     ])
     conn.executemany("""INSERT INTO WindSpeedDirection
         (RegisterNum, AthleteName, WindSpeed, WindDirection, CreateTime) VALUES (?,?,?,?,?)""", [
-        (IDENT, "葛靖", 1.2, "194.6", "2024-06-20 09:00:02.000"),
-        (IDENT, "葛靖", 1.8, "186.1", "2024-06-20 09:00:42.000"),
+        (IDENT, "运动员A", 1.2, "194.6", "2024-06-20 09:00:02.000"),
+        (IDENT, "运动员A", 1.8, "186.1", "2024-06-20 09:00:42.000"),
     ])
     conn.commit()
     conn.close()
@@ -69,12 +69,13 @@ def _sessions_of(src: SQLiteSource, aid: str) -> list:
 
 class TestAthleteIdMapping:
     def test_digits18_bijective(self):
-        assert AID == "1422802198808030396"
+        # 纯数字 18 位 → 10^18 + identity（"1" 前缀，可逆）；断言映射本身，不绑定真实身份号
+        assert AID == "1" + IDENT
 
     def test_x_checksum_hash_derived(self):
         assert len(AID_X) == 19
         assert AID_X.isdigit()
-        assert athlete_id_of("42112319910309643x") == AID_X  # 大小写无关确定性
+        assert athlete_id_of(IDENT_X.lower()) == AID_X  # 大小写无关确定性
 
 
 class TestSqliteSource:
@@ -143,7 +144,7 @@ class TestSqliteSource:
     def test_athlete_profiles_from_wind(self, fake_real_db):
         src = SQLiteSource(fake_real_db)
         profiles = src.athlete_profiles()
-        assert profiles[AID]["name"] == "葛靖"
+        assert profiles[AID]["name"] == "运动员A"
 
     def test_2009_junk_filtered(self, fake_real_db):
         src = SQLiteSource(fake_real_db)
@@ -166,7 +167,7 @@ class TestSqliteIngestPipeline:
         assert snap is not None and snap["n_shots"] == 7
         # 档案从风表写入
         profile = db.get_profile(AID)
-        assert profile["name"] == "葛靖"
+        assert profile["name"] == "运动员A"
         db.close()
 
 

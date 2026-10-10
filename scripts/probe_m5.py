@@ -1,12 +1,13 @@
 # -*- coding: utf-8 -*-
 """M5 冒烟：真 SQLite 全量导入 → 报告生成（临时脚本）。"""
 import sys, tempfile, os
+from datetime import datetime, timezone
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from app.config import get_config
 from app.store.database import Database
 from app.ingest import ingest_source
-from app.ingest.sqlite_source import SQLiteSource, athlete_id_of
+from app.ingest.sqlite_source import SQLiteSource
 from app.memory.baseline import refresh_rolling_after_import
 
 db_path = os.path.join(tempfile.mkdtemp(), "real.db")
@@ -26,8 +27,14 @@ print("session sample:", db._query("SELECT session_id, athlete_id, session_time_
 print("shot sample:", db._query("SELECT athlete_id, score, hit, x_mm, y_mm, mcr_t, hr, wind_speed, shooting_mode, bow_type, shot_time_utc FROM shot_fact LIMIT 3"))
 print("rolling:", db._query("SELECT athlete_id, bow_type, n_shots, avg_score, collected_at_utc FROM baseline_snapshots WHERE snap_type='rolling' LIMIT 5"))
 
-# 挑一个 2024+ 有 HR 的运动员（422802198808030396）测报告
-aid = athlete_id_of("422802198808030396")
+# 挑一个 2024+ 箭数最多的运动员测报告（动态选取，避免硬编码身份号）
+since_ms = int(datetime(2024, 1, 1, tzinfo=timezone.utc).timestamp() * 1000)
+row = db._query(
+    "SELECT athlete_id, COUNT(*) AS c FROM shot_fact WHERE shot_time_utc>=? "
+    "GROUP BY athlete_id ORDER BY c DESC LIMIT 1",
+    (since_ms,),
+)
+aid = row[0]["athlete_id"]
 print("\ntest athlete:", aid)
 from app.reports.window import window_of_shot
 rows = db._query("SELECT DISTINCT session_time_utc FROM session_dim WHERE athlete_id=?", (aid,))
