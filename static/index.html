@@ -970,16 +970,15 @@ function renderReport(r) {
   const ws = byKey['window_score'];
   if (ws) {
     const line = (ws.content || [])[0] || '';
-    const n = (line.match(/[（(]\s*n\s*=\s*(\d+)\s*[）)]/) || [])[1];
     const parsed = parseMetrics(line);
-    if (n === '0') {
-      // 空窗口：后端文案为 0.00/0.0% 占位，直接呈现会像「测出来的 0」；改显干净空状态
+    if (parsed) {
+      hero.appendChild(metricGrid(parsed));
+    } else {
+      // 无可解析指标（如空窗口的显式缺失说明）：干净空态，不冒险把说明渲染成数字
       const el = document.createElement('div');
       el.className = 'hero-empty enter';
-      el.textContent = '本窗口无箭';
+      el.textContent = line || '本窗口无箭';
       hero.appendChild(el);
-    } else {
-      hero.appendChild(parsed ? metricGrid(parsed) : sectionCard(ws));
     }
   }
 

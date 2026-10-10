@@ -234,6 +234,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 训练次数按主弓种过滤：仅统计贡献了主弓种箭的场次，非主弓种场次不虚增样本门槛
     session_ids = sorted({s["session_id"] for s in shots})
     m = _calc_metrics(shots)
+    # 空窗口（n=0）：avg_score([])==0.0、各比例恒为 0，直接呈现会像「测出来的 0」；
+    # 三处受影响的段落（成绩 / 水平 / 样本）统一改显式缺失说明（ADR-0003：缺失即标注）
+    is_empty = m["n_shots"] == 0
     window_start, window_end = _window_range(db, granularity, window_key, session_id)
 
     profile = db.get_profile(athlete_id)
@@ -263,14 +266,18 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # ① window_score：本窗口成绩（双口径：含脱靶均环 + 有效箭均环 + 脱靶率，ADR-0001）
     eff = m["effective_avg_score"]
     eff_txt = f"{eff:.2f}" if eff is not None else "—"
-    score_text = (
-        f"含脱靶均环 {m['avg_score']:.2f}，有效箭均环 {eff_txt}，脱靶率 {m['miss_rate']:.1f}%，"
-        f"内十率 {m['inner10_rate']:.1f}%，远弹率 {m['far_miss_rate']:.1f}%，"
-        f"命中率 {m['hit_rate']:.1f}%（n={m['n_shots']}）"
-    )
+    if is_empty:
+        # 空窗口不输出 0.00/0.0% 占位（会被读成「打出的 0 环」），改显式缺失说明
+        score_content = ["本窗口无箭，无成绩可统计（空窗口）"]
+    else:
+        score_content = [
+            f"含脱靶均环 {m['avg_score']:.2f}，有效箭均环 {eff_txt}，脱靶率 {m['miss_rate']:.1f}%，"
+            f"内十率 {m['inner10_rate']:.1f}%，远弹率 {m['far_miss_rate']:.1f}%，"
+            f"命中率 {m['hit_rate']:.1f}%（n={m['n_shots']}）"
+        ]
     by_key["window_score"] = {
         "key": "window_score", "title": _SCORE_TITLES.get(granularity, "成绩"),
-        "content": [score_text],
+        "content": score_content,
         "evidence": [{"type": "calc", "ref": "window_score", "value": {"n": m["n_shots"]}}],
     }
 
@@ -323,7 +330,12 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 rendered["conclusion"] = "条件不同（距离/风况与锚点不可比），不做判定。"
             level_lines.append(rendered["conclusion"])
             level_evidence.append(rendered["evidence"])
-    if cfg.mdc_source is None:
+    if is_empty:
+        # 空窗口：无箭即无水平可对比。不渲染滚动基线行（其含「本窗口均环 0.00」会误导），
+        # 也不追加「试行中」口径标注（本窗口未产生任何方向结论）
+        if not level_lines:
+            level_lines.append("本窗口无箭，无水平可对比")
+    elif cfg.mdc_source is None:
         # 降级期（ADR-0002）：显式声明不出方向判定，改用滚动基线描述水平（只描述、不判定）
         level_lines.insert(0, DEGRADE_HINT)
         if rolling_dict and rolling_dict.get("avg_score") is not None:
@@ -400,7 +412,15 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                                 "evidence": [{"type": "fact", "ref": "wind_band_avg", "value": band_avg}]}
 
     # ⑤ sample_gate：达标也显式出现，不达标出提示
-    if gate_ok:
+    if is_empty:
+        # 空窗口：门槛无从谈起（无箭可数），不写成「样本不足，仅供参考」（会暗示有内容可参考）
+        by_key["sample_gate"] = {
+            "key": "sample_gate", "title": "无样本",
+            "content": ["本窗口无箭，样本门槛不适用"],
+            "evidence": [{"type": "calc", "ref": "sample_gate",
+                          "value": {"n": 0, "ok": False}}],
+        }
+    elif gate_ok:
         by_key["sample_gate"] = {
             "key": "sample_gate", "title": "样本达标",
             "content": [f"样本达标（窗口箭数 {m['n_shots']}），本窗口结论可信"],

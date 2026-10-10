@@ -97,6 +97,33 @@ class TestSixSectionSkeleton:
         assert "空窗口" in texts
         db.close()
 
+    def test_empty_window_score_has_no_misleading_zeros(self, engine_env):
+        """空窗口：成绩段不出 0.00/0.0% 占位（会被读成「打出的 0 环」），改显式缺失说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        ws = [s for s in draft.report["sections"] if s["key"] == "window_score"][0]
+        line = ws["content"][0]
+        assert "含脱靶均环" not in line
+        assert "0.00" not in line and "0.0%" not in line
+        assert "无箭" in line
+        db.close()
+
+    def test_empty_window_level_and_gate_use_no_arrow_wording(self, engine_env):
+        """空窗口：level 说「无箭」而非「样本不足」；sample_gate 门槛不适用；不追加试行口径标注。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        by = {s["key"]: s for s in draft.report["sections"]}
+        assert by["level"]["content"] == ["本窗口无箭，无水平可对比"]
+        assert "试行" not in " ".join(by["level"]["content"])
+        assert by["sample_gate"]["title"] == "无样本"
+        assert "不适用" in by["sample_gate"]["content"][0]
+        assert "仅供参考" not in by["sample_gate"]["content"][0]
+        db.close()
+
     def test_build_report_is_side_effect_free(self, engine_env):
         """build_report() 不写库：无缓存行、无结论记忆。"""
         cfg, db_path = engine_env
