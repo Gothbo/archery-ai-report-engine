@@ -717,6 +717,13 @@ function esc(s) {
     { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
+// 按粒度切换输入：日报用「场次」下拉，周/月/季/年用窗口输入框；只留当前生效的一个，避免歧义
+function syncWindowInputs(g) {
+  const daily = g === 'daily';
+  $('windowRow').style.display = daily ? '' : 'none';
+  $('windowInput').style.display = daily ? 'none' : '';
+}
+
 function windowParams(g) {
   const manual = $('windowInput').value.trim();
   if (g === 'daily') return { session_id: $('sessionSelect').value || '' };
@@ -735,6 +742,7 @@ function windowParams(g) {
 
 function generate(g) {
   if (!athleteId) return;
+  syncWindowInputs(g);
   const p = windowParams(g);
   const qs = new URLSearchParams({ view: view, refresh: '1', ...p }).toString();
   $('granSwitch').querySelectorAll('button').forEach((b) => b.classList.toggle('active', b.dataset.g === g));
@@ -756,6 +764,7 @@ $('granSwitch').querySelectorAll('button').forEach((b) => {
   b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
 });
 $('emptyGenBtn').onclick = () => generate('weekly');
+syncWindowInputs('weekly'); // 初始默认周报告：隐藏「场次」下拉，显示窗口输入
 
 /* ---- 报告渲染：数字主角 → 建议 → 支撑（层级重排，核心数字脱离句子）---- */
 
