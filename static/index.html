@@ -11,8 +11,25 @@
     --text: #1d1d1f;
     --text-2: #6e6e73;
     --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --accent-soft: rgba(0,113,227,.06);
+    --accent-line: rgba(0,113,227,.16);
+    --accent-ring: rgba(0,113,227,.22);
     --border: #e5e5ea;
+    --fill-1: #e8e8ed;
+    --fill-2: #c7c7cc;
+    --fill-3: #ececf0;
+    --bubble: #f0f0f2;
+    --card-soft: #fbfbfd;
+    --danger: #ff3b30;
+    --warn: #b2501a;
     --radius: 14px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.04);
+    --shadow-2: 0 8px 24px rgba(0,0,0,.08);
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -29,66 +46,149 @@
     padding: 12px 24px;
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
   }
-  header h1 { font-size: 17px; font-weight: 600; margin-right: auto; }
+  header h1 { font-size: 17px; font-weight: 600; letter-spacing: -0.01em; margin-right: auto; }
+
+  /* ---- 分段控件（视角切换）：滑动指示块 ---- */
   .segmented {
-    display: inline-flex; background: #e8e8ed; border-radius: 8px; padding: 2px;
+    position: relative; display: inline-flex; background: var(--fill-1);
+    border-radius: var(--radius-sm); padding: 2px;
+  }
+  .seg-thumb {
+    position: absolute; top: 2px; left: 2px; width: calc(50% - 2px); height: calc(100% - 4px);
+    background: #fff; border-radius: 7px; box-shadow: var(--shadow-1);
+    transition: transform 180ms var(--ease-out);
   }
   .segmented button {
-    border: none; background: transparent; padding: 6px 16px;
+    position: relative; z-index: 1; width: 88px;
+    border: none; background: transparent; padding: 6px 0;
     font-size: 13px; color: var(--text-2); border-radius: 7px; cursor: pointer;
-    font-family: inherit;
+    font-family: inherit; transition: color 160ms ease;
   }
-  .segmented button.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  .segmented button.active { color: var(--text); font-weight: 600; }
+
   main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
   .panel {
     background: var(--card); border-radius: var(--radius);
     padding: 18px 20px; margin-bottom: 16px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: var(--shadow-1);
   }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   select, input, textarea {
     font-family: inherit; font-size: 14px; color: var(--text);
-    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 7px 10px; outline: none;
+    transition: border-color 160ms ease, box-shadow 160ms ease;
   }
-  select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+  select:focus-visible, input:focus-visible, textarea:focus-visible {
+    outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring);
+  }
   .label { font-size: 12px; color: var(--text-2); margin-right: -2px; }
   button.primary {
     font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
-    background: var(--accent); border: none; border-radius: 8px;
+    background: var(--accent); border: none; border-radius: var(--radius-sm);
     padding: 8px 18px; cursor: pointer;
+    transition: transform 160ms var(--ease-out), background 160ms ease;
   }
-  button.primary:hover { background: #0077ed; }
-  button.primary:disabled { background: #c7c7cc; cursor: default; }
+  button.primary:disabled { background: var(--fill-2); cursor: default; }
   button.ghost {
     font-family: inherit; font-size: 13px; color: var(--text);
-    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 6px 12px; cursor: pointer;
+    transition: transform 160ms var(--ease-out), color 120ms ease, border-color 120ms ease;
   }
-  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
-  .granularity-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
+  button.primary:focus-visible, button.ghost:focus-visible, .gran-btn:focus-visible {
+    outline: none; box-shadow: 0 0 0 3px var(--accent-ring);
+  }
+  .granularity-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; flex-wrap: wrap; }
   .gran-btn {
     font-family: inherit; font-size: 14px; font-weight: 500;
-    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    background: #fff; border: 1px solid var(--border); border-radius: var(--radius-sm);
     padding: 8px 20px; cursor: pointer; color: var(--text);
+    transition: transform 160ms var(--ease-out), color 120ms ease, border-color 120ms ease, background 160ms ease;
   }
-  .gran-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .gran-btn:disabled { color: #c7c7cc; border-color: #ececf0; cursor: default; }
-  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
-  .report-card { margin-bottom: 12px; }
-  .report-card h3 { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
-  .report-card p { font-size: 15px; line-height: 1.6; }
-  .meta { font-size: 12px; color: var(--text-2); margin-top: 12px; line-height: 1.7; }
-  .empty {
-    text-align: center; color: var(--text-2); font-size: 14px; padding: 48px 0;
+  .gran-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .gran-btn:disabled { color: var(--fill-2); border-color: var(--fill-3); cursor: default; }
+
+  /* ---- 状态 chip：靠近触发点，生成中呼吸 ---- */
+  #status {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-2);
+    padding: 4px 11px; border-radius: 999px; background: var(--fill-1);
+    opacity: 0; transition: opacity 160ms ease;
   }
+  #status.show { opacity: 1; }
+  #status::before {
+    content: ''; width: 6px; height: 6px; border-radius: 50%; background: var(--fill-2);
+  }
+  #status.busy::before { background: var(--accent); animation: pulse 900ms ease-in-out infinite; }
+
+  .section-title { font-size: 13px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; margin-bottom: 10px; }
+
+  /* ---- 报告区：数字主角 → 建议 → 支撑 ---- */
+  .report-head {
+    display: flex; align-items: baseline; gap: 4px; flex-wrap: wrap;
+    font-size: 14px; color: var(--text-2); margin-bottom: 14px;
+  }
+  .report-head .rh-name { font-size: 15px; font-weight: 600; color: var(--text); }
+  .report-head .rh-sep { color: var(--fill-2); margin: 0 3px; }
+  .hero { margin-bottom: 4px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 12px; }
+  @media (max-width: 720px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+  .metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .metric .v {
+    font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric .v .u { font-size: 12px; font-weight: 500; color: var(--text-2); margin-left: 1px; }
+  .metric .l { font-size: 12px; color: var(--text-2); }
+  .hero-foot { margin-top: 12px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .hero-empty { padding: 20px 0 6px; font-size: 14px; color: var(--text-2); }
+
+  .advice {
+    margin: 16px 0 4px; padding: 14px 16px; border-radius: 12px;
+    background: var(--accent-soft); border: 1px solid var(--accent-line);
+  }
+  .advice h3 { font-size: 13px; font-weight: 600; color: var(--accent); letter-spacing: .01em; margin-bottom: 8px; }
+  .advice ul { list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .advice li { position: relative; padding-left: 14px; font-size: 14px; line-height: 1.6; }
+  .advice li::before {
+    content: ''; position: absolute; left: 2px; top: .6em;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  }
+
+  .sec { padding: 16px 0; border-top: 1px solid var(--border); }
+  .sec:first-child { border-top: none; padding-top: 4px; }
+  .sec h3 { font-size: 13px; font-weight: 600; color: var(--text); letter-spacing: -0.01em; margin-bottom: 8px; }
+  .sec p { font-size: 14px; line-height: 1.65; color: var(--text); }
+  .sec p + p { margin-top: 6px; }
+  .sec p.notice {
+    color: var(--text-2); font-size: 13px; line-height: 1.6;
+    background: var(--card-soft); border: 1px solid var(--border);
+    border-radius: var(--radius-xs); padding: 8px 10px;
+  }
+
+  .meta {
+    margin-top: 16px; padding-top: 12px; border-top: 1px solid var(--border);
+    font-size: 12px; color: var(--text-2);
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .meta:empty { display: none; }
+  .meta-line { display: flex; gap: 10px; }
+  .meta-line .mk { min-width: 60px; color: var(--text-2); }
+  .meta-line .mv { color: var(--text); }
+
+  .empty { text-align: center; color: var(--text-2); font-size: 14px; padding: 32px 0; }
+  #reportEmpty { padding: 44px 0; }
+
   .note { border-top: 1px solid var(--border); padding: 10px 0; display: flex; gap: 12px; align-items: baseline; }
   .note:first-child { border-top: none; }
   .note .type { font-size: 12px; color: var(--accent); font-weight: 600; min-width: 64px; }
   .note .content { font-size: 14px; line-height: 1.5; flex: 1; }
   .note .who { font-size: 12px; color: var(--text-2); min-width: 40px; text-align: right; }
-  .note .del { font-size: 12px; color: #c7c7cc; background: none; border: none; cursor: pointer; font-family: inherit; }
-  .note .del:hover { color: #ff3b30; }
+  .note .del {
+    font-size: 12px; color: var(--text-2); background: none; border: none;
+    cursor: pointer; font-family: inherit; transition: color 120ms ease;
+  }
   .memory { font-size: 13px; line-height: 1.6; padding: 8px 0; border-top: 1px solid var(--border); }
   .memory:first-child { border-top: none; }
   .memory .k { color: var(--text-2); }
@@ -97,35 +197,76 @@
   .add-note input.content-input { flex: 3; }
   .two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
   @media (max-width: 720px) { .two-col { grid-template-columns: 1fr; } }
-  #status { font-size: 12px; color: var(--text-2); }
-  /* ---- B1-6 对话窗：消息列表 / 折叠溯源 / 建议记录卡片（零依赖原生实现）---- */
+
+  /* ---- 对话窗：消息 / 等待态三点 / 折叠溯源 / 建议卡片 ---- */
   .chat-box { display: flex; flex-direction: column; gap: 10px; max-height: 420px; overflow-y: auto; padding: 4px 2px; }
   .msg { display: flex; }
   .msg.user { justify-content: flex-end; }
   .msg.assistant { justify-content: flex-start; }
   .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
   .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-  .msg.assistant .bubble { background: #f0f0f2; color: var(--text); border-bottom-left-radius: 4px; }
-  .bubble .degraded { font-size: 12px; color: #b2501a; margin-top: 6px; }
+  .msg.assistant .bubble { background: var(--bubble); color: var(--text); border-bottom-left-radius: 4px; }
+  .bubble .degraded { font-size: 12px; color: var(--warn); margin-top: 6px; }
+  .bubble.thinking { display: inline-flex; align-items: center; gap: 4px; padding: 13px 14px; }
+  .bubble.thinking span {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--text-2);
+    animation: pulse 900ms ease-in-out infinite;
+  }
+  .bubble.thinking span:nth-child(2) { animation-delay: 150ms; }
+  .bubble.thinking span:nth-child(3) { animation-delay: 300ms; }
   .chat-foot { display: flex; gap: 8px; margin-top: 12px; }
   .chat-foot input { flex: 1; }
   details.sources { margin-top: 8px; font-size: 12px; }
   details.sources summary { color: var(--text-2); cursor: pointer; user-select: none; }
-  details.sources ul { margin: 6px 0 0; padding-left: 18px; color: var(--text-2); line-height: 1.7; }
+  details.sources > ul {
+    margin: 6px 0 0; padding-left: 18px; color: var(--text-2); line-height: 1.7;
+    transform-origin: top left;
+  }
+  details.sources[open] > ul { animation: popIn 150ms var(--ease-out) both; }
   details.sources .src-type { color: var(--accent); font-weight: 600; }
   .note-card {
     margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
-    padding: 8px 12px; font-size: 12px; background: #fbfbfd;
+    padding: 8px 12px; font-size: 12px; background: var(--card-soft);
   }
-  .note-card .nc-head { color: var(--text-2); margin-bottom: 4px; }
+  .note-card .nc-head {
+    display: flex; justify-content: space-between; align-items: baseline; gap: 8px;
+    color: var(--text-2); margin-bottom: 4px;
+  }
   .note-card .nc-content { font-size: 13px; line-height: 1.5; }
-  .note-card .nc-badge { float: right; color: var(--accent); font-size: 11px; }
+  .note-card .nc-badge { color: var(--accent); font-size: 11px; white-space: nowrap; }
+
+  /* ---- 动效：全部 ≤300ms，只动 transform / opacity ---- */
+  @keyframes riseIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @keyframes popIn { from { opacity: 0; transform: scale(.97); } to { opacity: 1; transform: none; } }
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+  .enter { animation: riseIn 200ms var(--ease-out) both; }
+
+  @media (hover: hover) and (pointer: fine) {
+    button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+    button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+    .gran-btn:hover:not(:disabled):not(.active) { border-color: var(--accent); color: var(--accent); }
+    .note .del:hover { color: var(--danger); }
+  }
+  button.primary:active:not(:disabled),
+  button.ghost:active,
+  .gran-btn:active:not(:disabled) { transform: scale(.97); }
+
+  @media (prefers-reduced-motion: reduce) {
+    .enter { animation-name: fadeIn; }
+    details.sources[open] > ul { animation-name: fadeIn; }
+    .seg-thumb { transition: none; }
+    button.primary:active:not(:disabled),
+    button.ghost:active,
+    .gran-btn:active:not(:disabled) { transform: none; }
+  }
 </style>
 </head>
 <body>
 <header>
   <h1>射箭 AI 训练报告引擎</h1>
   <div class="segmented" id="viewSwitch">
+    <span class="seg-thumb"></span>
     <button data-view="coach" class="active">教练视图</button>
     <button data-view="athlete">运动员视图</button>
   </div>
@@ -137,7 +278,6 @@
       <span class="label">运动员</span>
       <select id="athleteSelect" style="min-width:180px"><option value="">加载中…</option></select>
       <span class="label" id="profileInfo"></span>
-      <span id="status" style="margin-left:auto"></span>
     </div>
     <div class="row" style="margin-top:12px" id="windowRow">
       <span class="label">场次</span>
@@ -151,11 +291,14 @@
       <button class="gran-btn" data-g="yearly">年报告</button>
       <input id="windowInput" style="width:130px;margin-left:8px" placeholder="窗口（默认当前）">
       <span class="label" id="windowHint"></span>
+      <span id="status"></span>
     </div>
   </div>
 
   <div id="reportPanel" class="panel" style="display:none">
-    <div class="section-title" id="reportHead"></div>
+    <div class="report-head" id="reportHead"></div>
+    <div id="reportHero"></div>
+    <div id="reportAdvice"></div>
     <div id="reportBody"></div>
     <div class="meta" id="reportMeta"></div>
   </div>
@@ -213,6 +356,13 @@ function api(path, opts) {
   });
 }
 
+function setStatus(text, busy) {
+  const el = $('status');
+  el.textContent = text || '';
+  el.classList.toggle('show', !!text);
+  el.classList.toggle('busy', !!busy);
+}
+
 function isoWeek(d) {
   const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
   const dayNum = (date.getUTCDay() + 6) % 7;
@@ -259,13 +409,13 @@ function loadAthletes() {
     )[0];
     sel.value = pick.athlete_id;
     onAthleteChange();
-  }).catch((e) => { $('status').textContent = '加载失败：' + e.message; });
+  }).catch((e) => { setStatus('加载失败：' + e.message); });
 }
 
 function onAthleteChange() {
   athleteId = $('athleteSelect').value;
   if (!athleteId) return;
-  $('status').textContent = '加载中…';
+  setStatus('加载中…', true);
   $('reportEmpty').style.display = '';
   $('reportPanel').style.display = 'none';
   lastRequest = null; // 换了运动员就丢弃上一份报告的窗口，避免切视角时误触发重取
@@ -276,8 +426,8 @@ function onAthleteChange() {
     if (p.bow_type) bits.push(p.bow_type);
     if (p.age) bits.push(p.age + '岁');
     $('profileInfo').textContent = bits.join(' · ');
-    $('status').textContent = '';
-  }).catch(() => { $('status').textContent = ''; });
+    setStatus('');
+  }).catch(() => { setStatus(''); });
 
   api('/api/v1/athletes/' + athleteId + '/sessions').then((r) => {
     sessions = r.sessions || [];
@@ -321,7 +471,7 @@ function refreshSidePanels() {
       '<button class="del" data-id="' + n.note_id + '">删除</button></div>'
     ).join('');
     box.querySelectorAll('.del').forEach((b) => b.onclick = () => deleteNote(b.dataset.id));
-  }).catch((e) => { $('notesList').innerHTML = '<div class="empty">加载失败</div>'; });
+  }).catch(() => { $('notesList').innerHTML = '<div class="empty">加载失败</div>'; });
 
   api('/api/v1/athletes/' + athleteId + '/memories').then((r) => {
     const box = $('memoriesList');
@@ -339,7 +489,7 @@ function typeLabel(t) {
   return { injury: '伤病', goal: '目标', coach_obs: '教练观察' }[t] || t;
 }
 
-/* ---- B1-6 对话窗：引用已生成报告 → ask → 回答 + 折叠溯源 + 建议记录卡片 ---- */
+/* ---- 对话窗：引用已生成报告 → ask → 回答 + 折叠溯源 + 建议记录卡片 ---- */
 const G_NAMES = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
 let chatReports = [];
 
@@ -391,7 +541,7 @@ function sendChat() {
   if (!q || !athleteId || $('chatSendBtn').disabled) return;
   $('chatInput').value = '';
   addMsg('user', q);
-  const pending = addMsg('assistant', '思考中…');
+  const pending = addThinking();
   const body = { question: q, view: view };
   const rep = chatReports[parseInt($('chatReportSelect').value, 10)];
   if (rep) { body.granularity = rep.granularity; body.window_key = rep.window_key; }
@@ -400,8 +550,10 @@ function sendChat() {
     body: JSON.stringify(body),
   }).then((resp) => {
     pending.innerHTML = renderAnswer(resp);
+    pending.classList.remove('thinking');
     scrollChat();
   }).catch((e) => {
+    pending.classList.remove('thinking');
     pending.innerHTML = '<span class="degraded">问询失败：' + esc(e.message) + '</span>';
   });
 }
@@ -421,8 +573,23 @@ function addMsg(role, text) {
   return bubble;
 }
 
+function addThinking() {
+  const box = $('chatMessages');
+  const empty = box.querySelector('.empty');
+  if (empty) empty.remove();
+  const div = document.createElement('div');
+  div.className = 'msg assistant';
+  const bubble = document.createElement('div');
+  bubble.className = 'bubble thinking';
+  bubble.innerHTML = '<span></span><span></span><span></span>';
+  div.appendChild(bubble);
+  box.appendChild(div);
+  scrollChat();
+  return bubble;
+}
+
 function renderAnswer(resp) {
-  // 调用方（addMsg）返回的就是 .bubble 容器，这里只填内容，
+  // 调用方（addThinking/addMsg）返回的就是 .bubble 容器，这里只填内容，
   // 否则会渲染成 bubble 套 bubble，答案被套上两层内边距
   const html = [];
   html.push(esc(resp.answer || ''));
@@ -441,8 +608,8 @@ function renderAnswer(resp) {
   }
   const sn = resp.suggested_note;
   if (sn) {
-    html.push('<div class="note-card"><span class="nc-badge">只读建议</span>' +
-      '<div class="nc-head">' + esc(typeLabel(sn.note_type)) + ' · 来源 ' + esc(sn.source || '') + '</div>' +
+    html.push('<div class="note-card"><div class="nc-head"><span>' + esc(typeLabel(sn.note_type)) +
+      ' · 来源 ' + esc(sn.source || '') + '</span><span class="nc-badge">只读建议</span></div>' +
       '<div class="nc-content">' + esc(sn.content) + '</div></div>');
   }
   return html.join('');
@@ -481,7 +648,8 @@ function generate(g) {
   if (!athleteId) return;
   const p = windowParams(g);
   const qs = new URLSearchParams({ view: view, refresh: '1', ...p }).toString();
-  $('status').textContent = '生成中…';
+  document.querySelectorAll('.gran-btn').forEach((b) => b.classList.toggle('active', b.dataset.g === g));
+  setStatus('生成中…', true);
   api('/api/v1/athletes/' + athleteId + '/reports/' + g + '?' + qs, { method: 'POST' })
     .then((r) => {
       lastRequest = g;
@@ -489,44 +657,161 @@ function generate(g) {
       // 生成后立刻刷新「引用报告」下拉并选中这份：否则新报告不在列表里，
       // 此前没有任何报告时对话输入框会一直处于禁用状态。
       loadChatReports(r.granularity ? r.granularity + '|' + r.window_key : '');
-      $('status').textContent = r.cached ? '已读取缓存' : '已生成';
+      setStatus(r.cached ? '已读取缓存' : '已生成');
     })
-    .catch((e) => { $('status').textContent = ''; alert('生成失败：' + e.message); });
+    .catch((e) => { setStatus(''); alert('生成失败：' + e.message); });
 }
 
 document.querySelectorAll('.gran-btn').forEach((b) => {
   b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
 });
 
+/* ---- 报告渲染：数字主角 → 建议 → 支撑（层级重排，核心数字脱离句子）---- */
+
+// 缺失 / 存疑类提示：独立样式，不与正文同权
+const NOTICE_RE = /无风速数据|无心率数据|空窗口|不可用|未计入|数据存疑|暂无可|暂无|样本不足|无锚点|降级期/;
+
+// 从「含脱靶均环 4.23，有效箭均环 7.89，脱靶率 46.4%…（n=233）」这类固定文案里
+// 提取「标签 / 数值 / 单位」三元组；识别失败返回 null → 退回整段正文（不冒险渲染）。
+function parseMetrics(line) {
+  const nMatch = line.match(/[（(]\s*n\s*=\s*(\d+)\s*[）)]/);
+  const body = line.replace(/[（(]\s*n\s*=\s*\d+\s*[）)]/, '').trim();
+  const parts = body.split(/[，,]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const items = [];
+  for (const p of parts) {
+    const mm = p.match(/^(.+?)\s*([\d.]+)\s*(%?)$/);
+    if (!mm) return null;
+    items.push({ label: mm[1].trim(), value: mm[2], unit: mm[3] || '' });
+  }
+  return { items, n: nMatch ? nMatch[1] : null };
+}
+
+function metricGrid(parsed) {
+  const card = document.createElement('div');
+  card.className = 'hero enter';
+  const grid = document.createElement('div');
+  grid.className = 'metric-grid';
+  parsed.items.forEach((it) => {
+    const el = document.createElement('div');
+    el.className = 'metric';
+    el.innerHTML = '<div class="v">' + esc(it.value) +
+      (it.unit ? '<span class="u">' + esc(it.unit) + '</span>' : '') + '</div>' +
+      '<div class="l">' + esc(it.label) + '</div>';
+    grid.appendChild(el);
+  });
+  card.appendChild(grid);
+  if (parsed.n) {
+    const foot = document.createElement('div');
+    foot.className = 'hero-foot';
+    foot.textContent = '样本 ' + parsed.n + ' 箭';
+    card.appendChild(foot);
+  }
+  return card;
+}
+
+function sectionCard(s) {
+  const card = document.createElement('div');
+  card.className = 'sec enter';
+  const h = document.createElement('h3');
+  h.textContent = s.title;
+  card.appendChild(h);
+  (s.content || []).forEach((c) => {
+    const p = document.createElement('p');
+    p.textContent = c;
+    if (NOTICE_RE.test(c)) p.className = 'notice';
+    card.appendChild(p);
+  });
+  return card;
+}
+
+function adviceCard(suggestions) {
+  const card = document.createElement('div');
+  card.className = 'advice enter';
+  const h = document.createElement('h3');
+  h.textContent = '训练建议';
+  card.appendChild(h);
+  const ul = document.createElement('ul');
+  suggestions.forEach((t) => {
+    const li = document.createElement('li');
+    li.textContent = t;
+    ul.appendChild(li);
+  });
+  card.appendChild(ul);
+  return card;
+}
+
+function renderMeta(r) {
+  const ce = r.coach_extra || {};
+  const items = [];
+  if (r.bow_type) items.push(['主弓种', r.bow_type]);
+  if (ce.rolling_baseline) {
+    items.push(['滚动基线', '最近 ' + ce.rolling_baseline.n_shots + ' 箭 · 均环 ' + ce.rolling_baseline.avg_score]);
+  }
+  if (ce.warnings && ce.warnings.length) items.push(['警告', ce.warnings.join('；')]);
+  if (ce.anchor_rebuild_hint && ce.anchor_rebuild_hint.reason) items.push(['锚点提示', ce.anchor_rebuild_hint.reason]);
+  if (r.generated_at_utc) items.push(['生成时间', r.generated_at_utc + '（UTC）']);
+  // 逐项 DOM（不再用 textContent + '\n'，否则换行被折叠成一整段）
+  $('reportMeta').innerHTML = items.map((it) =>
+    '<div class="meta-line"><span class="mk">' + esc(it[0]) + '</span><span class="mv">' + esc(it[1]) + '</span></div>'
+  ).join('');
+}
+
 function renderReport(r) {
   $('reportEmpty').style.display = 'none';
   $('reportPanel').style.display = '';
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
-  $('reportHead').textContent =
-    (r.athlete ? r.athlete.name : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
-    (view === 'coach' ? ' · 教练视角' : ' · 运动员视角');
+  const who = r.athlete ? r.athlete.name : '';
+  $('reportHead').innerHTML =
+    '<span class="rh-name">' + esc(who) + '</span>' +
+    '<span class="rh-sep">·</span>' + esc(names[r.granularity] || r.granularity) + '报告' +
+    '<span class="rh-sep">·</span>' + esc(r.window_key) +
+    '<span class="rh-sep">·</span>' + (view === 'coach' ? '教练视角' : '运动员视角');
 
+  const byKey = {};
+  (r.sections || []).forEach((s) => { byKey[s.key] = s; });
+
+  // ① 成绩：核心数字从句子中提出，做指标块（教练扫数字，不读整句）
+  const hero = $('reportHero');
+  hero.innerHTML = '';
+  const ws = byKey['window_score'];
+  if (ws) {
+    const line = (ws.content || [])[0] || '';
+    const n = (line.match(/[（(]\s*n\s*=\s*(\d+)\s*[）)]/) || [])[1];
+    const parsed = parseMetrics(line);
+    if (n === '0') {
+      // 空窗口：后端文案为 0.00/0.0% 占位，直接呈现会像「测出来的 0」；改显干净空状态
+      const el = document.createElement('div');
+      el.className = 'hero-empty enter';
+      el.textContent = '本窗口无箭';
+      hero.appendChild(el);
+    } else {
+      hero.appendChild(parsed ? metricGrid(parsed) : sectionCard(ws));
+    }
+  }
+
+  // ② 建议：可执行结论，紧接数字；不再埋在 12px 灰字 meta 里
+  const advBox = $('reportAdvice');
+  advBox.innerHTML = '';
+  const sugg = r.suggestions || [];
+  if (sugg.length) {
+    const card = adviceCard(sugg);
+    card.style.animationDelay = '50ms';
+    advBox.appendChild(card);
+  }
+
+  // ③ 支撑：水平对比 → 数据完整性 → 风档 → 样本 → 辅助
   const body = $('reportBody');
   body.innerHTML = '';
-  (r.sections || []).forEach((s) => {
-    const card = document.createElement('div');
-    card.className = 'report-card';
-    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
-      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+  ['level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary'].forEach((k, i) => {
+    const s = byKey[k];
+    if (!s) return;
+    const card = sectionCard(s);
+    card.style.animationDelay = (100 + 40 * i) + 'ms';
     body.appendChild(card);
   });
 
-  const meta = [];
-  const ce = r.coach_extra || {};
-  if (ce.rolling_baseline) {
-    const rb = ce.rolling_baseline;
-    meta.push('滚动基线：最近 ' + rb.n_shots + ' 箭 · 均环 ' + rb.avg_score);
-  }
-  if (ce.warnings && ce.warnings.length) meta.push('警告：' + ce.warnings.join('；'));
-  if (r.suggestions && r.suggestions.length) meta.push('建议：' + r.suggestions.join('；'));
-  if (ce.anchor_rebuild_hint && ce.anchor_rebuild_hint.reason) meta.push('锚点提示：' + ce.anchor_rebuild_hint.reason);
-  if (r.generated_at_utc) meta.push('生成时间(UTC)：' + r.generated_at_utc);
-  $('reportMeta').textContent = meta.join('\n');
+  renderMeta(r);
 }
 
 function deleteNote(id) {
@@ -535,10 +820,18 @@ function deleteNote(id) {
     .catch((e) => alert('删除失败：' + e.message));
 }
 
+function setViewThumb() {
+  const btns = document.querySelectorAll('#viewSwitch button');
+  let idx = 0;
+  btns.forEach((b, i) => { if (b.classList.contains('active')) idx = i; });
+  document.querySelector('#viewSwitch .seg-thumb').style.transform = 'translateX(' + (idx * 100) + '%)';
+}
+
 document.querySelectorAll('#viewSwitch button').forEach((b) => {
   b.onclick = () => {
     document.querySelectorAll('#viewSwitch button').forEach((x) => x.classList.remove('active'));
     b.classList.add('active');
+    setViewThumb();
     view = b.dataset.view;
     refreshSidePanels();
     // 报告正文按视角过滤备注（教练观察仅教练可见），换视角必须重取同一窗口，
@@ -546,6 +839,7 @@ document.querySelectorAll('#viewSwitch button').forEach((b) => {
     if (lastRequest) generate(lastRequest);
   };
 });
+setViewThumb();
 
 $('athleteSelect').onchange = onAthleteChange;
 $('addNoteBtn').onclick = () => {
