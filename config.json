@@ -44,7 +44,7 @@
     "wind_band_delta": 0.5,
     "min_band_shots": 10
   },
-  "advice_note": "建议层（P0）触发阈值：miss_rate_high=脱靶率(%)阈值→提示「成绩损失主要来自脱靶」；far_miss_high=非脱靶远弹占比(%)阈值→提示「着点离散偏大」；inner10_low=内十率(%)下限→提示「着点不够靠中心」；wind_band_delta=风档间均环差(环)阈值；min_band_shots=风档参与比较的最小箭数。均为自有数据经验草案（试行，待教练校准），非文献口径；建议文案带真实数值供教练判断（见 app/reports/advice.py）。",
+  "advice_note": "建议层（P0）触发阈值：miss_rate_high=脱靶率(%)阈值→提示脱靶造成的均环损失（与 far_miss_high 可并列）；far_miss_high=非脱靶远弹占比(%)阈值→提示「着点离散偏大」；inner10_low=内十率(%)下限→提示「着点不够靠中心」（仅脱靶/远弹均未触发时）；wind_band_delta=风档间均环差(环)阈值；min_band_shots=风档参与比较的最小箭数。均为自有数据经验草案（试行，待教练校准），非文献口径；建议文案带真实数值供教练判断（见 app/reports/advice.py）。缺风速/心率不在建议层重复提示（已由 data_integrity 段标注）。",
   "forbidden_phrases": ["练它即提分"],
   "rolling_window_shots": 288,
   "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },

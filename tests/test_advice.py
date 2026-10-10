@@ -22,7 +22,7 @@ def _m(**over) -> dict:
 
 def _build(m, **over) -> dict:
     kw = dict(conclusion_keys=[], wind_band_avg={}, wind_band_counts={},
-              dq=CLEAN_DQ, gate_ok=True, has_wind=True, has_hr=True, cfg=CFG)
+              dq=CLEAN_DQ, gate_ok=True, cfg=CFG)
     kw.update(over)
     return build_advice(m, **kw)
 
@@ -45,10 +45,13 @@ class TestAdviceGuards:
 
 
 class TestStructureAdvice:
-    def test_miss_dominant(self):
-        """脱靶率超阈值：提示成绩损失来自脱靶，并带均环差证据（损失 = 有效箭均环 − 含脱靶均环）。"""
+    def test_miss_advice_attributes_loss_to_misses_only(self):
+        """脱靶率超阈值：均环差归因于脱靶（不说「成绩损失主要来自脱靶」），带均环差证据。"""
         r = _build(_m(miss_rate=20.0, avg_score=7.2, effective_avg_score=9.0))
-        assert any("脱靶" in s for s in r["suggestions"])
+        text = " ".join(r["suggestions"])
+        assert "脱靶" in text
+        assert "均环损失" in text
+        assert "主要来自脱靶" not in text
         ev = [e for e in r["evidence"] if e["ref"] == "advice_miss"][0]
         assert ev["value"]["gap"] == 1.8
 
@@ -64,11 +67,17 @@ class TestStructureAdvice:
         assert any("内十率" in s for s in r["suggestions"])
         assert any(e["ref"] == "advice_inner" for e in r["evidence"])
 
-    def test_structure_priority_miss_over_far(self):
-        """结构类建议按优先级择一：脱靶主导时不重复出远弹建议。"""
+    def test_miss_and_far_co_occur(self):
+        """脱靶与非脱靶远弹均超阈值：两条建议并列出现，不互相抑制。"""
         r = _build(_m(miss_rate=15.0, far_miss_rate=60.0, avg_score=6.0, effective_avg_score=8.5))
-        assert any(e["ref"] == "advice_miss" for e in r["evidence"])
-        assert not any(e["ref"] == "advice_far" for e in r["evidence"])
+        refs = {e["ref"] for e in r["evidence"]}
+        assert "advice_miss" in refs and "advice_far" in refs
+
+    def test_inner_suppressed_when_structure_already_flagged(self):
+        """脱靶/远弹已触发时内十率低不再叠加（内十率低与远弹偏多同源，避免重复提示）。"""
+        r = _build(_m(miss_rate=15.0, far_miss_rate=60.0, inner10_rate=5.0,
+                      avg_score=6.0, effective_avg_score=8.5))
+        assert not any(e["ref"] == "advice_inner" for e in r["evidence"])
 
     def test_clean_structure_yields_no_structure_advice(self):
         """结构自洽且采样完整：无任何建议（真实空状态）。"""
@@ -102,8 +111,8 @@ class TestTrendAdvice:
 
 
 class TestDataGapAdvice:
-    def test_missing_wind_and_hr_flagged(self):
-        """缺风速/心率：显式说明相应建议不可用，避免误读为无问题。"""
-        r = _build(_m(), has_wind=False, has_hr=False)
-        assert any("无风速数据" in s for s in r["suggestions"])
-        assert any("无心率数据" in s for s in r["suggestions"])
+    def test_missing_sampling_not_duplicated_in_advice(self):
+        """缺风速/心率不再在建议层重复提示（已由 data_integrity 段显式标注）。"""
+        r = _build(_m())
+        assert not any("无风速数据" in s for s in r["suggestions"])
+        assert not any("无心率数据" in s for s in r["suggestions"])

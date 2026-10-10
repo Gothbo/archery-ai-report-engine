@@ -461,12 +461,12 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     by_key["auxiliary"] = {"key": "auxiliary", "title": "辅助信息",
                            "content": aux_lines, "evidence": aux_evidence}
 
-    # 建议层（P0）：由判断信号（成绩结构/风况/趋势/数据缺口）产出确定性训练建议，
+    # 建议层（P0）：由判断信号（成绩结构/风况/趋势）产出确定性训练建议，
     # 填充 report.suggestions（前端已消费该字段）；每条建议带 evidence 溯源（仅教练附注区）
     adv = ADV.build_advice(
         m, conclusion_keys=[c["conclusion_key"] for c in conclusions],
         wind_band_avg=band_avg, wind_band_counts=band_counts, dq=dq, gate_ok=gate_ok,
-        has_wind=has_wind, has_hr=has_hr, cfg=cfg)
+        cfg=cfg)
 
     # 正文与运维分离（ADR-0005）：sections 只含 key/title/content，两视图内容一致
     # （备注按视图过滤是既定例外）；运维字段（evidence 明细、anchor_rebuild_hint）仅 coach 返回。

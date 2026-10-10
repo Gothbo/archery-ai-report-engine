@@ -10,11 +10,12 @@
 - 空窗口与数据存疑时给真实空状态或显式拒绝，不编造建议；
 - 阈值来自 config.advice，为自有数据经验草案（试行，待教练校准），仅决定「是否提示」。
 
-四类信号（按优先级）：
-1. 成绩结构：脱靶主导 / 非脱靶远弹偏多 / 中心命中不足（三选一）；
+三类信号（按优先级）：
+1. 成绩结构：脱靶 / 非脱靶远弹各自独立判阈值，可并列出现；内十率低仅在前两者均未触发时给出；
 2. 风况适应：两档达标样本且档间均环差超阈值；
-3. 趋势：基于 level 段方向判定（强断言 / 参考档分开表述）；
-4. 数据缺口：缺风速 / 心率时说明相应建议不可用。
+3. 趋势：基于 level 段方向判定（强断言 / 参考档分开表述）。
+
+数据缺口（缺风速 / 心率）不在建议层重复提示——已在 data_integrity 段显式标注，避免同一事实两处出现。
 """
 from __future__ import annotations
 
@@ -42,7 +43,7 @@ def _trend(conclusion_keys: list[str]) -> tuple[str | None, bool]:
 
 def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int, float],
                  wind_band_counts: dict[int, int], dq: dict, gate_ok: bool,
-                 has_wind: bool, has_hr: bool, cfg: EngineConfig) -> dict:
+                 cfg: EngineConfig) -> dict:
     """生成窗口建议与溯源证据。
 
     返回 {"suggestions": [...], "evidence": [...]}；无数据 / 数据存疑时给出显式空状态或拒绝语。
@@ -68,26 +69,28 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
     avg, eff = m["avg_score"], m["effective_avg_score"]
     far_non_miss = round(far - miss, 1)
 
-    # ① 成绩结构：脱靶主导 > 非脱靶远弹偏多 > 中心命中不足（按优先级择一）
-    if miss >= a.miss_rate_high:
+    # ① 成绩结构：脱靶与非脱靶远弹各自独立判阈值（可并列），内十率低仅在前两者均未触发时给出
+    miss_high = miss >= a.miss_rate_high
+    far_high = far_non_miss >= a.far_miss_high
+    if miss_high:
         eff_txt = f"{eff:.2f}" if eff is not None else "—"
-        # 含脱靶均环必 ≤ 有效箭均环；差值即脱靶造成的成绩损失（正数）
+        # 含脱靶均环必 ≤ 有效箭均环；差值即脱靶造成的均环损失（正数）
         gap = round(eff - avg, 2) if (avg is not None and eff is not None) else None
-        gap_txt = f"相差 {gap:.2f} 环" if gap is not None else "差距显著"
+        gap_txt = f"低 {gap:.2f} 环" if gap is not None else "差距显著"
         suggestions.append(
-            f"脱靶率 {miss:.1f}%，含脱靶均环 {avg:.2f} 与有效箭均环 {eff_txt} {gap_txt}，"
-            "成绩损失主要来自脱靶；建议优先稳定撒放与命中，再谈着点质量")
+            f"脱靶率 {miss:.1f}%，含脱靶均环 {avg:.2f} 较有效箭均环 {eff_txt} {gap_txt}"
+            "（脱靶造成的均环损失）；建议优先稳定撒放与命中")
         evidence.append({"type": "calc", "ref": "advice_miss",
                          "value": {"miss_rate": miss, "avg_score": avg,
                                    "effective_avg_score": eff, "gap": gap}})
-    elif far_non_miss >= a.far_miss_high:
+    if far_high:
         suggestions.append(
             f"非脱靶远弹占比 {far_non_miss:.1f}%（远弹率 {far:.1f}% 已含脱靶），着点离散偏大；"
             "建议加强瞄准区控制与动作重复性")
         evidence.append({"type": "calc", "ref": "advice_far",
                          "value": {"far_miss_rate": far, "miss_rate": miss,
                                    "far_non_miss": far_non_miss}})
-    elif inner <= a.inner10_low:
+    if not miss_high and not far_high and inner <= a.inner10_low:
         suggestions.append(
             f"内十率 {inner:.1f}%，着点不够靠中心；建议微调瞄点/瞄区，提升中心命中")
         evidence.append({"type": "calc", "ref": "advice_inner",
@@ -125,10 +128,5 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
         evidence.append({"type": "fact", "ref": "advice_regression",
                          "value": {"keys": conclusion_keys, "assertive": assertive}})
 
-    # ④ 数据缺口：采样缺失时说明相应建议不可用，避免教练误读为「无问题」
-    if not has_wind:
-        suggestions.append("本窗口无风速数据，暂无法给出风况适应建议（建议补齐风速采样）")
-    if not has_hr:
-        suggestions.append("本窗口无心率数据，暂无法给出生理状态类建议（建议补齐心率采样）")
-
+    # 数据缺口（缺风速 / 心率）不在此重复提示，见模块 docstring 与 data_integrity 段
     return {"suggestions": suggestions, "evidence": evidence}
