@@ -175,6 +175,16 @@ class Database:
             (athlete_id, bow_type, limit),
         )
 
+    def recent_scoring_shots_before(self, athlete_id: str, bow_type: str,
+                                    before_iso: str, limit: int) -> list[sqlite3.Row]:
+        """窗口起点前最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线按窗口时点截断）。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<?
+               ORDER BY shot_time_utc DESC LIMIT ?""",
+            (athlete_id, bow_type, before_iso, limit),
+        )
+
     def scoring_shots_of_session(self, session_id: str) -> list[sqlite3.Row]:
         return self._query(
             "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))

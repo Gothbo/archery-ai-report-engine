@@ -317,19 +317,42 @@ class TestDegradedLevelSection:
         db.close()
 
     def test_degraded_level_describes_rolling_baseline(self, degraded_env):
-        """降级期且存在滚动基线快照：level 段给出水平描述（基线均环 + 与本窗口差值，非判定）。"""
-        from app.memory.baseline import refresh_rolling_after_import
-
+        """降级期：level 段改述滚动基线水平（只描述不判定）；基线只取窗口前的箭。"""
         cfg, db_path = degraded_env
         db = Database(db_path)
         seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
         seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
-        refresh_rolling_after_import(db, ATHLETE, ["S-A", "S-B"])
         draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
         text = " ".join(self._level(draft.report)["content"])
         assert "滚动基线" in text
-        assert "9.25" in text   # 近 60 箭均环 (9.0*30 + 9.5*30)/60
-        assert "+0.25" in text  # 本窗口 9.50 较基线 +0.25
+        assert "窗口前近 30 箭" in text   # 基线 = 窗口前的 S-A，不含窗口内 S-B
+        assert "9.00" in text            # S-A 均环
+        assert "+0.50" in text           # 本窗口 9.50 较基线 +0.50
+        db.close()
+
+    def test_level_falls_back_to_rolling_baseline_without_anchor(self, engine_env):
+        """有 MDC 口径但无锚点：level 段改述窗口前滚动基线水平，不再是无信息占位（只描述不判定）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "滚动基线" in text and "9.00" in text and "+0.50" in text
+        assert not any(w in text for w in self.DIRECTION_WORDS), text  # 无锚点 → 只描述不判定
+        db.close()
+
+    def test_rolling_baseline_excludes_shots_after_window(self, engine_env):
+        """滚动基线只取窗口前的箭：窗口之后的箭不得进入基线（时间语义）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        seed_session(db, ATHLETE, "S-C", "2026-09-01T01:00:00.000Z", [10.0] * 30)  # 窗口之后
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "8.00" in text        # 基线 = 窗口前 S-A
+        assert "10.00" not in text   # 窗口后的 S-C 不进基线
         db.close()
 
     def test_mdc_configured_still_judges_direction(self, engine_env):

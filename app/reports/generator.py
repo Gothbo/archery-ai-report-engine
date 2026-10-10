@@ -2,7 +2,8 @@
 """报告层 · 生成器（组装：指标 + 规则 → 结构化报告 JSON）。
 
 流程（记忆系统方案 §3.3）：
-① 读记忆：profile / 最新锚点快照（MDC 参照系）+ 最新滚动快照（水平描述）/
+① 读记忆：profile / 最新锚点快照（MDC 参照系）+ 窗口前滚动基线（从事实层按窗口起点
+   截断计算，非导入时点快照，避免历史窗口拿「当前水平」当参照）/
    近期 notes（双视角过滤）/ 历史结论（同粒度最近 1 条）
 ② 计算指标（metrics，纯函数）
 ③ 规则出结论（锚点判 MDC + 滚动描述水平；可比性校验 C4；样本门槛 A4）
@@ -85,6 +86,37 @@ def _window_range(db: Database, granularity: str, window_key: str,
         t = row["session_time_utc"] if row else None
         return t, t
     return window_bounds(get_config(), granularity, window_key)
+
+
+def _rolling_baseline_before(db: Database, athlete_id: str, bow_type: str,
+                             before_iso: str | None, n: int) -> dict | None:
+    """窗口前近 N 支记分箭的滚动基线（时间语义：以窗口起点为界）。
+
+    与记忆层「最新 N 箭」快照（导入时点口径，供档案视图）不同：报告用的基线必须相对窗口，
+    否则历史窗口会拿「当前水平」当参照。不含窗口内箭（避免自比较），无先前箭则无基线。
+    """
+    if not before_iso:
+        return None
+    rows = db.recent_scoring_shots_before(athlete_id, bow_type, before_iso, n)
+    shots = [dict(r) for r in rows]
+    if not shots:
+        return None
+    v = metric_vector(shots)
+    return {"n_shots": len(shots), "avg_score": v.avg_score,
+            "collected_at_utc": shots[0]["shot_time_utc"]}
+
+
+def _rolling_level_line(rolling_dict: dict, window_avg: float) -> tuple[str, dict]:
+    """窗口前滚动基线的水平描述行 + evidence（只描述、不判定）。"""
+    base_avg = rolling_dict["avg_score"]
+    delta = round(window_avg - base_avg, 2)
+    line = (f"滚动基线（窗口前近 {rolling_dict['n_shots']} 箭，"
+            f"截至 {(rolling_dict.get('collected_at_utc') or '')[:10]}）均环 {base_avg:.2f}，"
+            f"本窗口均环 {window_avg:.2f}，差值 {delta:+.2f} 环（水平描述，非判定）")
+    ev = {"type": "fact", "ref": "rolling_baseline",
+          "value": {"n_shots": rolling_dict["n_shots"], "avg_score": base_avg,
+                    "delta_vs_window": delta}}
+    return line, ev
 
 
 def _calc_metrics(shots: list[dict]) -> dict:
@@ -203,11 +235,12 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     window_start, window_end = _window_range(db, granularity, window_key, session_id)
 
     profile = db.get_profile(athlete_id)
-    # 锚点/滚动基线按主弓种取（ADR-0004：不同项目基线不混用）
+    # 锚点按主弓种取（ADR-0004：不同项目基线不混用）；滚动基线按窗口起点截断（时间语义修复）
     anchor = db.latest_snapshot(athlete_id, "anchor", primary_bow)
-    rolling = db.latest_snapshot(athlete_id, "rolling", primary_bow)
+    rolling_dict = (_rolling_baseline_before(db, athlete_id, primary_bow, window_start,
+                                             cfg.rolling_window_shots)
+                    if primary_bow else None)
     anchor_dict = dict(anchor) if anchor else None
-    rolling_dict = dict(rolling) if rolling else None
 
     # 样本门槛（A4）：不足 → 降级"样本不足，仅供参考"，禁止判定词
     gate_ok = R.sample_gate(cfg, granularity, m["n_shots"], len(session_ids))
@@ -292,21 +325,20 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         # 降级期（ADR-0002）：显式声明不出方向判定，改用滚动基线描述水平（只描述、不判定）
         level_lines.insert(0, DEGRADE_HINT)
         if rolling_dict and rolling_dict.get("avg_score") is not None:
-            base_avg = rolling_dict["avg_score"]
-            delta = round(m["avg_score"] - base_avg, 2)
-            level_lines.append(
-                f"滚动基线（近 {rolling_dict['n_shots']} 箭，"
-                f"{(rolling_dict.get('collected_at_utc') or '')[:10]} 采集）均环 {base_avg:.2f}，"
-                f"本窗口均环 {m['avg_score']:.2f}，差值 {delta:+.2f} 环（水平描述，非判定）")
-            level_evidence.append({"type": "fact", "ref": "rolling_baseline",
-                                   "value": {"n_shots": rolling_dict["n_shots"], "avg_score": base_avg,
-                                             "delta_vs_window": delta}})
+            line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
+            level_lines.append(line)
+            level_evidence.append(ev)
         if len(level_lines) == 1:
-            level_lines.append("本窗口无锚点比对、亦无滚动基线快照，暂无可描述的水平")
+            level_lines.append("本窗口前无记分箭、无滚动基线，暂无可描述的水平")
     elif not level_lines:
         if not data_ok:
             # 数据质量护栏（P0）：分布存在结构性矛盾 → 抑制方向判定并显式说明原因
             level_lines = ["数据存疑：分布存在结构性矛盾，本窗口不出方向判定"]
+        elif rolling_dict and rolling_dict.get("avg_score") is not None:
+            # 无锚点可比（或样本不足）：不静默省略，改述窗口前滚动基线水平（只描述、不判定）
+            line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
+            level_lines.append(line)
+            level_evidence.append(ev)
         else:
             level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
     elif cfg.change_caliber_trial:
