@@ -30,13 +30,21 @@
   "mdc_source": "v1-trial-20261010",
   "change_caliber_trial": true,
   "change_caliber_trial_note": "试行口径（B13）：判定已解锁但为草案值，报告在 level 段标注「试行中」；专家签署后置 false 并升 mdc_source 正式版本。",
-  "report_caliber_version": "v2",
-  "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
+  "report_caliber_version": "v3",
+  "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）；v3=新增建议层（suggestions 由判断信号确定性生成）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
   "data_quality": {
     "min_shots_for_description": 6,
     "score_max": 10.9
   },
   "data_quality_note": "数据质量护栏（P0）：min_shots_for_description=描述性统计最小样本（低于此值统计量不可靠）；score_max=单箭环值上限。分布不变量（0环⊆远弹、内十与远弹互斥、含脱靶均环∈[0,score_max] 且 ≤(1−脱靶率)×score_max）恒校验；命中即出「数据存疑」，结构矛盾时抑制方向判定（见 app/reports/quality.py）。不校验「命中率+脱靶率=100%」：hit（命中）与 score（环值）为独立信号，二者不互补。",
+  "advice": {
+    "miss_rate_high": 10.0,
+    "far_miss_high": 30.0,
+    "inner10_low": 20.0,
+    "wind_band_delta": 0.5,
+    "min_band_shots": 10
+  },
+  "advice_note": "建议层（P0）触发阈值：miss_rate_high=脱靶率(%)阈值→提示「成绩损失主要来自脱靶」；far_miss_high=非脱靶远弹占比(%)阈值→提示「着点离散偏大」；inner10_low=内十率(%)下限→提示「着点不够靠中心」；wind_band_delta=风档间均环差(环)阈值；min_band_shots=风档参与比较的最小箭数。均为自有数据经验草案（试行，待教练校准），非文献口径；建议文案带真实数值供教练判断（见 app/reports/advice.py）。",
   "forbidden_phrases": ["练它即提分"],
   "rolling_window_shots": 288,
   "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },

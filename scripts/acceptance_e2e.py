@@ -81,6 +81,10 @@ def main():
     print("weekly 段:", keys2)
     print("变化判定（试行口径标注）: True")
 
+    # 建议层（P0）：报告体 suggestions 字段存在且为列表（两视图共享正文）
+    assert isinstance(wk2["suggestions"], list), wk2
+    print("建议条数:", len(wk2["suggestions"]))
+
     print("\n== 5 真 SQLite 库导入（M5，只读消费）==")
     st, r3 = call("POST", "/ingest/sqlite")
     assert st == 200, r3
@@ -93,6 +97,14 @@ def main():
 
     st, sess = call("GET", f"/athletes/{ATHLETE}/sessions")
     print("张明场次数:", len(sess["sessions"]))
+
+    print("\n== 6b 真库运动员建议层（葛靖月报）==")
+    st, rp = call("POST", "/athletes/1422802198808030396/reports/monthly",
+                  params={"month": "2025-01", "view": "coach", "refresh": "true"})
+    assert st == 200, rp
+    sugg = rp["suggestions"]
+    assert isinstance(sugg, list) and len(sugg) >= 1, rp
+    print("建议条数:", len(sugg), "| 示例:", sugg[0])
 
     print("\n== 7 备注双视角 + 软删 ==")
     st, c = call("POST", f"/athletes/{ATHLETE}/notes",

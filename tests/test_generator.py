@@ -576,3 +576,55 @@ class TestDataQualityGuardrail:
         # 结构矛盾时不落任何强断言方向结论
         assert not any(c["conclusion_key"] in ("progress", "regression") for c in draft.conclusions)
         db.close()
+
+
+class TestAdviceLayer:
+    """P0 验收：建议层填充 report.suggestions（由判断信号确定性生成）；
+    两视图正文一致，evidence 仅教练附注区可见；空窗口/数据存疑时给显式空状态或拒绝。"""
+
+    def test_miss_heavy_window_populates_advice(self, engine_env):
+        """脱靶率高的窗口：suggestions 出脱靶建议，evidence 仅教练附注区。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z",
+                     [0.0] * 15 + [9.0] * 15, wind=[0.8] * 30, hr=[70] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert any("脱靶" in x for x in draft.report["suggestions"])
+        assert any(e["ref"] == "advice_miss"
+                   for e in draft.report["coach_extra"]["advice_evidence"])
+        db.close()
+
+    def test_advice_body_identical_across_views(self, engine_env):
+        """suggestions 属共享正文：两视图一致；advice_evidence 仅教练可见。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30,
+                     wind=[0.8] * 30, hr=[70] * 30)
+        a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert a["suggestions"] == c["suggestions"]
+        assert "advice_evidence" not in a["coach_extra"]
+        assert "advice_evidence" in c["coach_extra"]
+        db.close()
+
+    def test_empty_window_has_empty_suggestions(self, engine_env):
+        """空窗口：suggestions 为空（真实空状态）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-EMPTY",
+                             session_id="S-EMPTY", view="coach")
+        assert draft.report["suggestions"] == []
+        db.close()
+
+    def test_contradiction_blocks_advice(self, engine_env, monkeypatch):
+        """数据存疑（结构矛盾）：不出建议，显式拒绝。"""
+        import app.reports.generator as gen
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        monkeypatch.setattr(gen.Q, "assess_quality", lambda m, dq: {
+            "suspect": True, "block_judgement": True, "reasons": ["矛盾"]})
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert draft.report["suggestions"] == ["本窗口数据存疑（分布存在结构性矛盾），暂不给出训练建议"]
+        db.close()

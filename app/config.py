@@ -69,6 +69,25 @@ class DataQuality(BaseModel):
     score_max: float = Field(gt=0)
 
 
+class Advice(BaseModel):
+    """建议层（P0）：由判断信号生成确定性训练建议的触发阈值。
+
+    均为自有数据经验草案（试行，待教练校准），非文献口径；报告建议文案会带真实数值，
+    教练可据此自行判断，阈值仅决定「是否值得提示」。
+    - miss_rate_high：脱靶率（%）达到此值 → 提示「成绩损失主要来自脱靶」；
+    - far_miss_high：非脱靶远弹占比（%）达到此值 → 提示「着点离散偏大」；
+    - inner10_low：内十率（%）低于此值 → 提示「着点不够靠中心」；
+    - wind_band_delta：风档间均环差（环）达到此值 → 提示「风况适应」；
+    - min_band_shots：风档参与比较的最小箭数（低于此值的档不参与，避免小样本噪声）。
+    """
+
+    miss_rate_high: float = Field(ge=0, le=100)
+    far_miss_high: float = Field(ge=0, le=100)
+    inner10_low: float = Field(ge=0, le=100)
+    wind_band_delta: float = Field(gt=0)
+    min_band_shots: int = Field(gt=0)
+
+
 class SampleThreshold(BaseModel):
     daily: int = Field(gt=0)
     weekly: int = Field(gt=0)
@@ -148,6 +167,8 @@ class EngineConfig(BaseSettings):
     report_caliber_version: str = "v1"
     # 数据质量护栏（P0）：描述性统计最小样本 + 分布不变量（见 app/reports/quality.py）
     data_quality: DataQuality
+    # 建议层（P0）：由判断信号生成确定性训练建议的触发阈值（见 app/reports/advice.py）
+    advice: Advice
     forbidden_phrases: list[str] = Field(default_factory=list)
     rolling_window_shots: int = Field(gt=0)
     notes_visibility: NotesVisibility
@@ -214,6 +235,7 @@ class EngineConfig(BaseSettings):
             "mdc_source": self.mdc_source,
             "change_caliber_trial": self.change_caliber_trial,
             "data_quality": self.data_quality.model_dump(),
+            "advice": self.advice.model_dump(),
             "report_caliber_version": self.report_caliber_version,
             "rolling_window_shots": self.rolling_window_shots,
             "memory": self.memory.model_dump(),

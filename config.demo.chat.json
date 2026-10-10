@@ -19,6 +19,14 @@
   },
   "mdc_note": "演示配置：mdc_source 置为 demo 版本以展示 MDC 判定效果；对话 LLM 用 provider=mock（骨架取数，G2 恒通过），不绑真实模型",
   "mdc_source": "demo-thresholds-20260928",
+  "data_quality": { "min_shots_for_description": 6, "score_max": 10.9 },
+  "advice": {
+    "miss_rate_high": 10.0,
+    "far_miss_high": 30.0,
+    "inner10_low": 20.0,
+    "wind_band_delta": 0.5,
+    "min_band_shots": 10
+  },
   "forbidden_phrases": ["练它即提分"],
   "rolling_window_shots": 288,
   "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },
