@@ -406,8 +406,14 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     band_counts = wind_band_counts(shots, cfg.wind_bands)
     if band_avg:
         band_names = ["[0,1.5)", "[1.5,2.0)", "[2.0,2.5)", "≥2.5"]
-        band_lines = [f"{band_names[b]} 档：均环 {v}（n={band_counts.get(b, 0)}）"
-                      for b, v in sorted(band_avg.items())]
+        band_lines = []
+        for b, v in sorted(band_avg.items()):
+            n = band_counts.get(b, 0)
+            # 样本偏少的档均环不可靠：与建议层比较门槛（advice.min_band_shots）一致显式标注，
+            # 避免小样本噪声被读成「该风况下更好 / 更差」
+            tail = (f"n={n}，样本偏少未参与风档比较"
+                    if n < cfg.advice.min_band_shots else f"n={n}")
+            band_lines.append(f"{band_names[b]} 档：均环 {v}（{tail}）")
         by_key["wind_bands"] = {"key": "wind_bands", "title": "风档对照", "content": band_lines,
                                 "evidence": [{"type": "fact", "ref": "wind_band_avg", "value": band_avg}]}
 

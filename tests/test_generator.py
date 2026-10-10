@@ -66,6 +66,19 @@ class TestSixSectionSkeleton:
         assert "无风速数据" not in integrity["content"][0]
         db.close()
 
+    def test_wind_band_small_sample_flagged(self, engine_env):
+        """风档样本不足门槛：小样本档显式标注未参与比较，避免误读为「该风况更好 / 更差」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        wind = [0.5] * 24 + [1.7] * 6  # band0 n=24（达标）、band1 n=6（低于门槛 10）
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=wind)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        wb = [s for s in draft.report["sections"] if s["key"] == "wind_bands"][0]
+        lines = {c.split(" 档")[0]: c for c in wb["content"]}
+        assert "样本偏少" not in lines["[0,1.5)"]
+        assert "样本偏少" in lines["[1.5,2.0)"]
+        db.close()
+
     def test_sample_gate_says_ok_when_met(self, engine_env):
         """样本达标：sample_gate 显式出现「样本达标」。"""
         cfg, db_path = engine_env
