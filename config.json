@@ -11,13 +11,25 @@
   "wind_bands": [[0, 1.5], [1.5, 2.0], [2.0, 2.5], [2.5, 99]],
   "wind_bands_note": "左闭右开 lo<=w<hi；1.5 继承 D4 单阈值，2.0/2.5 按风对弹道影响经验曲线扩展（教练/运动科学评审 2026-09 冻结）",
   "mdc": {
-    "avgScore": { "threshold": 0.30, "direction": 1 },
+    "avgScore": {
+      "threshold": 0.30,
+      "direction": 1,
+      "te": 0.29,
+      "swc": 0.32,
+      "bands": [
+        { "max": 8.0, "te": 0.45, "swc": 0.60 },
+        { "max": 9.5, "te": 0.20, "swc": 0.30 },
+        { "max": 10.6, "te": 0.12, "swc": 0.15 }
+      ]
+    },
     "mcrT": { "threshold": 0.05, "direction": -1 },
     "hrVolatility": { "threshold": null, "direction": -1 },
     "dispersionMm": { "threshold": 2.0, "direction": -1 }
   },
-  "mdc_note": "hrVolatility 阈值待专家共识在 bpm 尺度重定（C2/M4.5）；mdc_source 为空前报告走降级模板",
-  "mdc_source": null,
+  "mdc_note": "avgScore 采用 Hopkins TE/SWC 两级：te=噪声底、swc=最小有价值变化（0.2×组间SD）、bands=天花板效应分区间（按当前均环取值）；强断言门槛 MDC95=2.772×te 由代码派生。数值为自有数据实测草案（见 输出/MDC口径建议稿.md），待混合效应模型复核与教练校准。mcrT/hrVolatility/dispersionMm 未配置 te/swc，回退旧单阈值口径；hrVolatility 阈值待专家共识在 bpm 尺度重定（C2/M4.5）。",
+  "mdc_source": "v1-trial-20261010",
+  "change_caliber_trial": true,
+  "change_caliber_trial_note": "试行口径（B13）：判定已解锁但为草案值，报告在 level 段标注「试行中」；专家签署后置 false 并升 mdc_source 正式版本。",
   "report_caliber_version": "v2",
   "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
   "forbidden_phrases": ["练它即提分"],

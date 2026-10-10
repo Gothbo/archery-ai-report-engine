@@ -16,7 +16,9 @@ from app.timeutil import iso_now_utc
 logger = logging.getLogger("engine.memory.memories")
 
 # 参与历史引用的判定类：progress/regression/plateau/steady/risk；steady 落库供平台期识别（C3）
-JUDGEMENT_KEYS = {"progress", "regression", "plateau", "steady", "risk"}
+# *_ref 为参考档方向提示（超 SWC 未达 MDC95）：落库留痕，但不参与锚点重建（弱于强断言）
+JUDGEMENT_KEYS = {"progress", "regression", "plateau", "steady", "risk",
+                  "progress_ref", "regression_ref"}
 ATTRIBUTION_KEYS = {"wind"}
 
 

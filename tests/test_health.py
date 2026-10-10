@@ -14,4 +14,4 @@ def test_health_ok():
     assert body["config_version"]
     assert body["timezone"] == "Asia/Shanghai"
     assert isinstance(body["db"], str) and body["db"]  # 真实配置 → 引擎库路径（惰性自初始化）
-    assert body["mdc_source"] == "empty"  # 真实配置 mdc_source=null（M4.5 共识前降级）
+    assert body["mdc_source"] == "v1-trial-20261010"  # 试行口径已解锁判定（B13）

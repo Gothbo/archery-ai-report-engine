@@ -26,9 +26,36 @@ CONFIG_PATH = Path(os.environ.get("ENGINE_CONFIG", BASE_DIR / "config.json"))
 REQUIRED_MDC_KEYS = ("avgScore", "mcrT", "hrVolatility", "dispersionMm")
 
 
+class ChangeBand(BaseModel):
+    """天花板效应分区间：按当前值落入的档位覆盖 te/swc（未给出则继承指标默认）。"""
+
+    max: float
+    te: float | None = None
+    swc: float | None = None
+
+
 class MDCSpec(BaseModel):
-    threshold: float | None = None
+    """指标变化判定口径（Hopkins TE/SWC 两级 + 天花板分区间）。
+
+    - te：典型误差（噪声底）——变化 ≤ te 视为不可判定；
+    - swc：最小有价值变化——te < 变化 ≤ swc 视为正常波动；
+    - threshold：旧单阈值口径，未配置 te/swc 的指标回退使用；
+    - bands：按当前值分档覆盖 te/swc，应对高分区噪声骤降（天花板效应）。
+    强断言门槛 MDC95 由 te 派生（2.772 × te），不入配置（见 rules.MDC95_FACTOR）。
+    """
+
     direction: int = Field(ge=-1, le=1)
+    threshold: float | None = None
+    te: float | None = None
+    swc: float | None = None
+    bands: list[ChangeBand] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _bands_strictly_ascending(self) -> "MDCSpec":
+        maxes = [b.max for b in self.bands]
+        if maxes != sorted(maxes) or len(set(maxes)) != len(maxes):
+            raise ValueError(f"bands 必须按 max 严格升序：{maxes}")
+        return self
 
 
 class SampleThreshold(BaseModel):
@@ -103,6 +130,8 @@ class EngineConfig(BaseSettings):
     wind_bands: list[list[float]]
     mdc: dict[str, MDCSpec]
     mdc_source: str | None = None
+    # 试行口径（B13）：true 时报告在判定段标注「试行中」，方向结论为初步判定、可随专家签署撤回。
+    change_caliber_trial: bool = False
     # 报告口径版本（B10/B12 缓存键的一部分）：成绩段口径变更须递增，作废旧口径缓存。
     # 与 mdc_source（MDC 阈值来源，空=降级期）解耦，避免口径升级误触/误退降级期。
     report_caliber_version: str = "v1"
@@ -170,6 +199,7 @@ class EngineConfig(BaseSettings):
             "wind_bands": self.wind_bands,
             "mdc": {k: v.model_dump() for k, v in self.mdc.items()},
             "mdc_source": self.mdc_source,
+            "change_caliber_trial": self.change_caliber_trial,
             "report_caliber_version": self.report_caliber_version,
             "rolling_window_shots": self.rolling_window_shots,
             "memory": self.memory.model_dump(),

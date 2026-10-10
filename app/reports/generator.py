@@ -39,6 +39,8 @@ SECTION_ORDER = ("window_score", "level", "data_integrity", "wind_bands", "sampl
 
 # 降级期提示（ADR-0002）：显式声明不出方向判定，避免「无结论」被误读为「有结论」
 DEGRADE_HINT = "降级期，暂无进步/退步判定（MDC 阈值口径试行中，本段只描述水平、不判定方向）"
+# 试行口径提示（B13）：判定已解锁但为草案值，须标注可撤回
+TRIAL_HINT = "（变化判定口径 {src}，试行中：方向结论为初步判定，待专家签署后定稿）"
 
 _SCORE_TITLES = {"daily": "本场成绩", "weekly": "本周成绩", "monthly": "本月成绩",
                  "quarterly": "本季成绩", "yearly": "本年成绩"}
@@ -257,14 +259,22 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 # 不可比：只描述不判定
                 res["degraded"] = True
                 res["judge"] = None
+                res["tier"] = None
             rendered = R.render_rule(cfg, rule, res, {
                 "now": now_v, "ref": ref_v, "delta": res["delta"] if res["delta"] is not None else "-",
+                "delta_signed": f"{now_v - ref_v:+.2f}",
                 "ref_date": anchor_date, "mdc": res["mdc"] if res["mdc"] is not None else "-",
+                "mdc95": res["mdc"] if res["mdc"] is not None else "-",
+                "te": res.get("te") if res.get("te") is not None else "-",
+                "swc": res.get("swc") if res.get("swc") is not None else "-",
             })
             if rendered["judge"] is not None:
+                # 参考档（方向提示，未达强断言门槛）以 *_ref 键落库：与强断言方向区分，不触发锚点重建
+                key = f"{rendered['judge']}_ref" if rendered["tier"] == R.REFERENCE else rendered["judge"]
                 conclusions.append({
-                    "conclusion_key": rendered["judge"], "conclusion": rendered["conclusion"],
-                    "judge_basis": f"anchor_id={anchor_dict['id']};mdc_source={cfg.mdc_source};window_shots={m['n_shots']}",
+                    "conclusion_key": key, "conclusion": rendered["conclusion"],
+                    "judge_basis": (f"anchor_id={anchor_dict['id']};mdc_source={cfg.mdc_source};"
+                                    f"tier={rendered['tier']};window_shots={m['n_shots']}"),
                     "delta_value": rendered["delta"], "evidence": str(rendered["evidence"]),
                 })
             if not comparable:
@@ -288,6 +298,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             level_lines.append("本窗口无锚点比对、亦无滚动基线快照，暂无可描述的水平")
     elif not level_lines:
         level_lines = ["本窗口暂无可判定的水平对比（无锚点或样本不足）"]
+    elif cfg.change_caliber_trial:
+        # 试行口径（B13）：判定已解锁但为草案值，末行标注口径版本与「试行中」
+        level_lines.append(TRIAL_HINT.format(src=cfg.mdc_source))
     by_key["level"] = {"key": "level", "title": "水平对比",
                        "content": level_lines, "evidence": level_evidence}
 

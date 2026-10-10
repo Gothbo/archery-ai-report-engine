@@ -61,11 +61,11 @@ def main():
     print("weekly 段:", keys)
     texts = " ".join(" ".join(str(c) for c in s["content"]) for s in wk["sections"])
     assert "含脱靶均环" in texts
-    # 无锚点 → level 段不静默省略：降级期出提示（+ 有滚动基线时附水平描述）
-    assert "level" in keys and "降级期" in texts
-    print("无锚点 level 占位（降级期提示）: True")
+    # 无锚点 → level 段不静默省略：显式占位
+    assert "level" in keys and ("暂无可判定" in texts or "暂无" in texts)
+    print("无锚点 level 占位: True")
 
-    print("\n== 4b 建锚点后周报走降级模板（mdc_source=null，M4.5 前只描述不判定）==")
+    print("\n== 4b 建锚点后周报出变化判定（试行口径 v1-trial，标注「试行中」）==")
     st, anc = call("POST", f"/athletes/{ATHLETE}/baseline/anchor",
                    body={"bow_type": "反曲弓", "source_session_id": "S001"})
     assert st == 200 and anc["snapshot"]["snap_type"] == "anchor", anc
@@ -76,10 +76,10 @@ def main():
     keys2 = [s["key"] for s in wk2["sections"]]
     assert "level" in keys2, keys2
     texts2 = " ".join(" ".join(str(c) for c in s["content"]) for s in wk2["sections"])
-    assert "降级期" in texts2 and "暂无进步/退步判定" in texts2, texts2  # 降级提示（ADR-0002）
-    assert "未判定" in texts2, texts2  # 锚点降级模板：只描述不判定
+    assert "降级期" not in texts2, texts2  # 降级期已解锁
+    assert "试行中" in texts2, texts2  # 试行口径标注（B13）
     print("weekly 段:", keys2)
-    print("降级模板（只描述不判定）: True")
+    print("变化判定（试行口径标注）: True")
 
     print("\n== 5 真 SQLite 库导入（M5，只读消费）==")
     st, r3 = call("POST", "/ingest/sqlite")
