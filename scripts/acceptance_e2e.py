@@ -69,17 +69,20 @@ def main():
     print("weekly 段:", keys)
     texts = " ".join(" ".join(str(c) for c in s["content"]) for s in wk["sections"])
     assert "含脱靶均环" in texts
-    # 无锚点 → level 段不静默省略：首窗口无先前箭，显式占位
-    assert "level" in keys and ("暂无可判定" in texts or "暂无" in texts)
-    print("无锚点 level 占位: True")
+    # 无锚点 → level 段不静默省略：首窗口无先前箭、无滚动基线，显式说明（试行口径）
+    assert "level" in keys
+    assert "无锚点" in texts and "无滚动基线" in texts, texts
+    print("无锚点 level 显式说明（无基线）: True")
 
-    print("\n== 4c 无锚点·后续窗口：level 段改述窗口前滚动基线水平（只描述、不判定）==")
+    print("\n== 4c 无锚点·后续窗口：level 段按窗口前滚动基线给方向提示（试行口径、参考）==")
     st, wk33 = call("POST", f"/athletes/{ATHLETE}/reports/weekly",
                     params={"week": "2026-W33", "refresh": "true"})
     assert st == 200, wk33
     texts33 = " ".join(" ".join(str(c) for c in s["content"]) for s in wk33["sections"])
-    assert "滚动基线" in texts33 and "水平描述，非判定" in texts33, texts33
-    print("无锚点后续窗口→滚动基线描述: True")
+    # 试行口径 v4：无锚点也出方向提示（参考），但不出强断言判定词
+    assert "滚动基线" in texts33 and "方向提示（试行口径，参考" in texts33, texts33
+    assert "判定：进步" not in texts33 and "判定：退步" not in texts33, texts33
+    print("无锚点后续窗口→滚动基线试行方向提示: True")
 
     print("\n== 4d 无锚点引导：教练附注区给出可建锚点的候选场次（早于窗口）==")
     st, wk33c = call("POST", f"/athletes/{ATHLETE}/reports/weekly",
