@@ -43,7 +43,8 @@
 - 该提示**始终不产强断言判定词**（不得出现 `判定：进步/退步`）。达 `MDC95` 也只表述为「上升/下降 N 环，方向提示（试行口径，参考）」；超噪声底但未达 SWC 表述为「正常波动」；低于噪声底表述为「不出方向提示」。
 - **锚点仍是强断言方向判定的唯一参照系**：有锚点时 level 段走锚点 MDC 判定并写入结论记忆；无锚点的方向提示**不写入 `conclusions`、不入结论记忆、不参与平台期/近期结论逻辑**（记忆判定为锚点专属）。
 - 非试行期（`change_caliber_trial=false`）无锚点场景回落为原行为：只描述滚动基线（「水平描述，非判定」），不出方向提示；`mdc_source=None` 的降级期仍只描述不判定（ADR-0002 优先）。
-- 实现：`BASELINE_RULE` 独立于 `RULES`（避免锚点分支遍历 `RULES` 时对 `avgScore` 重复判定）；`generator._baseline_hint` 生成提示；无锚点提示语按是否试行区分（`NO_ANCHOR_HINT` / `NO_ANCHOR_HINT_TRIAL`）。
+- **无滚动基线时不出提示**：若窗口前无任何记分箭（如运动员首训场次），则既无锚点也无基线，方向提示无从计算。此时正文如实说明「无记分箭、无滚动基线，本窗口无方向提示」，**不得沿用「按滚动基线给方向提示」的措辞**（避免承诺不存在的提示）。
+- 实现：`BASELINE_RULE` 独立于 `RULES`（避免锚点分支遍历 `RULES` 时对 `avgScore` 重复判定）；`generator._baseline_hint` 生成提示；无锚点提示语按「是否试行」「是否有基线」区分（`NO_ANCHOR_HINT` / `NO_ANCHOR_HINT_TRIAL` / `NO_ANCHOR_HINT_TRIAL_NO_BASELINE`）。
 
 ### Consequences
 

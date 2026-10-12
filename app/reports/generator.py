@@ -49,6 +49,9 @@ NO_ANCHOR_HINT = "当前无锚点：锚点是方向判定的参照系，尚无�
 # 试行期无锚点提示（ADR-0006 修订）：试行口径下无锚点仍给滚动基线方向提示（参考），强断言判定仍需锚点
 NO_ANCHOR_HINT_TRIAL = ("当前无锚点：锚点是强断言判定的参照系，暂无锚点，"
                         "本窗口仅按滚动基线给方向提示（参考），不出强断言判定")
+# 试行期无锚点且无滚动基线：不得谎称会出方向提示（无基线即无提示）
+NO_ANCHOR_HINT_TRIAL_NO_BASELINE = ("当前无锚点：锚点是强断言判定的参照系，且本窗口前无记分箭、"
+                                    "无滚动基线，本窗口无方向提示")
 
 _SCORE_TITLES = {"daily": "本场成绩", "weekly": "本周成绩", "monthly": "本月成绩",
                  "quarterly": "本季成绩", "yearly": "本年成绩"}
@@ -382,10 +385,16 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 level_evidence.append(ev)
         else:
             # 样本达标、数据可信：无锚点则显式说明缺锚点导致无方向判定（不静默省略）
+            has_baseline = bool(rolling_dict and rolling_dict.get("avg_score") is not None)
             if primary_bow is not None and anchor_dict is None:
                 # 无锚点引导（P1）：正文说明缺锚点；建立动作在 coach_extra（ADR-0005）
-                level_lines.append(NO_ANCHOR_HINT_TRIAL if cfg.change_caliber_trial else NO_ANCHOR_HINT)
-            if rolling_dict and rolling_dict.get("avg_score") is not None:
+                if not cfg.change_caliber_trial:
+                    level_lines.append(NO_ANCHOR_HINT)
+                else:
+                    # 试行期：仅有滚动基线时才承诺方向提示；无基线不得谎称会出提示（ADR-0006 修订）
+                    level_lines.append(NO_ANCHOR_HINT_TRIAL if has_baseline
+                                       else NO_ANCHOR_HINT_TRIAL_NO_BASELINE)
+            if has_baseline:
                 if cfg.change_caliber_trial:
                     # 试行期：无锚点也按滚动基线出方向提示（试行口径、参考），不出强断言判定词（ADR-0006 修订）
                     line, ev = _baseline_hint(cfg, m["avg_score"], rolling_dict)

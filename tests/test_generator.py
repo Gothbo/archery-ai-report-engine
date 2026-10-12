@@ -473,6 +473,20 @@ class TestBaselineDirectionHint:
         assert db.list_memories(ATHLETE) == []
         db.close()
 
+    def test_no_anchor_and_no_baseline_does_not_promise_hint(self, engine_env):
+        """无锚点且窗口前无记分箭（首训场次）：不得谎称「按滚动基线给方向提示」——无基线即无提示。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 仅本窗口一场，窗口前没有任何记分箭 → 无滚动基线
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "按滚动基线给方向提示" not in text   # 无基线时不承诺提示
+        assert "较滚动基线" not in text             # 不产出基线方向提示行
+        assert "方向提示（试行口径" not in text
+        assert "无滚动基线" in text                 # 如实说明无基线
+        db.close()
+
 
 class TestAnchorGuidance:
     """P1 无锚点引导：level 段显式说明缺锚点；coach_extra.anchor_setup 给出候选场次（仅教练，ADR-0005）。"""
