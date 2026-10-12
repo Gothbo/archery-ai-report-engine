@@ -370,16 +370,18 @@ class TestDegradedLevelSection:
         assert "+0.50" in text           # 本窗口 9.50 较基线 +0.50
         db.close()
 
-    def test_level_falls_back_to_rolling_baseline_without_anchor(self, engine_env):
-        """有 MDC 口径但无锚点：level 段改述窗口前滚动基线水平，不再是无信息占位（只描述不判定）。"""
+    def test_level_without_anchor_emits_trial_baseline_hint(self, engine_env):
+        """有 MDC 试行口径但无锚点：level 段按滚动基线出方向提示（试行口径、参考），不出强断言判定。"""
         cfg, db_path = engine_env
         db = Database(db_path)
         seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
         seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
         draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
         text = " ".join(self._level(draft.report)["content"])
-        assert "滚动基线" in text and "9.00" in text and "+0.50" in text
-        assert not any(w in text for w in self.DIRECTION_WORDS), text  # 无锚点 → 只描述不判定
+        assert "较滚动基线" in text and "+0.50" in text
+        assert "方向提示（试行口径，参考" in text   # 参考档：未达强断言门槛
+        assert "判定：进步" not in text and "判定：退步" not in text  # 强断言判定仍归锚点
+        assert "无锚点" in text
         db.close()
 
     def test_rolling_baseline_excludes_shots_after_window(self, engine_env):
@@ -406,6 +408,69 @@ class TestDegradedLevelSection:
         lines = self._level(draft.report)["content"]
         assert any(("较锚点" in ln) or ("与锚点" in ln) for ln in lines)
         assert not any("降级期" in ln for ln in lines)
+        db.close()
+
+
+class TestBaselineDirectionHint:
+    """ADR-0006 修订：试行口径下无锚点按滚动基线出方向提示（参考），不出强断言判定词，不落记忆。"""
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_assertive_level_change_still_worded_as_reference(self, engine_env):
+        """大幅变化（≥强断言门槛）：给「上升 X 环，方向提示（试行口径，参考）」，不出现判定词。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "较滚动基线" in text and "上升 1.5 环" in text
+        assert "方向提示（试行口径，参考" in text
+        assert "判定：进步" not in text and "判定：退步" not in text
+        db.close()
+
+    def test_change_below_noise_suppresses_hint(self, engine_env):
+        """微小变化（≤噪声底）：不出方向提示，显式说明低于噪声底。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.05] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "低于噪声底" in text and "不出方向提示" in text
+        db.close()
+
+    def test_hint_absent_when_caliber_not_trial(self, engine_env, tmp_path):
+        """非试行口径：无锚点回落为只描述不判定的滚动基线水平描述（无方向提示）。"""
+        import json
+
+        import app.config as cfgmod
+
+        cfg_dict, db_path = engine_env
+        cfg_path = tmp_path / "config.json"
+        cfg_dict["change_caliber_trial"] = False
+        cfg_path.write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        cfgmod.get_config.cache_clear()
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "方向提示" not in text
+        assert "水平描述，非判定" in text
+        db.close()
+
+    def test_hint_not_written_to_conclusions_or_memory(self, engine_env):
+        """无锚点方向提示不入结论记忆（记忆判定为锚点专属），build_report 保持无副作用。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        assert draft.conclusions == []
+        assert db.list_memories(ATHLETE) == []
         db.close()
 
 

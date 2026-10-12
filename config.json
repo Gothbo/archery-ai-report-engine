@@ -30,8 +30,8 @@
   "mdc_source": "v1-trial-20261010",
   "change_caliber_trial": true,
   "change_caliber_trial_note": "试行口径（B13）：判定已解锁但为草案值，报告在 level 段标注「试行中」；专家签署后置 false 并升 mdc_source 正式版本。",
-  "report_caliber_version": "v3",
-  "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）；v3=新增建议层（suggestions 由判断信号确定性生成）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
+  "report_caliber_version": "v4",
+  "report_caliber_version_note": "报告缓存口径版本（B10/B12）：v1=单口径均环；v2=双口径（含脱靶均环+有效箭均环+脱靶率）；v3=新增建议层（suggestions 由判断信号确定性生成）；v4=无锚点试行方向提示（试行期 level 段按滚动基线给方向提示，不出强断言判定）。递增即作废旧口径缓存；与 mdc_source 解耦，升级口径不影响降级期",
   "data_quality": {
     "min_shots_for_description": 6,
     "score_max": 10.9

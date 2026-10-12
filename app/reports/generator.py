@@ -46,6 +46,9 @@ DEGRADE_HINT = "降级期，暂无进步/退步判定（MDC 阈值口径试行�
 TRIAL_HINT = "（变化判定口径 {src}，试行中：方向结论为初步判定，待专家签署后定稿）"
 # 无锚点提示（P1）：正文只说明缺锚点导致无方向判定（信息），「建立锚点」动作在 coach_extra（ADR-0005）
 NO_ANCHOR_HINT = "当前无锚点：锚点是方向判定的参照系，尚无锚点则本窗口不出方向判定"
+# 试行期无锚点提示（ADR-0006 修订）：试行口径下无锚点仍给滚动基线方向提示（参考），强断言判定仍需锚点
+NO_ANCHOR_HINT_TRIAL = ("当前无锚点：锚点是强断言判定的参照系，暂无锚点，"
+                        "本窗口仅按滚动基线给方向提示（参考），不出强断言判定")
 
 _SCORE_TITLES = {"daily": "本场成绩", "weekly": "本周成绩", "monthly": "本月成绩",
                  "quarterly": "本季成绩", "yearly": "本年成绩"}
@@ -119,6 +122,28 @@ def _rolling_level_line(rolling_dict: dict, window_avg: float) -> tuple[str, dic
           "value": {"n_shots": rolling_dict["n_shots"], "avg_score": base_avg,
                     "delta_vs_window": delta}}
     return line, ev
+
+
+def _baseline_hint(cfg: EngineConfig, window_avg: float, rolling_dict: dict) -> tuple[str, dict]:
+    """无锚点试行方向提示：以窗口前滚动基线为参照，复用同一 TE/SWC 口径（ADR-0006 修订）。
+
+    产出「方向提示（试行口径，参考）」，不产强断言判定词；不落结论记忆（记忆判定为锚点专属）。
+    """
+    base_avg = rolling_dict["avg_score"]
+    res = R.judge_metric(cfg, "avgScore", window_avg, base_avg)
+    rendered = R.render_rule(cfg, R.BASELINE_RULE, res, {
+        "now": window_avg, "ref": base_avg,
+        "delta": res["delta"] if res["delta"] is not None else "-",
+        "delta_signed": f"{window_avg - base_avg:+.2f}",
+        "ref_n": rolling_dict["n_shots"],
+        "ref_date": (rolling_dict.get("collected_at_utc") or "")[:10],
+        "ref_avg": f"{base_avg:.2f}",
+        "mdc": res["mdc"] if res["mdc"] is not None else "-",
+        "mdc95": res["mdc"] if res["mdc"] is not None else "-",
+        "te": res.get("te") if res.get("te") is not None else "-",
+        "swc": res.get("swc") if res.get("swc") is not None else "-",
+    })
+    return rendered["conclusion"], rendered["evidence"]
 
 
 def _calc_metrics(shots: list[dict]) -> dict:
@@ -359,10 +384,14 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             # 样本达标、数据可信：无锚点则显式说明缺锚点导致无方向判定（不静默省略）
             if primary_bow is not None and anchor_dict is None:
                 # 无锚点引导（P1）：正文说明缺锚点；建立动作在 coach_extra（ADR-0005）
-                level_lines.append(NO_ANCHOR_HINT)
+                level_lines.append(NO_ANCHOR_HINT_TRIAL if cfg.change_caliber_trial else NO_ANCHOR_HINT)
             if rolling_dict and rolling_dict.get("avg_score") is not None:
-                # 改述窗口前滚动基线水平（只描述、不判定）
-                line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
+                if cfg.change_caliber_trial:
+                    # 试行期：无锚点也按滚动基线出方向提示（试行口径、参考），不出强断言判定词（ADR-0006 修订）
+                    line, ev = _baseline_hint(cfg, m["avg_score"], rolling_dict)
+                else:
+                    # 非试行期：保持只描述不判定（方向提示随试行口径解锁）
+                    line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
                 level_lines.append(line)
                 level_evidence.append(ev)
             if not level_lines:

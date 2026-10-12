@@ -100,10 +100,25 @@ RULES: dict[str, RuleSpec] = {
 # 参与 MDC 判定的指标必须在此列（与 config.mdc 键一致校验在 load 时完成）
 JUDGE_METRICS = ("avgScore", "mcrT", "hrVolatility", "dispersionMm")
 
+# 无锚点试行方向提示（ADR-0006 修订）：以「窗口前滚动基线」为参照系，按同一 TE/SWC 口径
+# 给出方向提示（试行口径、参考），但**不产出强断言判定词**——锚点仍是强断言判定的唯一参照系。
+# 独立于 RULES 之外：锚点分支会遍历 RULES 逐指标判定，若把本规则并入会造成 avgScore 重复判定。
+BASELINE_RULE = RuleSpec(
+    id="avg_vs_baseline",
+    metric="avgScore",
+    template_progress="平均环 {now} 较滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）上升 {delta} 环，方向提示（试行口径，参考）",
+    template_regression="平均环 {now} 较滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）下降 {delta} 环，方向提示（试行口径，参考）",
+    template_reference="平均环 {now} 较滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）变化 {delta_signed} 环，方向提示（试行口径，参考，未达强断言门槛 {mdc95}）",
+    template_steady="平均环 {now} 与滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）相比属正常波动（差 {delta} 环，超噪声底 {te} 但未达最小有价值变化 {swc}）",
+    template_below_noise="平均环 {now} 与滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）差 {delta} 环，低于噪声底（TE {te}），不出方向提示",
+    template_degrade="平均环 {now}，较滚动基线（近 {ref_n} 箭，截至 {ref_date}，均环 {ref_avg}）差 {delta} 环（试行口径未解锁，未判定）",
+    evidence_refs=["now", "ref", "delta", "ref_n", "ref_date", "mdc"],
+)
+
 
 def validate_rules(cfg: EngineConfig) -> None:
     """加载时校验（B4/B3）：规则 metric 必须在 config.mdc 存在；degrade 非空。"""
-    for rule in RULES.values():
+    for rule in list(RULES.values()) + [BASELINE_RULE]:
         if rule.metric not in cfg.mdc:
             raise ValueError(f"规则 {rule.id} 的 metric={rule.metric} 不在 config.mdc（B4 SSOT）")
         if not rule.template_degrade.strip():
