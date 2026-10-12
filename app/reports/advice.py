@@ -13,7 +13,8 @@
 三类信号（按优先级）：
 1. 成绩结构：脱靶 / 非脱靶远弹各自独立判阈值，可并列出现；内十率低仅在前两者均未触发时给出；
 2. 风况适应：两档达标样本且档间均环差超阈值；
-3. 趋势：基于 level 段方向判定（强断言 / 参考档分开表述）。
+3. 趋势：基于 level 段方向判定（强断言 / 参考档分开表述）；无锚点试行期按滚动基线方向提示
+   （试行口径，参考）同步给出，与正文 level 段保持一致，且不出强断言词。
 
 数据缺口（缺风速 / 心率）不在建议层重复提示——已在 data_integrity 段显式标注，避免同一事实两处出现。
 """
@@ -44,10 +45,12 @@ def _trend(conclusion_keys: list[str]) -> tuple[str | None, bool]:
 
 def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int, float],
                  wind_band_counts: dict[int, int], dq: dict, gate_ok: bool,
-                 cfg: EngineConfig) -> dict:
+                 cfg: EngineConfig, baseline_direction: str | None = None) -> dict:
     """生成窗口建议与溯源证据。
 
     返回 {"suggestions": [...], "evidence": [...]}；无数据 / 数据存疑时给出显式空状态或拒绝语。
+    baseline_direction：无锚点试行方向提示的方向（'progress'/'regression'/None），与正文 level 段一致；
+    仅在无锚点判定时使用（有锚点时以锚点结论为准），且仅作参考档表述、不出强断言词。
     """
     # 空窗口：无数据不出建议（前端显示空状态，不编造）
     if m["n_shots"] == 0:
@@ -132,6 +135,12 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
         suggestions.append(text)
         evidence.append({"type": "fact", "ref": "advice_regression",
                          "value": {"keys": conclusion_keys, "assertive": assertive}})
+    elif baseline_direction in ("progress", "regression"):
+        # 无锚点试行方向提示：与正文 level 段保持一致（参考档，不出强断言词）
+        word = "进步" if baseline_direction == "progress" else "退步"
+        suggestions.append(f"本窗口较滚动基线有{word}方向提示（试行口径，参考），建议持续观察")
+        evidence.append({"type": "fact", "ref": f"advice_{baseline_direction}_baseline",
+                         "value": {"baseline_direction": baseline_direction}})
 
     # 数据缺口（缺风速 / 心率）不在此重复提示，见模块 docstring 与 data_integrity 段
     return {"suggestions": suggestions, "evidence": evidence}

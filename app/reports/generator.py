@@ -127,10 +127,12 @@ def _rolling_level_line(rolling_dict: dict, window_avg: float) -> tuple[str, dic
     return line, ev
 
 
-def _baseline_hint(cfg: EngineConfig, window_avg: float, rolling_dict: dict) -> tuple[str, dict]:
+def _baseline_hint(cfg: EngineConfig, window_avg: float, rolling_dict: dict) -> tuple[str, dict, str | None]:
     """无锚点试行方向提示：以窗口前滚动基线为参照，复用同一 TE/SWC 口径（ADR-0006 修订）。
 
     产出「方向提示（试行口径，参考）」，不产强断言判定词；不落结论记忆（记忆判定为锚点专属）。
+    返回 (正文行, evidence, direction)：direction 仅在真正给出方向提示（参考/强断言档）时为
+    'progress'/'regression'，供建议层保持一致；正常波动/低于噪声底/降级时为 None。
     """
     base_avg = rolling_dict["avg_score"]
     res = R.judge_metric(cfg, "avgScore", window_avg, base_avg)
@@ -146,7 +148,8 @@ def _baseline_hint(cfg: EngineConfig, window_avg: float, rolling_dict: dict) -> 
         "te": res.get("te") if res.get("te") is not None else "-",
         "swc": res.get("swc") if res.get("swc") is not None else "-",
     })
-    return rendered["conclusion"], rendered["evidence"]
+    direction = res["judge"] if res.get("tier") in (R.REFERENCE, R.ASSERTIVE) else None
+    return rendered["conclusion"], rendered["evidence"], direction
 
 
 def _calc_metrics(shots: list[dict]) -> dict:
@@ -313,6 +316,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 否则显式占位，不静默省略）
     level_lines: list[str] = []
     level_evidence: list[dict] = []
+    # 无锚点试行方向提示的方向（'progress'/'regression'/None），供建议层与正文保持一致
+    baseline_direction: str | None = None
     if gate_ok and data_ok and anchor_dict:
         # 降级期（mdc_source 为空）仍走此分支：方向判定由 rules.judge_metric 统一降级（B3 SSOT），
         # 此处只渲染"只描述不判定"的 degrade 模板，故降级期不会出现方向判定词。
@@ -397,7 +402,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             if has_baseline:
                 if cfg.change_caliber_trial:
                     # 试行期：无锚点也按滚动基线出方向提示（试行口径、参考），不出强断言判定词（ADR-0006 修订）
-                    line, ev = _baseline_hint(cfg, m["avg_score"], rolling_dict)
+                    line, ev, baseline_direction = _baseline_hint(cfg, m["avg_score"], rolling_dict)
                 else:
                     # 非试行期：保持只描述不判定（方向提示随试行口径解锁）
                     line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
@@ -512,7 +517,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     adv = ADV.build_advice(
         m, conclusion_keys=[c["conclusion_key"] for c in conclusions],
         wind_band_avg=band_avg, wind_band_counts=band_counts, dq=dq, gate_ok=gate_ok,
-        cfg=cfg)
+        baseline_direction=baseline_direction, cfg=cfg)
 
     # 正文与运维分离（ADR-0005）：sections 只含 key/title/content，两视图内容一致
     # （备注按视图过滤是既定例外）；运维字段（evidence 明细、anchor_rebuild_hint）仅 coach 返回。

@@ -487,6 +487,29 @@ class TestBaselineDirectionHint:
         assert "无滚动基线" in text                 # 如实说明无基线
         db.close()
 
+    def test_baseline_hint_also_emits_matching_suggestion(self, engine_env):
+        """建议层与正文一致：无锚点试行方向提示应同步出一条「较滚动基线…方向提示（试行口径，参考）」建议。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        sug = " ".join(draft.report["suggestions"])
+        assert "较滚动基线" in sug and "方向提示（试行口径，参考" in sug, sug
+        assert "判定进步" not in sug and "判定退步" not in sug, sug  # 无锚点不出强断言
+        db.close()
+
+    def test_baseline_steady_emits_no_trend_suggestion(self, engine_env):
+        """基线差在噪声底内（正文未出方向提示）时，建议层不得出现趋势建议。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.05] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        sug = " ".join(draft.report["suggestions"])
+        assert "较滚动基线" not in sug, sug
+        db.close()
+
 
 class TestAnchorGuidance:
     """P1 无锚点引导：level 段显式说明缺锚点；coach_extra.anchor_setup 给出候选场次（仅教练，ADR-0005）。"""
