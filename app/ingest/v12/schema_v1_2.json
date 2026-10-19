@@ -1,0 +1,1179 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://suoopter.internal/archery-target/v1.2/schema",
+  "title": "射箭电子靶数据接口 v1.2 消息 schema",
+  "type": "object",
+  "required": [
+    "schemaVersion",
+    "messageId",
+    "dataType",
+    "data"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "1.2",
+      "description": "协议版本,按版本路由解析;自1.2起与文档版本一致"
+    },
+    "messageId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "description": "消息全局唯一ID,接收端按此精确去重(§4.3)"
+    },
+    "sentAt": {
+      "$ref": "#/$defs/utcTime",
+      "description": "可选,发送时刻(UTC尾Z),与业务时间戳区分,不参与去重"
+    },
+    "dataType": {
+      "type": "integer",
+      "enum": [
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9
+      ],
+      "description": "数据类型,按此分发 data"
+    },
+    "subType": {
+      "type": "string",
+      "description": "仅 dataType=9 使用: athleteProfile / baselineSnapshot(信封级,与 dataType/data 平级)"
+    },
+    "data": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 1
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt1"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 2
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt2"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 3
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt3"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 4
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt4"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 5
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt5"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 6
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt6"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 7
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt7"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 8
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "properties": {
+          "data": {
+            "$ref": "#/$defs/dt8"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "const": 9
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "required": [
+          "subType"
+        ],
+        "properties": {
+          "subType": {
+            "type": "string",
+            "enum": [
+              "athleteProfile",
+              "baselineSnapshot"
+            ]
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "subType": {
+                  "const": "athleteProfile"
+                }
+              },
+              "required": [
+                "subType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "$ref": "#/$defs/dt9a"
+                }
+              }
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "subType": {
+                  "const": "baselineSnapshot"
+                }
+              },
+              "required": [
+                "subType"
+              ]
+            },
+            "then": {
+              "properties": {
+                "data": {
+                  "$ref": "#/$defs/dt9b"
+                }
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "dataType": {
+            "not": {
+              "const": 9
+            }
+          }
+        },
+        "required": [
+          "dataType"
+        ]
+      },
+      "then": {
+        "not": {
+          "required": [
+            "subType"
+          ]
+        }
+      },
+      "description": "subType 仅 dataType=9 使用"
+    }
+  ],
+  "$defs": {
+    "dt1": {
+      "type": "object",
+      "description": "心率+R-R,真实时流;无releaseTime(箭未离弦)",
+      "required": [
+        "timestamp",
+        "shotSeq",
+        "shotId",
+        "lane",
+        "heartRate",
+        "rrIntervalsMs",
+        "rmssdMs"
+      ],
+      "not": {
+        "required": [
+          "releaseTime"
+        ],
+        "description": "硬约束: 实时流(1/4)禁止携带 releaseTime(箭未离弦,值未发生)"
+      },
+      "properties": {
+        "timestamp": {
+          "$ref": "#/$defs/utcTime",
+          "description": "本条采样时刻(UTC,Z结尾)"
+        },
+        "shotSeq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "网关注入,窗外/休息=null;与shotId同步可空"
+        },
+        "shotId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/snowflakeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "网关注入的19位雪花ID字符串;窗外/休息=null(与shotSeq同步)"
+        },
+        "lane": {
+          "$ref": "#/$defs/lane"
+        },
+        "heartRate": {
+          "$ref": "#/$defs/heartRateBpm"
+        },
+        "rrIntervalsMs": {
+          "type": "array",
+          "items": {
+            "type": "number",
+            "exclusiveMinimum": 0
+          },
+          "description": "R-R间期(ms)列表"
+        },
+        "rmssdMs": {
+          "type": "number",
+          "description": "短窗RMSSD;标'短窗参考,不作结论'"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/streamShotBinding"
+        }
+      ]
+    },
+    "dt2": {
+      "type": "object",
+      "description": "弹着(成绩本体+时间锚点);事件。v1.2:脱靶以 miss=true 显式表达;releaseTime 可缺失(降级:锚点退回 hitTime,标注精度受限);平台快照字段(确认点#14/#17)改为可选",
+      "required": [
+        "hitTime",
+        "shotSeq",
+        "shotId",
+        "scoreId",
+        "lane",
+        "miss",
+        "score",
+        "x",
+        "y",
+        "innerTen",
+        "shootingMode",
+        "bowType",
+        "targetType"
+      ],
+      "properties": {
+        "releaseTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "可选。离弦=击发锚点(设备端力曲线拐点算得);缺失时锚点退回 hitTime 并标注'精度受限'(§4.2/§十)"
+        },
+        "hitTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "中靶物理时刻(光幕事件);hitTime-releaseTime=飞行时间"
+        },
+        "flightTimeMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "=hitTime-releaseTime(ms);与 releaseTime 同时出现或同时缺失;须落该靶距合理区间(70m≈1000-1500,18m≈250-450),超出判时钟/锚点异常"
+        },
+        "shotSeq": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "当日会话内递增箭序,换会话从1重置"
+        },
+        "shotId": {
+          "$ref": "#/$defs/snowflakeId",
+          "description": "设备预分配19位雪花ID字符串;脱靶箭同样携带"
+        },
+        "scoreId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/snowflakeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "19位雪花ID字符串;暂与shotId 1:1(确认点#2);脱靶(miss=true)时为 null"
+        },
+        "lane": {
+          "$ref": "#/$defs/lane"
+        },
+        "athleteId": {
+          "$ref": "#/$defs/athleteId",
+          "description": "可选(待开发确认#17)。平台按lane+排班补填的不透明业务ID;禁止身份证号"
+        },
+        "score": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "环值整数 1-10;脱靶(miss=true)=0"
+        },
+        "x": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "落点X坐标,单位cm,靶心为原点,X向右为正(方向待开发确认);脱靶且无坐标时可为 null"
+        },
+        "y": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "落点Y坐标,单位cm,靶心为原点,Y向上为正(方向待开发确认);脱靶且无坐标时可为 null"
+        },
+        "innerTen": {
+          "type": "boolean",
+          "description": "是否X环(内10)"
+        },
+        "shootingMode": {
+          "type": "integer",
+          "enum": [
+            0,
+            1,
+            2,
+            3
+          ],
+          "description": "0试射1记分2同分3补射;仅=1进基线"
+        },
+        "bowType": {
+          "type": "string",
+          "enum": [
+            "recurve",
+            "compound"
+          ],
+          "description": "弓种(靶型≠弓种)"
+        },
+        "targetType": {
+          "type": "string",
+          "description": "靶面规格-弓种,如122cm-recurve"
+        },
+        "heartRate": {
+          "$ref": "#/$defs/heartRateBpm",
+          "description": "可选(待开发确认#14)。平台按弹着时刻归属的快照;缺测=0"
+        },
+        "windSpeed": {
+          "$ref": "#/$defs/windSpeedMps",
+          "description": "可选(待开发确认#14)。平台快照;缺测=-1"
+        },
+        "windDirection": {
+          "$ref": "#/$defs/windDirectionDeg",
+          "description": "可选(待开发确认#14)。平台快照;缺测=-1"
+        },
+        "offsetM": {
+          "anyOf": [
+            {
+              "const": -1
+            },
+            {
+              "type": "number",
+              "minimum": 0
+            }
+          ],
+          "description": "可选(待开发确认#14)。横风漂移估算m,平台按本箭flightTime派生;随windSpeed缺测=-1"
+        },
+        "miss": {
+          "type": "boolean",
+          "description": "v1.2 新增,必填。true=脱靶(未上靶/出有效区):score=0、innerTen=false、scoreId=null"
+        },
+        "scoreDecimal": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10.9,
+          "description": "可选(待开发确认)。小数环值(如 10.7),设备原生支持时下发;须满足 floor(scoreDecimal)=score,脱靶=0"
+        }
+      },
+      "dependentRequired": {
+        "releaseTime": [
+          "flightTimeMs"
+        ],
+        "flightTimeMs": [
+          "releaseTime"
+        ]
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "miss": {
+                "const": true
+              }
+            },
+            "required": [
+              "miss"
+            ]
+          },
+          "then": {
+            "properties": {
+              "score": {
+                "const": 0
+              },
+              "innerTen": {
+                "const": false
+              },
+              "scoreId": {
+                "type": "null"
+              },
+              "scoreDecimal": {
+                "const": 0
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "score": {
+                "minimum": 1
+              },
+              "scoreId": {
+                "$ref": "#/$defs/snowflakeId"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            }
+          },
+          "description": "脱靶一致性:miss=true ⇔ score=0/innerTen=false/scoreId=null;非脱靶 score≥1、scoreId 必填、坐标必填"
+        }
+      ]
+    },
+    "dt3": {
+      "type": "object",
+      "description": "动作影像(监控路,不纳入分析);事后绑定弹着",
+      "required": [
+        "shotSeq",
+        "lane",
+        "videos"
+      ],
+      "properties": {
+        "releaseTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "与弹着同值;弹着缺 releaseTime(降级)时本字段一并省略,按 shotId+shotSeq 绑定"
+        },
+        "shotSeq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "lane": {
+          "$ref": "#/$defs/lane"
+        },
+        "videos": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "source",
+              "videoPath",
+              "shotId"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "top",
+                  "side"
+                ]
+              },
+              "videoPath": {
+                "type": "string"
+              },
+              "shotId": {
+                "$ref": "#/$defs/snowflakeId"
+              }
+            }
+          },
+          "minItems": 1,
+          "maxItems": 2
+        }
+      }
+    },
+    "dt4": {
+      "type": "object",
+      "description": "风速风向(+温湿度),真实时流;无releaseTime",
+      "required": [
+        "timestamp",
+        "shotSeq",
+        "shotId",
+        "lane",
+        "windSpeed",
+        "windDirection"
+      ],
+      "not": {
+        "required": [
+          "releaseTime"
+        ],
+        "description": "硬约束: 实时流(1/4)禁止携带 releaseTime(箭未离弦,值未发生)"
+      },
+      "properties": {
+        "timestamp": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "shotSeq": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "description": "网关注入,窗外/休息=null;与shotId同步可空"
+        },
+        "shotId": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/snowflakeId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "description": "网关注入的19位雪花ID字符串;窗外/休息=null(与shotSeq同步)"
+        },
+        "lane": {
+          "$ref": "#/$defs/lane"
+        },
+        "windSpeed": {
+          "$ref": "#/$defs/windSpeedMps"
+        },
+        "windDirection": {
+          "$ref": "#/$defs/windDirectionDeg"
+        },
+        "tempC": {
+          "type": "number",
+          "description": "可选,气温℃"
+        },
+        "humidityPct": {
+          "type": "number",
+          "description": "可选,湿度%"
+        }
+      },
+      "allOf": [
+        {
+          "$ref": "#/$defs/streamShotBinding"
+        }
+      ]
+    },
+    "dt5": {
+      "type": "object",
+      "description": "拉力曲线(1000Hz);事后聚合;独立窗口-3600~+500ms",
+      "required": [
+        "releaseTime",
+        "shotSeq",
+        "shotId",
+        "unit",
+        "sampleRateHz",
+        "curve",
+        "peak",
+        "stability",
+        "drawDurationMs"
+      ],
+      "properties": {
+        "releaseTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "必填:拉力曲线本身即锚点来源(力骤降拐点)"
+        },
+        "shotSeq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shotId": {
+          "$ref": "#/$defs/snowflakeId"
+        },
+        "unit": {
+          "type": "string",
+          "const": "kg"
+        },
+        "sampleRateHz": {
+          "type": "integer",
+          "const": 1000
+        },
+        "curve": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "t",
+              "f"
+            ],
+            "properties": {
+              "t": {
+                "type": "integer",
+                "description": "相对releaseTime的ms"
+              },
+              "f": {
+                "type": "number",
+                "description": "拉力kg"
+              }
+            }
+          }
+        },
+        "peak": {
+          "type": "object",
+          "required": [
+            "value",
+            "timeMs",
+            "phase",
+            "unit"
+          ],
+          "properties": {
+            "value": {
+              "type": "number"
+            },
+            "timeMs": {
+              "type": "integer"
+            },
+            "phase": {
+              "type": "string"
+            },
+            "unit": {
+              "type": "string",
+              "const": "kg"
+            }
+          }
+        },
+        "stability": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "满弓力平稳度=1-满弓段(-490~-20ms)力值变异系数;0-1,越接近1越稳;无量纲"
+        },
+        "drawDurationMs": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "拉弓时长ms(起点定义待开发确认,见文档§五dt5注)"
+        }
+      }
+    },
+    "dt6": {
+      "type": "object",
+      "description": "撒放时序(MCRT);事后聚合",
+      "required": [
+        "shotSeq",
+        "shotId",
+        "clickerMs",
+        "mcrtMs",
+        "holdMs"
+      ],
+      "properties": {
+        "releaseTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "与弹着同值;弹着缺 releaseTime(降级)时本字段一并省略,按 shotId+shotSeq 绑定"
+        },
+        "shotSeq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shotId": {
+          "$ref": "#/$defs/snowflakeId"
+        },
+        "clickerMs": {
+          "type": "integer",
+          "description": "响片触发,相对离弦(负=击发前)"
+        },
+        "mcrtMs": {
+          "type": "integer",
+          "description": "MCRT=0-clickerMs;全链统一命名"
+        },
+        "holdMs": {
+          "type": "integer",
+          "description": "撒放后随势保持时长ms"
+        }
+      }
+    },
+    "dt7": {
+      "type": "object",
+      "description": "瞄准轨迹(120fps);事后聚合;末段窗t∈[-1000,0]",
+      "required": [
+        "shotSeq",
+        "shotId",
+        "sampleRateHz",
+        "unit",
+        "points",
+        "trajectoryLength",
+        "dispersionMm",
+        "offsetX",
+        "offsetY",
+        "postHoldMs",
+        "stabilityScore"
+      ],
+      "properties": {
+        "releaseTime": {
+          "$ref": "#/$defs/utcTime",
+          "description": "与弹着同值;弹着缺 releaseTime(降级)时本字段一并省略,按 shotId+shotSeq 绑定"
+        },
+        "shotSeq": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "shotId": {
+          "$ref": "#/$defs/snowflakeId"
+        },
+        "sampleRateHz": {
+          "type": "integer",
+          "const": 120,
+          "description": "120fps,锁定(QA M4)"
+        },
+        "unit": {
+          "type": "string",
+          "const": "mm"
+        },
+        "points": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "t",
+              "x",
+              "y"
+            ],
+            "properties": {
+              "t": {
+                "type": "integer"
+              },
+              "x": {
+                "type": "number"
+              },
+              "y": {
+                "type": "number"
+              }
+            }
+          }
+        },
+        "trajectoryLength": {
+          "type": "number",
+          "description": "轨迹总长(全序列)mm"
+        },
+        "dispersionMm": {
+          "type": "number",
+          "description": "末段(t∈[-1000,0])瞄点离散度mm,越小越稳"
+        },
+        "offsetX": {
+          "type": "number",
+          "description": "击发瞄点相对末段瞄点中心偏移mm"
+        },
+        "offsetY": {
+          "type": "number",
+          "description": "偏移mm"
+        },
+        "postHoldMs": {
+          "type": "integer",
+          "description": "撒放后随势保持ms"
+        },
+        "stabilityScore": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "description": "末段稳定度0-1"
+        },
+        "spatialNote": {
+          "type": "string",
+          "description": "可选,空间分辨率待确认注记"
+        }
+      }
+    },
+    "dt8": {
+      "type": "object",
+      "description": "训练强度+完整HRV(会话级);HRV窗口≥5min",
+      "required": [
+        "sessionEndTime",
+        "sessionId",
+        "athleteId",
+        "dailyShots",
+        "groupShots",
+        "groupRestSec",
+        "consecutiveDays",
+        "sessionDurationMin",
+        "hrv"
+      ],
+      "properties": {
+        "sessionEndTime": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "会话序号,如s_20250909_1,不用本地时段标签"
+        },
+        "athleteId": {
+          "$ref": "#/$defs/athleteId"
+        },
+        "dailyShots": {
+          "type": "integer",
+          "description": "当日总箭数(含试射)"
+        },
+        "groupShots": {
+          "type": "integer"
+        },
+        "groupRestSec": {
+          "type": "integer"
+        },
+        "consecutiveDays": {
+          "type": "integer"
+        },
+        "sessionDurationMin": {
+          "type": "integer"
+        },
+        "hrv": {
+          "type": "object",
+          "required": [
+            "rmssdMs",
+            "sdnnMs",
+            "lfNu",
+            "hfNu"
+          ],
+          "properties": {
+            "rmssdMs": {
+              "type": "number"
+            },
+            "sdnnMs": {
+              "type": "number"
+            },
+            "lfNu": {
+              "type": "number"
+            },
+            "hfNu": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "dt9a": {
+      "type": "object",
+      "description": "运动员档案(subType=athleteProfile);人工录入,低频",
+      "required": [
+        "createdAt",
+        "athleteId",
+        "name",
+        "gender",
+        "age",
+        "heightCm",
+        "weightKg",
+        "armSpanCm",
+        "drawLengthInch",
+        "bowType",
+        "level",
+        "dominantEye"
+      ],
+      "properties": {
+        "createdAt": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "athleteId": {
+          "$ref": "#/$defs/athleteId"
+        },
+        "name": {
+          "type": "string",
+          "pattern": "\\*",
+          "description": "脱敏展示名,必须含 * 掩码(如 W**);禁止真实全名"
+        },
+        "gender": {
+          "type": "string",
+          "enum": [
+            "M",
+            "F"
+          ]
+        },
+        "age": {
+          "type": "integer"
+        },
+        "heightCm": {
+          "type": "number"
+        },
+        "weightKg": {
+          "type": "number"
+        },
+        "armSpanCm": {
+          "type": "number"
+        },
+        "drawLengthInch": {
+          "type": "number"
+        },
+        "bowType": {
+          "type": "string",
+          "enum": [
+            "recurve",
+            "compound"
+          ]
+        },
+        "level": {
+          "type": "string",
+          "enum": [
+            "amateur",
+            "city",
+            "provincial",
+            "national"
+          ]
+        },
+        "dominantEye": {
+          "type": "string",
+          "enum": [
+            "R",
+            "L"
+          ]
+        }
+      }
+    },
+    "dt9b": {
+      "type": "object",
+      "description": "个人基线快照(subType=baselineSnapshot);系统派生,滚动更新",
+      "required": [
+        "snapshotTime",
+        "athleteId",
+        "bowType",
+        "nShots",
+        "windowEnd",
+        "windowStart",
+        "baseline"
+      ],
+      "properties": {
+        "snapshotTime": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "athleteId": {
+          "$ref": "#/$defs/athleteId"
+        },
+        "bowType": {
+          "type": "string",
+          "enum": [
+            "recurve",
+            "compound"
+          ]
+        },
+        "nShots": {
+          "type": "integer",
+          "description": "滚动最近N支记分箭(仅shootingMode=1)"
+        },
+        "windowEnd": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "windowStart": {
+          "$ref": "#/$defs/utcTime"
+        },
+        "baseline": {
+          "type": "object",
+          "required": [
+            "mcrtMs",
+            "mcrtCvPct",
+            "dispersionMm",
+            "rmssdMs"
+          ],
+          "properties": {
+            "mcrtMs": {
+              "type": "number"
+            },
+            "mcrtCvPct": {
+              "type": "number"
+            },
+            "dispersionMm": {
+              "type": "number"
+            },
+            "rmssdMs": {
+              "type": "number"
+            }
+          }
+        }
+      }
+    },
+    "utcTime": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]{1,3})?Z$",
+      "description": "UTC 时间,必须以 Z 结尾,不得带本地偏移(如 +08:00);推荐 3 位毫秒,设备精度不足时按实际位数给出(1-3 位),不补造"
+    },
+    "snowflakeId": {
+      "type": "string",
+      "pattern": "^[0-9]{19}$",
+      "description": "19位雪花ID,必须JSON字符串(1.96e18>2^53),禁用number"
+    },
+    "athleteId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "not": {
+        "pattern": "^[1-9][0-9]{5}(18|19|20)[0-9]{2}(0[1-9]|1[0-2])(0[1-9]|[12][0-9]|3[01])[0-9]{3}[0-9Xx]$"
+      },
+      "description": "运动员不透明业务ID(如平台spid);禁止使用身份证号或任何可还原身份证号的编码。schema 拒收形如 18 位身份证号的值"
+    },
+    "lane": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "minLength": 1,
+      "description": "靶位标识,字符串(如 lane-01);单靶/未知=null;禁止用数字类型"
+    },
+    "heartRateBpm": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 250,
+      "description": "心率bpm,数值型;缺测哨兵=0"
+    },
+    "windSpeedMps": {
+      "anyOf": [
+        {
+          "const": -1
+        },
+        {
+          "type": "number",
+          "minimum": 0
+        }
+      ],
+      "description": "风速m/s;0=真实无风;缺测哨兵=-1(其他负值非法)"
+    },
+    "windDirectionDeg": {
+      "anyOf": [
+        {
+          "const": -1
+        },
+        {
+          "type": "number",
+          "minimum": 0,
+          "exclusiveMaximum": 360
+        }
+      ],
+      "description": "风向度[0,360);缺测哨兵=-1"
+    },
+    "streamShotBinding": {
+      "description": "实时流(1/4) shotId/shotSeq 同步可空:要么同为 null(窗外/休息),要么同时有值;禁止一空一有的混合态(§3.9)",
+      "oneOf": [
+        {
+          "properties": {
+            "shotId": {
+              "type": "null"
+            },
+            "shotSeq": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "shotId": {
+              "type": "string"
+            },
+            "shotSeq": {
+              "type": "integer"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "description": "schemaVersion=1.2。自 v1.2 起文档版本号与协议版本号(schemaVersion)保持一致。接收端按 schemaVersion 路由:1.1 按 v1.1 schema 校验,1.2 按本 schema 校验,其他值拒收并回执原因。敏感数据:任何消息不得携带身份证号;athleteId 为不透明业务ID。",
+  "additionalProperties": false
+}

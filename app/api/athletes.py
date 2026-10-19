@@ -20,6 +20,19 @@ class ProfileUpdate(BaseModel):
     level: str | None = None
 
 
+# P0 隐私：接口永不返回身份证号字段（库里已不再写入；旧库残留也在出口处剔除）
+_PRIVATE_PROFILE_FIELDS = ("identity_id",)
+
+
+def _public_profile(row) -> dict | None:
+    if not row:
+        return None
+    out = dict(row)
+    for k in _PRIVATE_PROFILE_FIELDS:
+        out.pop(k, None)
+    return out
+
+
 @router.get("")
 def list_athletes() -> dict:
     db = get_database()
@@ -40,7 +53,7 @@ def get_athlete(athlete_id: str) -> dict:
     rolling = db.latest_snapshot(athlete_id, "rolling")
     return {
         "athlete_id": athlete_id,
-        "profile": dict(profile) if profile else None,
+        "profile": _public_profile(profile),
         "baseline": {
             "anchor": dict(anchor) if anchor else None,
             "rolling": dict(rolling) if rolling else None,
@@ -54,7 +67,7 @@ def get_profile(athlete_id: str) -> dict:
     profile = db.get_profile(athlete_id)
     if not profile:
         raise HTTPException(status_code=404, detail="档案不存在（先导入数据或建档案）")
-    return dict(profile)
+    return _public_profile(profile)
 
 
 @router.put("/{athlete_id}/profile")

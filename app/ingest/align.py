@@ -4,6 +4,7 @@
 - 主键：弹着时间戳（每箭一条事实）
 - 心率：该箭时刻前后 30s 内最近采样；风速：窗口 60s（可配）
 - 对齐容错：找不到采样 → 置 NULL（不丢弃该箭）
+- 缺测哨兵兜底：心率<=0、风速/风向<0 一律转 NULL（所有数据源，接口 v1.2 §十）
 - mock 数据已自带逐箭心率/风速，直接透传；真 SQLite 三表联查走窗口匹配
 - 输出：session_dim 摘要 + shot_fact 行（与 store 解耦，只产 dict）
 """
@@ -60,6 +61,16 @@ def _nearest_int(shot_ms: int, samples: list[tuple[int, int]], window_ms: int) -
     return best[1] if best else None
 
 
+def _clean_hr(v):
+    """缺测哨兵（v1.2 §十）：heartRate<=0 → None（不以 0 计入统计）。所有数据源在此兜底。"""
+    return None if v is None or v <= 0 else v
+
+
+def _clean_wind(v):
+    """缺测哨兵：windSpeed/windDirection<0（-1）→ None；0 = 真实无风，保留。"""
+    return None if v is None or v != v or v < 0 else v
+
+
 def _mode_composition(shots: list[ShotRaw]) -> str:
     counts: dict[int, int] = {}
     for sh in shots:
@@ -93,6 +104,8 @@ def align_session(session: SessionRaw, hr_samples: dict[str, list[tuple[int, int
         else:
             nearest = _nearest_wind(shot_ms, wind_map.get(session.athlete_id, []), WIND_WINDOW_MS) if shot_ms is not None else None
             wind_speed, wind_dir = (nearest[0], nearest[1]) if nearest else (None, None)
+        hr = _clean_hr(hr)
+        wind_speed, wind_dir = _clean_wind(wind_speed), _clean_wind(wind_dir)
         if wind_speed is not None:
             wind_vals.append(wind_speed)
         fact_rows.append(
@@ -112,6 +125,13 @@ def align_session(session: SessionRaw, hr_samples: dict[str, list[tuple[int, int
                 "bow_type": sh.bow_type or "反曲弓",
                 "video_ref": sh.video_ref,
                 "shot_time_utc": sh.shot_time_utc,
+                "shot_id": sh.shot_id,
+                "score_id": sh.score_id,
+                "lane": sh.lane,
+                "release_time_utc": sh.release_time_utc,
+                "hit_time_utc": sh.hit_time_utc,
+                "flight_time_ms": sh.flight_time_ms,
+                "inner_ten": None if sh.inner_ten is None else int(bool(sh.inner_ten)),
             }
         )
 

@@ -11,8 +11,14 @@ from statistics import fmean
 from app.config import get_config
 
 
-def wind_band_of(wind_speed: float) -> int:
-    """返回风档索引；不在任何档 → 抛 ValueError（左闭右开连续性由 config 校验保证）。"""
+def wind_band_of(wind_speed: float | None) -> int | None:
+    """返回风档索引。
+
+    - 缺测（None / 负值哨兵如 -1 / NaN）→ 返回 None，调用方跳过（接口 v1.2 §十：缺测不做风况结论）
+    - 正值不在任何档 → 抛 ValueError（左闭右开连续性由 config 校验保证，超上限属配置问题）
+    """
+    if wind_speed is None or wind_speed != wind_speed or wind_speed < 0:
+        return None
     bands = get_config().wind_bands
     for i, (lo, hi) in enumerate(bands):
         if lo <= wind_speed < hi:
@@ -28,7 +34,7 @@ def wind_band_avg_scores(shots: list[dict], band_index: int | None = None) -> di
         if ws is None:
             continue
         b = wind_band_of(ws)
-        if band_index is not None and b != band_index:
+        if b is None or (band_index is not None and b != band_index):
             continue
         grouped.setdefault(b, []).append(sh["score"])
     return {b: round(fmean(v), 3) for b, v in grouped.items() if v}
@@ -42,6 +48,8 @@ def wind_band_counts(shots: list[dict]) -> dict[int, int]:
         if ws is None:
             continue
         b = wind_band_of(ws)
+        if b is None:
+            continue
         counts[b] = counts.get(b, 0) + 1
     return counts
 

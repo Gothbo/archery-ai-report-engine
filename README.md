@@ -31,8 +31,8 @@ start.bat
 ### 手动命令
 
 ```powershell
-# 启动
-.venv\Scripts\python -m uvicorn app.main:app --port 8000
+# 启动（默认只监听本机 127.0.0.1；接口无鉴权，不要改成 0.0.0.0 暴露到局域网）
+.venv\Scripts\python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 # 测试（118 用例：指标/规则/窗口/对齐/库/API/反硬编码）
 .venv\Scripts\python -m pytest -q
 # 服务自检
@@ -43,6 +43,13 @@ start.bat
 
 - Python 3.10+（Windows 下时区库 `tzdata` 已入依赖）
 - 首次导入真库前，按环境调整 `config.json → store.sqlite_source_path`
+
+### 安全与隐私（P0）
+
+- **只监听本机**：`start.bat` 默认 `ENGINE_HOST=127.0.0.1`。接口没有鉴权且返回运动员数据，需要局域网访问时必须先加鉴权代理。
+- **运动员 ID 不可逆**：身份证号（SQLite 源）或 v1.2 `athleteId` 经 HMAC-SHA256 脱敏为 19 位数字 `athlete_id`（`app/ingest/identity.py`）。身份证号不落库、不出现在任何接口响应里。
+- **脱敏密钥**：优先读环境变量 `ENGINE_ID_SECRET`，其次 `config.store.id_secret_path`，否则用 `facts.db` 同目录的 `athlete_id.key`（首次自动生成）。**密钥须与 `facts.db` 一起备份；丢失或更换后所有 `athlete_id` 都会变，新旧数据无法关联。**
+- **旧库迁移**：旧版 `athlete_id` 是 `10^18 + 身份证号`（可逆）。已有 `facts.db` 请先停服务，再运行 `python scripts/migrate_athlete_ids.py --db facts.db --source-db <SQLiteTest.db>`（默认只预览，加 `--apply` 执行；会自动备份、改写各表 ID、清空 `identity_id`、清掉报告缓存）。备份文件里仍有旧明文，核对后要安全删除。也可以直接清库，用新版本重新导入。
 
 ## API 一览
 
@@ -60,6 +67,7 @@ start.bat
 | GET/POST/DELETE | `/api/v1/athletes/{id}/notes` | 备注（软删 + 双视角过滤 + 归属校验） |
 | GET | `/api/v1/athletes/{id}/memories` | 历史结论沉淀 |
 | GET | `/api/v1/sessions/{session_id}` | 逐箭详情 |
+| POST | `/api/v1/ingest/v12` | 接收 v1.2 上行消息（单条对象或数组批量，逐条返回 accepted/duplicate/invalid/unsupported） |
 
 ## 数据源
 
@@ -72,7 +80,8 @@ start.bat
 字段语义映射（源码摸底 + 探查核实）：
 
 - `ShootingTime/CreateDate/CreateTime` 为**本地时间（Asia/Shanghai）无时区** → 转 UTC 存储（A1）
-- 身份证号（18 位，含 X 校验位）→ 确定性雪花格式 `athlete_id`；真接入时由登录系统下发正式雪花 ID
+- 身份证号（18 位，含 X 校验位）→ HMAC 脱敏 `athlete_id`（不可逆，见"安全与隐私"）；真接入时由登录系统下发正式雪花 ID
+- 缺测哨兵：`HeartRate=0`、`WindSpeed<0` 不参与匹配；风向缺失记 NULL（不当 0°）
 - `Score=0.0` 视为脱靶（命中 = Score>0）；`IsGood` 是"好箭"标记，不是命中
 - `ShotType` 1/3/7 语义待开发确认 → `config.store.shot_type_map` 可配（默认 1=试射、3/7=记分）
 - `ProjectId → 弓种` 映射可配；未映射项走 `proj{id}` 兜底（不同项目基线不混用）
@@ -80,6 +89,17 @@ start.bat
 - 心率 30s / 风速 60s 窗口最近匹配，无采样置 NULL（缺测不出结论）
 
 > 注意：真库 2009-2023 年为早期测试数据（含 41 条 6 位身份号），由 `sqlite_min_time=2024-01-01` 过滤。
+
+### v1.2 上行接口（设备/网关 → 引擎，`POST /api/v1/ingest/v12`）
+
+按 PM 侧《射箭电子靶数据接口 v1.2》对接包接收消息。核心 `app/ingest/v12/receiver.py` 跟传输方式无关：现在接的是 HTTP，以后接 MQTT 订阅时直接调用 `ingest_messages()` 即可。
+
+- **协议版本**：按信封 `schemaVersion` 路由。`"1.1"` 用 `app/ingest/v12/schema.json`（开发侧原对接包 schema 的逐字节副本），`"1.2"` 用 `app/ingest/v12/schema_v1_2.json`（PM 侧修订版对接包 schema 的逐字节副本），两份都有 sha256 测试守护；其他版本直接判为 invalid。1.2 相比 1.1：脱靶用 `miss=true` 显式表达（`score=0`、`scoreId=null`）；`releaseTime`/`flightTimeMs` 可选（缺失即降级）；dt2 平台快照字段与 `athleteId` 可选；新增可选 `scoreDecimal`；UTC 尾 Z 等硬约束写进了 schema。
+- **校验**：在 schema 之上，对所有版本统一补了文档里写明、但 schema 没有表达出来的硬约束：时间必须是 UTC 且以 `Z` 结尾；实时流的 `shotId`/`shotSeq` 必须同时为空或同时有值；`subType` 只能用于 dt9。结构不合法的消息直接拒绝，不落库，也不占用 messageId，修正后可以用原 messageId 重发。
+- **去重**：`messageId` 精确去重（表 `ingest_messages`，只存内容摘要）。dt2 另外按 `shotId`/`scoreId` 防重，重复的不覆盖。
+- **本期分发范围**：dt2 弹着、dt1 心率、dt4 风参与计算；dt3 只存视频路径；dt7 存轨迹元数据和点列，不参与计算；dt5/dt6 只存原文；dt8/dt9 返回 `unsupported`，不落库。
+- **字段映射**：`releaseTime` 作为锚点，写入 `shot_time_utc`（1.2 下缺失时退回 `hitTime`，回执 `warnings` 标注精度受限）；脱靶（`miss=true`）按 0 环入库、`hit=0`，计入总箭数，与 SQLite 源口径一致，所以命中率、平均环会把脱靶算进去；有 `scoreDecimal` 时优先用它作为环值；dt2 缺 `athleteId` 时返回 `unsupported`（无法归属运动员，不落库，补齐后可原样重发）；`x/y` 由 cm 乘 10 换成 `x_mm/y_mm`；`heartRate=0`、`windSpeed/windDirection/offsetM=-1` 转为 NULL；`bowType` 由 `config.store.v12_bow_type_map` 映射（默认 recurve→反曲弓、compound→复合弓）；`athleteId` 做 HMAC 脱敏。`shot_fact` 新增 `shot_id/score_id/lane/release_time_utc/hit_time_utc/flight_time_ms/inner_ten` 字段。`isGood` 不当作废箭标记使用。
+- **场次**：沿用现有口径（同一运动员、同一本地日、两箭间隔 ≤ `session_gap_minutes`），按"运动员 + 本地日"重建。场次号格式为 `{athlete_id}_{YYYYMMDD}_v{nn}`，和 SQLite 源区分开。乱序到达、实时流晚到都会触发重建；弹着快照缺测时，用同 `shotId` 的实时流样本补。
 
 ## 口径来源
 
@@ -101,6 +121,7 @@ start.bat
 | M4/M4b | 测试 118 例（指标/规则/窗口/对齐/API/记忆/反硬编码） | ✅ |
 | M5 | SQLite 真数据源 + `/ingest/sqlite` + 字段语义核对 | ✅ |
 | M6 | 交付：start.bat / README / 端到端验收 | ✅ |
+| v1.2 | 上行接口接收适配层 + P0 隐私（ID 脱敏、只监听本机） | 🚧 PR 审阅中 |
 
 ## 目录
 
