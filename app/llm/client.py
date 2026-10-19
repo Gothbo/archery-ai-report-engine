@@ -261,3 +261,60 @@ def get_llm_client(cfg: LLMConfig) -> LLMClient:
         from app.llm.mock import demo_responder
         return MockLLMClient(responder=demo_responder)
     return HTTPLLMClient(cfg)
+
+
+# ---------------------------------------------------------------------------
+# 模型服务可达性探测（PR #4：GET /llm/status 的 backend 字段）
+# ---------------------------------------------------------------------------
+
+PROBE_TIMEOUT_SEC = 1.0   # 探测超时：本机服务 1 s 内不应答即视为不可达
+PROBE_TTL_SEC = 3.0       # 结果缓存：页面轮询不会把请求打到模型服务上
+_PROBE_CACHE: dict[tuple[str, str], tuple[float, dict]] = {}
+_PROBE_TRANSPORT: httpx.AsyncBaseTransport | None = None  # 测试注入点（None = 真实网络）
+
+
+def reset_backend_probe_cache() -> None:
+    _PROBE_CACHE.clear()
+
+
+async def probe_backend(cfg: LLMConfig, tz: str) -> dict:
+    """返回 {"backend": "ready"|"loading"|"unreachable"|None, "backend_checked_at": str|None}。
+
+    - llm.enabled=false：不探测，两项都是 None
+    - mock：ready
+    - llamacpp：GET {endpoint}/health —— 200 ready / 503 loading（模型加载中）/ 其他或连不上 unreachable
+      （llama-server 文档语义；现场 b11435 构建待实测）
+    - ollama：GET {endpoint}/api/version —— 200 ready，否则 unreachable（ollama 没有「加载中」状态）
+    探测失败绝不抛异常，不影响报告链路。
+    """
+    if not cfg.enabled:
+        return {"backend": None, "backend_checked_at": None}
+    import time
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    key = (cfg.provider, cfg.endpoint)
+    hit = _PROBE_CACHE.get(key)
+    if hit and time.monotonic() - hit[0] < PROBE_TTL_SEC:
+        return dict(hit[1])
+    if cfg.provider == "mock":
+        backend = "ready"
+    else:
+        path = "/health" if cfg.provider == "llamacpp" else "/api/version"
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(PROBE_TIMEOUT_SEC), trust_env=False,
+                                         transport=_PROBE_TRANSPORT) as client:
+                resp = await client.get(f"{cfg.endpoint.rstrip('/')}{path}")
+            if resp.status_code == 200:
+                backend = "ready"
+            elif resp.status_code == 503 and cfg.provider == "llamacpp":
+                backend = "loading"
+            else:
+                backend = "unreachable"
+        except Exception as exc:  # noqa: BLE001 —— 连不上 / 超时 / 协议错误都算不可达
+            logger.debug("模型服务探测失败 %s：%s", cfg.endpoint, exc)
+            backend = "unreachable"
+    result = {"backend": backend,
+              "backend_checked_at": datetime.now(ZoneInfo(tz)).isoformat(timespec="seconds")}
+    _PROBE_CACHE[key] = (time.monotonic(), result)
+    return dict(result)

@@ -291,8 +291,11 @@ def _occupy(kind="guidance", cancellable=True):
 class TestLockAndStatus:
     def test_status_idle_shape(self, client):
         body = client.get("/api/v1/llm/status").json()
+        # PR #4 只追加 provider / backend / backend_checked_at，PR #3 原有字段与取值不变
+        backend = {k: body.pop(k) for k in ("provider", "backend", "backend_checked_at")}
         assert body == {"busy": False, "state": "idle", "task_id": None, "kind": None, "stage": None,
                         "started_at": None, "deadline_at": None, "llm_enabled": True}
+        assert backend["provider"] == "mock" and backend["backend"] == "ready" and backend["backend_checked_at"]
 
     def test_status_busy_has_no_athlete_identity(self, client):
         t = _occupy()

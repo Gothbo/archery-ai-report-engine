@@ -17,6 +17,8 @@ _NARROW_RE = re.compile(r"收窄\s*([\d.]+)\s*mm\b")
 _INNER10_RE = re.compile(r"内十率\s*([\d.]+)%")
 _FAR_MISS_RE = re.compile(r"远弹率\s*([\d.]+)%")
 _DATE_RE = re.compile(r"锚点（([\d-]+)\s*采集）")
+# 与 generator 的成绩小节标题同口径（本场成绩 / 本周成绩 …）；日报以前也写成「本周」
+_PERIOD = {"daily": "本场", "weekly": "本周", "monthly": "本月", "quarterly": "本季", "yearly": "本年"}
 
 
 def demo_responder(messages: list[dict]) -> str:
@@ -41,7 +43,7 @@ def demo_responder(messages: list[dict]) -> str:
     avg = _AVG_RE.search(text)
     n = _N_RE.search(text)
     if avg:
-        head = f"本周平均环 {avg.group(1)}"
+        head = f"{_PERIOD.get(payload.get('granularity'), '本期')}平均环 {avg.group(1)}"
         if n:
             head += f"（n={n.group(1)}）"
         parts.append(head + "。")

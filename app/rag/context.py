@@ -25,6 +25,7 @@ from typing import Callable
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
 from app.reports.generator import generate_report
+from app.reports.window import WindowKey
 from app.store.database import Database
 
 logger = logging.getLogger("engine.rag.context")
@@ -54,16 +55,18 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         _granularity, _window_key = granularity, window_key
     else:
         # 未指定 → 最近一份已生成报告（先到先得，未生成则报错引导先生成）
-        latest = db.query(
-            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=? "
-            "ORDER BY generated_at_utc DESC LIMIT 1", (athlete_id,))
+        latest = db.latest_report_window(athlete_id)
         if not latest:
             raise ValueError("运动员暂无已生成报告：请先在报告区生成一份，再发起对话")
-        _granularity, _window_key = latest[0]["granularity"], latest[0]["window_key"]
+        _granularity, _window_key = latest["granularity"], latest["window_key"]
 
+    # PR #4：有已存正文就直接用；旧行无正文 → generate_report 补存（report_id 与历史结论不变）
+    session_id = WindowKey.parse(_granularity, _window_key).session_id
     report = generate_report(db, athlete_id, _granularity, _window_key,
-                             session_id=_window_key[6:] if _granularity == "daily" else None,
-                             view=view, force=True)
+                             session_id=session_id, view=view, force=False)
+    if "sections" not in report:
+        report = generate_report(db, athlete_id, _granularity, _window_key,
+                                 session_id=session_id, view=view, force=True)
 
     notes = list_notes_for_view(db, athlete_id, view)
     history = db.latest_memory(athlete_id, _granularity)
@@ -103,13 +106,15 @@ def _skeleton_text(report: dict, notes: list[dict], history) -> str:
 
 
 def _skeleton_json(report: dict, notes: list[dict], history) -> str:
-    """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源。"""
+    """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源；evidence 明细按 ADR-0005 仅 coach 视图注入。"""
+    evidence_by_key = report.get("coach_extra", {}).get("evidence", {})
     payload = {
         "granularity": report["granularity"],
         "window_key": report["window_key"],
         "athlete": report["athlete"],
         "sections": [
-            {"title": s["title"], "content": s["content"], "evidence": s["evidence"]}
+            {"title": s["title"], "content": s["content"],
+             "evidence": s.get("evidence") or evidence_by_key.get(s["key"], [])}
             for s in report["sections"]
         ],
         "notes": [{"note_type": n["note_type"], "content": n["content"],

@@ -18,10 +18,10 @@ def session_detail(session_id: str) -> dict:
     rows = db.shots_of_session(session_id)
     if not rows:
         raise HTTPException(status_code=404, detail="场次不存在（尚未导入）")
-    dim = db.query("SELECT * FROM session_dim WHERE session_id=?", (session_id,))
+    dim = db.session_of(session_id)
     return {
         "session_id": session_id,
-        "dim": dict(dim[0]) if dim else None,
+        "dim": dict(dim) if dim else None,
         "shots": [dict(r) for r in rows],
     }
 

@@ -101,6 +101,21 @@ class TestAskMockOn:
         assert body["sources"]
         assert body["window_key"] == "2026-W33"
 
+    def test_mock_wording_matches_granularity(self, mclient):
+        """真引擎联调 #3：mock 应答器的日报回答不能写「本周平均环」。"""
+        _ingest_and_report(mclient)
+        sid = get_database().query("SELECT session_id FROM session_dim ORDER BY session_time_utc DESC "
+                                   "LIMIT 1")[0]["session_id"]
+        assert mclient.post(f"/api/v1/athletes/{ATHLETE}/reports/daily",
+                            params={"session_id": sid, "view": "coach"}).status_code == 200
+        daily = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask", json={
+            "question": "这场怎么样？", "view": "coach", "granularity": "daily", "window_key": f"daily:{sid}"}).json()
+        weekly = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask", json={
+            "question": "这周怎么样？", "view": "coach", "granularity": "weekly", "window_key": "2026-W33"}).json()
+        assert daily["degraded"] is False and weekly["degraded"] is False
+        assert "本场平均环" in daily["answer"] and "本周" not in daily["answer"]
+        assert "本周平均环" in weekly["answer"]
+
     def test_g2_fallback_on_fabricated_number(self, mclient, monkeypatch):
         """G2 反向用例：输出出现骨架外数字 → 回退降级模板（对运动员的数字承诺）。"""
         _ingest_and_report(mclient)

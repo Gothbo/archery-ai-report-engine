@@ -38,10 +38,16 @@ def list_athletes() -> dict:
     db = get_database()
     # last_session_utc：供前端默认选中「最近有训练」的运动员（列表按姓名排序，
     # 直接取第一个可能落到久未训练的档案 → 打开即「样本不足」）
+    # PR #4：display_no（引擎本地顺序号）、lane / lane_seen_at_utc（最近一支带靶位的箭，原样字符串，可空）
     rows = db.query(
         "SELECT p.athlete_id, p.name, p.bow_type, p.level, "
         "(SELECT MAX(s.session_time_utc) FROM session_dim s WHERE s.athlete_id = p.athlete_id) "
-        "AS last_session_utc FROM athlete_profile p ORDER BY p.name")
+        "AS last_session_utc, p.display_no, "
+        "(SELECT f.lane FROM shot_fact f WHERE f.athlete_id = p.athlete_id "
+        " AND f.lane IS NOT NULL AND TRIM(f.lane) <> '' ORDER BY f.shot_time_utc DESC LIMIT 1) AS lane, "
+        "(SELECT MAX(f.shot_time_utc) FROM shot_fact f WHERE f.athlete_id = p.athlete_id "
+        " AND f.lane IS NOT NULL AND TRIM(f.lane) <> '') AS lane_seen_at_utc "
+        "FROM athlete_profile p ORDER BY p.name")
     return {"athletes": [dict(r) for r in rows]}
 
 
@@ -51,13 +57,16 @@ def get_athlete(athlete_id: str) -> dict:
     profile = db.get_profile(athlete_id)
     anchor = db.latest_snapshot(athlete_id, "anchor")
     rolling = db.latest_snapshot(athlete_id, "rolling")
+    lane, lane_seen = db.latest_lane(athlete_id)
     return {
         "athlete_id": athlete_id,
-        "profile": _public_profile(profile),
+        "profile": _public_profile(profile),  # 含 display_no（PR #4）
         "baseline": {
             "anchor": dict(anchor) if anchor else None,
             "rolling": dict(rolling) if rolling else None,
         },
+        "lane": lane,
+        "lane_seen_at_utc": lane_seen,
     }
 
 

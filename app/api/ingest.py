@@ -2,6 +2,7 @@
 """API · 数据导入（D3：POST /ingest/mock；M5 增 /ingest/sqlite；v1.2 上行接口 /ingest/v12）。"""
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
@@ -10,6 +11,7 @@ from app.ingest import ingest_source
 from app.ingest.mock_source import MockSource
 from app.ingest.sqlite_source import SQLiteSource
 from app.ingest.v12 import ingest_messages
+from app.ingest.v12.receiver import IN_PHASE, RAW_ONLY
 from app.memory.baseline import refresh_rolling_after_import
 from app.store.database import get_database
 
@@ -72,3 +74,19 @@ def ingest_v12(payload: Any = Body(..., description="单条 v1.2 消息（JSON �
         raise HTTPException(status_code=413, detail=f"单批最多 {V12_MAX_BATCH} 条消息")
     out = ingest_messages(get_database(), messages, on_imported=refresh_rolling_after_import)
     return {"status": "ok", **out}
+
+
+@router.get("/v12/last-received")
+def v12_last_received() -> dict:
+    """各类 v1.2 消息「引擎最后受理时间」（UTC，PR #4，门户设备状态 / 新鲜度用）。
+
+    - 只统计受理成功的消息（重复 / 非法 / 不支持的不更新）；时间是引擎收到的时间，不是设备时间
+    - 从未受理 → null；宿主 SQLite 导入路径没有「收到时间」，不计入（source 固定 "v12"）
+    - 只返回时间，不返回设备号、靶位、运动员
+    """
+    last = get_database().ingest_last_received(sorted(IN_PHASE | RAW_ONLY))
+    now = datetime.now(timezone.utc)
+    body: dict = {f"dt{dt}": t for dt, t in last.items()}
+    body["source"] = "v12"
+    body["as_of_utc"] = now.strftime("%Y-%m-%dT%H:%M:%S.") + f"{now.microsecond // 1000:03d}Z"
+    return body

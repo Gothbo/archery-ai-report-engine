@@ -33,6 +33,7 @@ from app.llm.client import get_llm_client
 from app.llm.guardrails import check_guards
 from app.llm.tasks import LLMBusy, StreamOutcome, get_registry, run_stream_task
 from app.rag.context import assemble_context
+from app.reports.generator import SessionNotFound
 from app.store.database import get_database
 
 logger = logging.getLogger("engine.api.guidance")
@@ -103,6 +104,9 @@ async def guidance_stream(athlete_id: str, body: GuidanceRequest):
         ctx = await run_in_threadpool(assemble_context, get_database(), athlete_id, GUIDANCE_QUESTION,
                                       body.granularity, body.window_key, view=body.view)
         client = get_llm_client(cfg.llm)
+    except SessionNotFound as exc:
+        registry.release(task)
+        return JSONResponse(status_code=404, content={"code": "SESSION-NOT-FOUND", "detail": str(exc)})
     except ValueError as exc:
         registry.release(task)
         raise HTTPException(status_code=400, detail=str(exc)) from exc

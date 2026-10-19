@@ -61,7 +61,8 @@ start.bat
 | POST | `/api/v1/ingest/mock` | 导入 mock 数据集（幂等） |
 | POST | `/api/v1/ingest/sqlite` | 导入 display_sys 真 SQLite 库（幂等，只读消费） |
 | POST | `/api/v1/athletes/{id}/reports/{daily\|weekly\|monthly\|quarterly\|yearly}` | 按钮触发生成报告（`?view=coach&refresh=1`） |
-| GET | `/api/v1/reports/{report_id}` | 按 ID 读取已生成报告 |
+| GET | `/api/v1/reports/{report_id}` | 按 ID 读取已生成报告（只返回状态） |
+| GET | `/api/v1/reports/{report_id}/content?view=` | 只读报告正文（不重算；运动员视角剔除 `coach_extra`；PR #4） |
 | GET | `/api/v1/athletes/{id}/reports` | 报告列表 |
 | GET/PUT | `/api/v1/athletes/{id}/profile` | 运动员档案 |
 | GET | `/api/v1/athletes/{id}/sessions` | 训练列表 |
@@ -74,6 +75,16 @@ start.bat
 | POST | `/api/v1/athletes/{id}/guidance/stream` | AI 训练指导（SSE 流式；绑定报告 + 视角；运动员视角不发草稿） |
 | GET | `/api/v1/llm/status` | LLM 任务忙闲（running / cancelling / idle），不含运动员身份 |
 | POST | `/api/v1/llm/tasks/{task_id}/cancel` | 取消任务（真正停止模型生成后才释放锁） |
+| GET | `/api/v1/ingest/v12/last-received` | 各类 v1.2 消息最后受理时间（UTC，PR #4） |
+| GET | `/portal/` | 同源托管服务中心门户（需配置 `portal.dist_dir`，PR #4） |
+
+### 服务中心门户（PR #4）
+
+- **同源托管，不开 CORS**：在配置里加 `"portal": {"dist_dir": "<门户 dist 目录>"}`（门户 `npm run build` 的产物；相对路径按引擎根目录解析），重启引擎后打开 `http://127.0.0.1:8000/portal/`。门户产物不提交进本仓库。
+- **跨站写请求拦截**：POST/PUT/PATCH/DELETE 带了非本站 `Origin`（含 `null`）或 `Sec-Fetch-Site: cross-site` → 403 `CROSS-SITE-BLOCKED`；本机工具（不带 Origin）不受影响。需要放行宿主虚拟主机时填 `security.allowed_origins`（不允许 `*` / `null`）。
+- **报告正文落库**：生成接口命中缓存直接返回已存正文；问答 / 训练指导复用已存正文，`report_id` 不再因提问而失效。正文新增 `metrics` 与 `conclusions`（判定 / 风档差 / 和自己比 / 平台期，口径在 `config.conclusions`，默认演示口径待 PM 定）。
+- **运动员展示编号**：`display_no` 是引擎本地顺序号（与身份 / HMAC 无关，重建库会重新编号）；v1.2 新运动员不再自动命名，旧库启动时自动迁移。
+- 字段契约见 [`docs/portal_api_contract.md`](docs/portal_api_contract.md)。
 
 ### AI 训练指导（流式 + 真取消）
 

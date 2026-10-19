@@ -4,6 +4,8 @@
 口径来源：
 - 工程化方案 D7（timezone/sample_threshold/wind_bands）、D4.1（mdc/mdc_source）、D4（forbidden_phrases）
 - 记忆系统方案 §3.1（rolling_window_shots/notes_visibility）
+- 阶段 1：data_quality / advice / report_caliber_version / change_caliber_trial（master）
+- PR 栈：portal / security / conclusions / llm 流式超时 / store.id_secret_path（portal-p0）
 """
 from __future__ import annotations
 
@@ -26,9 +28,53 @@ CONFIG_PATH = Path(os.environ.get("ENGINE_CONFIG", BASE_DIR / "config.json"))
 REQUIRED_MDC_KEYS = ("avgScore", "mcrT", "hrVolatility", "dispersionMm")
 
 
+class ChangeBand(BaseModel):
+    """天花板效应分区间：按当前值落入的档位覆盖 te/swc（未给出则继承指标默认）。"""
+
+    max: float
+    te: float | None = None
+    swc: float | None = None
+
+
 class MDCSpec(BaseModel):
-    threshold: float | None = None
+    """指标变化判定口径（Hopkins TE/SWC 两级 + 天花板分区间）。
+
+    - te：典型误差（噪声底）——变化 ≤ te 视为不可判定；
+    - swc：最小有价值变化——te < 变化 ≤ swc 视为正常波动；
+    - threshold：旧单阈值口径，未配置 te/swc 的指标回退使用；
+    - bands：按当前值分档覆盖 te/swc，应对高分区噪声骤降（天花板效应）。
+    强断言门槛 MDC95 由 te 派生（2.772 × te），不入配置（见 rules.MDC95_FACTOR）。
+    """
+
     direction: int = Field(ge=-1, le=1)
+    threshold: float | None = None
+    te: float | None = None
+    swc: float | None = None
+    bands: list[ChangeBand] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _bands_strictly_ascending(self) -> "MDCSpec":
+        maxes = [b.max for b in self.bands]
+        if maxes != sorted(maxes) or len(set(maxes)) != len(maxes):
+            raise ValueError(f"bands 必须按 max 严格升序：{maxes}")
+        return self
+
+
+class DataQuality(BaseModel):
+    """数据质量护栏（P0）：对不可能的分布与过小样本显式标注「数据存疑」。"""
+
+    min_shots_for_description: int = Field(gt=0)
+    score_max: float = Field(gt=0)
+
+
+class Advice(BaseModel):
+    """建议层（P0）：由判断信号生成确定性训练建议的触发阈值。"""
+
+    miss_rate_high: float = Field(ge=0, le=100)
+    far_miss_high: float = Field(ge=0, le=100)
+    inner10_low: float = Field(ge=0, le=100)
+    wind_band_delta: float = Field(gt=0)
+    min_band_shots: int = Field(gt=0)
 
 
 class SampleThreshold(BaseModel):
@@ -58,35 +104,34 @@ class MemoryConfig(BaseModel):
 class StoreConfig(BaseModel):
     db_path: str = "facts.db"
     sqlite_source_path: str | None = None
-    sqlite_min_time: str = "2024-01-01"  # M5：跳过早期测试数据（2009 等）
-    session_gap_minutes: int = Field(default=90, gt=0)  # M5：同日间隔 >N 分钟拆场
-    default_distance_m: int = Field(default=70, gt=0)   # M5：真库无距离字段，默认反曲弓 70m
+    sqlite_min_time: str = "2024-01-01"
+    session_gap_minutes: int = Field(default=90, gt=0)
+    default_distance_m: int = Field(default=70, gt=0)
     shot_type_map: dict[str, int] = Field(default_factory=lambda: {"1": 0, "3": 1, "7": 1})
     project_bow_map: dict[str, str] = Field(default_factory=lambda: {"171": "反曲弓"})
-    # P0 隐私：athlete_id 脱敏密钥文件；None → 与 db_path 同目录的 athlete_id.key（环境变量 ENGINE_ID_SECRET 优先）
+    # P0 隐私（portal）：athlete_id 脱敏密钥文件
     id_secret_path: str | None = None
-    # v1.2 接口 bowType 英文枚举 → 引擎内部弓种值（与 project_bow_map 的取值一致，基线键不分裂）
+    # v1.2 接口 bowType 英文枚举 → 引擎内部弓种值
     v12_bow_type_map: dict[str, str] = Field(default_factory=lambda: {"recurve": "反曲弓", "compound": "复合弓"})
 
 
 class LLMConfig(BaseModel):
-    """对话增强（B1）：默认关闭；enabled=false 时其余字段可留空（取默认值）。"""
+    """对话增强（B1）+ 流式 AI 训练指导（PR #3）。"""
 
     enabled: bool = False
-    provider: str = "llamacpp"  # llamacpp（OpenAI 兼容）| ollama | mock（演示/测试）
+    provider: str = "llamacpp"
     endpoint: str = "http://127.0.0.1:8080"
     model: str = "qwen2.5-1.5b-instruct-q4_k_m"
-    model_version: str = "qwen2.5-1.5b-v1"  # 缓存/口径版本键（换模型不串上下文）
+    model_version: str = "qwen2.5-1.5b-v1"
     timeout_sec: int = Field(default=180, gt=0)
     max_retries: int = Field(default=1, ge=0)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     num_ctx: int = Field(default=2048, gt=0)
-    # ---- 流式 AI 训练指导（PR #3）：只用于流式路径；非流式 /ask 仍用 timeout_sec + max_retries ----
-    connect_timeout_sec: float = Field(default=5.0, gt=0)      # 连不上模型服务 → COACH-OFFLINE
-    first_token_timeout_sec: float = Field(default=90, gt=0)    # 读取数据（引擎组装 + 模型 prefill）上限
-    idle_timeout_sec: float = Field(default=30, gt=0)          # 两个 token 之间的最长空闲
-    total_timeout_sec: float = Field(default=180, gt=0)        # 单次指导总截止（不自动重试）
-    guidance_max_len: int = Field(default=1000, gt=0)          # 指导全文 G3 上限（字）；超出即提前停上游
+    connect_timeout_sec: float = Field(default=5.0, gt=0)
+    first_token_timeout_sec: float = Field(default=90, gt=0)
+    idle_timeout_sec: float = Field(default=30, gt=0)
+    total_timeout_sec: float = Field(default=180, gt=0)
+    guidance_max_len: int = Field(default=1000, gt=0)
 
     @field_validator("provider")
     @classmethod
@@ -102,9 +147,49 @@ class LLMConfig(BaseModel):
         return self
 
 
+class PortalConfig(BaseModel):
+    """PR #4：同源托管服务中心门户（不开 CORS）。"""
+
+    dist_dir: str | None = None
+
+
+class SecurityConfig(BaseModel):
+    """PR #4：跨站写请求拦截。"""
+
+    block_cross_site_writes: bool = True
+    allowed_origins: list[str] = Field(default_factory=list)
+
+    @field_validator("allowed_origins")
+    @classmethod
+    def _no_wildcard_or_null(cls, v: list[str]) -> list[str]:
+        out = []
+        for o in v:
+            o = o.strip().rstrip("/")
+            if o in ("*", "null", ""):
+                raise ValueError("security.allowed_origins 不允许 '*'、'null' 或空串（null origin 等于任何网站）")
+            out.append(o.lower())
+        return out
+
+
+class ConclusionsConfig(BaseModel):
+    """PR #4：引擎结论口径（风档差 / 平台期）。"""
+
+    wind_gap_split_mps: float = Field(default=2.0, gt=0)
+    wind_gap_min_shots: int = Field(default=5, ge=1)
+    wind_gap_threshold: float = Field(default=0.3, ge=0)
+    plateau_periods: int = Field(default=3, ge=2)
+    plateau_metric: str = "avgScore"
+    provisional: bool = True
+
+    @field_validator("plateau_metric")
+    @classmethod
+    def _plateau_metric_known(cls, v: str) -> str:
+        if v not in REQUIRED_MDC_KEYS:
+            raise ValueError(f"conclusions.plateau_metric 必须为 {REQUIRED_MDC_KEYS}")
+        return v
+
+
 class EngineConfig(BaseSettings):
-    # json_file 不在类定义期固化：settings_customise_sources 每次实例化读模块级 CONFIG_PATH，
-    # 测试夹具改 CONFIG_PATH 后重载配置才能生效
     model_config = SettingsConfigDict(json_file_encoding="utf-8", extra="ignore")
 
     config_version: str = "0.1.0"
@@ -113,6 +198,10 @@ class EngineConfig(BaseSettings):
     wind_bands: list[list[float]]
     mdc: dict[str, MDCSpec]
     mdc_source: str | None = None
+    change_caliber_trial: bool = False
+    report_caliber_version: str = "v1"
+    data_quality: DataQuality
+    advice: Advice
     forbidden_phrases: list[str] = Field(default_factory=list)
     rolling_window_shots: int = Field(gt=0)
     notes_visibility: NotesVisibility
@@ -123,6 +212,9 @@ class EngineConfig(BaseSettings):
     )
     store: StoreConfig = StoreConfig()
     llm: LLMConfig = LLMConfig()
+    portal: PortalConfig = PortalConfig()
+    security: SecurityConfig = SecurityConfig()
+    conclusions: ConclusionsConfig = ConclusionsConfig()
     log_dir: str = "logs"
 
     @classmethod
@@ -134,8 +226,6 @@ class EngineConfig(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
-        # 只读 config.json（SSOT），不叠加 env/.env，避免环境变量意外覆盖口径
-        # json_file 显式传模块级 CONFIG_PATH：夹具改路径后（monkeypatch 重赋值）立即生效
         return (JsonConfigSettingsSource(settings_cls, json_file=str(CONFIG_PATH), json_file_encoding="utf-8"),)
 
     @field_validator("timezone")
@@ -177,6 +267,10 @@ class EngineConfig(BaseSettings):
             "wind_bands": self.wind_bands,
             "mdc": {k: v.model_dump() for k, v in self.mdc.items()},
             "mdc_source": self.mdc_source,
+            "change_caliber_trial": self.change_caliber_trial,
+            "data_quality": self.data_quality.model_dump(),
+            "advice": self.advice.model_dump(),
+            "report_caliber_version": self.report_caliber_version,
             "rolling_window_shots": self.rolling_window_shots,
             "memory": self.memory.model_dump(),
             "llm": {"enabled": self.llm.enabled, "provider": self.llm.provider, "model": self.llm.model},
