@@ -94,6 +94,12 @@ start.bat
 - 超时：首字 `first_token_timeout_sec`、字间 `idle_timeout_sec`、总截止 `total_timeout_sec`（默认 90 / 30 / 180 s），流式不自动重试。
 - 完整契约与宿主（CU / ASMS / WebView2）集成要点见 [`docs/guidance_stream_contract.md`](docs/guidance_stream_contract.md)；目标机取消实测脚本 `scripts/verify_stream_cancel.py`。
 
+## 联调与验收
+
+- **宿主联调（ASMS / CU）**：[`docs/integration_guide.md`](docs/integration_guide.md) — 本地拉起、关键接口、v1.2 期望、门户、流式取消冒烟、降级与「宿主勿假设」。
+- **粉粉冒烟清单**：[`docs/qa-smoke.md`](docs/qa-smoke.md) — 对照当前 main 功能的复现→定位→现象验收步骤。
+- 字段细则仍以 [`docs/portal_api_contract.md`](docs/portal_api_contract.md)、[`docs/guidance_stream_contract.md`](docs/guidance_stream_contract.md) 为准。
+
 ## 数据源
 
 ### Mock（开发/演示）
