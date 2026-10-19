@@ -3,21 +3,176 @@
 import pytest
 
 from app.config import get_config
-from app.reports.generator import generate_report
+from app.reports.generator import build_report, generate_report
 from app.reports.window import window_of_shot
 from app.store.database import Database
 from tests.conftest import ATHLETE, seed_anchor, seed_session
 
+CANONICAL_SIX = ["window_score", "level", "data_integrity", "wind_bands", "sample_gate", "auxiliary"]
+
+
+def _keys(rep: dict) -> list[str]:
+    return [s["key"] for s in rep["sections"]]
+
+
+def _texts(rep: dict) -> str:
+    return " ".join(" ".join(str(c) for c in s["content"]) for s in rep["sections"])
+
+
+class TestSixSectionSkeleton:
+    """T1 验收：build_report() 恒输出固定六段骨架，顺序即优先级；缺失即标注。"""
+
+    def test_canonical_six_keys_and_order(self, engine_env):
+        """正常窗口（含风速）：六段 key 恒出现且顺序固定（score→level→integrity→wind→gate→aux）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert _keys(draft.report) == CANONICAL_SIX
+        db.close()
+
+    def test_no_notes_yields_explicit_empty_auxiliary(self, engine_env):
+        """无备注：auxiliary 照常出现，内容为显式空说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        aux = [s for s in draft.report["sections"] if s["key"] == "auxiliary"][0]
+        assert aux["content"] and "暂无" in aux["content"][0]
+        db.close()
+
+    def test_no_wind_merges_into_data_integrity(self, engine_env):
+        """无风速数据：wind_bands 不单独成段，缺失并入 data_integrity 显式说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=None)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        keys = _keys(draft.report)
+        assert "wind_bands" not in keys
+        integrity = [s for s in draft.report["sections"] if s["key"] == "data_integrity"][0]
+        assert "无风速数据" in integrity["content"][0]
+        db.close()
+
+    def test_with_wind_data_emits_wind_bands(self, engine_env):
+        """有风速数据：wind_bands 独立成段，data_integrity 不重复标注缺失。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30,
+                     wind=[0.5 + (i % 5) * 0.3 for i in range(30)])
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        keys = _keys(draft.report)
+        assert "wind_bands" in keys
+        integrity = [s for s in draft.report["sections"] if s["key"] == "data_integrity"][0]
+        assert "无风速数据" not in integrity["content"][0]
+        db.close()
+
+    def test_wind_band_small_sample_flagged(self, engine_env):
+        """风档样本不足门槛：小样本档显式标注未参与比较，避免误读为「该风况更好 / 更差」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        wind = [0.5] * 24 + [1.7] * 6  # band0 n=24（达标）、band1 n=6（低于门槛 10）
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=wind)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        wb = [s for s in draft.report["sections"] if s["key"] == "wind_bands"][0]
+        lines = {c.split(" 档")[0]: c for c in wb["content"]}
+        assert "样本偏少" not in lines["[0.0,1.5)"]
+        assert "样本偏少" in lines["[1.5,2.0)"]
+        db.close()
+
+    def test_sample_gate_says_ok_when_met(self, engine_env):
+        """样本达标：sample_gate 显式出现「样本达标」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        gate = [s for s in draft.report["sections"] if s["key"] == "sample_gate"][0]
+        assert "样本达标" in gate["content"][0]
+        db.close()
+
+    def test_sample_gate_warns_when_below(self, engine_env):
+        """样本不达标：sample_gate 出提示（仍不出判定词）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 20
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        gate = [s for s in draft.report["sections"] if s["key"] == "sample_gate"][0]
+        assert "样本不足" in gate["content"][0]
+        db.close()
+
+    def test_empty_window_is_explicitly_flagged(self, engine_env):
+        """窗口无任何箭：各段不静默消失，data_integrity 显式说明空窗口。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        assert _keys(draft.report) == [k for k in CANONICAL_SIX if k != "wind_bands"]
+        texts = _texts(draft.report)
+        assert "空窗口" in texts
+        db.close()
+
+    def test_empty_window_score_has_no_misleading_zeros(self, engine_env):
+        """空窗口：成绩段不出 0.00/0.0% 占位（会被读成「打出的 0 环」），改显式缺失说明。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        ws = [s for s in draft.report["sections"] if s["key"] == "window_score"][0]
+        line = ws["content"][0]
+        assert "含脱靶均环" not in line
+        assert "0.00" not in line and "0.0%" not in line
+        assert "无箭" in line
+        db.close()
+
+    def test_empty_window_level_and_gate_use_no_arrow_wording(self, engine_env):
+        """空窗口：level 说「无箭」而非「样本不足」；sample_gate 门槛不适用；不追加试行口径标注。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        db.upsert_profile({"athlete_id": ATHLETE, "name": "测试"})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W33", view="coach")
+        by = {s["key"]: s for s in draft.report["sections"]}
+        assert by["level"]["content"] == ["本窗口无箭，无水平可对比"]
+        assert "试行" not in " ".join(by["level"]["content"])
+        assert by["sample_gate"]["title"] == "无样本"
+        assert "不适用" in by["sample_gate"]["content"][0]
+        assert "仅供参考" not in by["sample_gate"]["content"][0]
+        db.close()
+
+    def test_build_report_is_side_effect_free(self, engine_env):
+        """build_report() 不写库：无缓存行、无结论记忆。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert db.cached_reports_of_athlete(ATHLETE) == []
+        assert db.list_memories(ATHLETE) == []
+        assert draft.conclusions == []
+        db.close()
+
+    def test_judgement_landed_in_level_section(self, engine_env):
+        """有锚点且 MDC 判定存在：判定结论落入 level 段，不再以 avg_vs_anchor 等散段出现。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        keys = _keys(draft.report)
+        assert keys == CANONICAL_SIX
+        assert not {"avg_vs_anchor", "mcr_vs_anchor", "dispersion_vs_anchor"} & set(keys)
+        level = [s for s in draft.report["sections"] if s["key"] == "level"][0]
+        assert "较锚点" in level["content"][0] or "与锚点" in level["content"][0]
+        db.close()
+
 
 class TestIngestIdempotency:
     def test_reimport_skips_shots(self, mock_db):
-        n1 = mock_db.query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
+        n1 = mock_db._query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
         # 重新导入同一 mock 源 → 幂等（0 新增）
         from app.ingest import ingest_source
         from app.ingest.mock_source import MockSource
         from app.memory.baseline import refresh_rolling_after_import
         stats = ingest_source(mock_db, MockSource(), on_imported=refresh_rolling_after_import)
-        n2 = mock_db.query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
+        n2 = mock_db._query("SELECT COUNT(*) c FROM shot_fact")[0]["c"]
         assert stats["inserted_shots"] == 0 and stats["skipped_shots"] == 390
         assert n1 == n2
 
@@ -29,7 +184,7 @@ class TestIngestIdempotency:
 
 class TestGeneratorMock:
     def test_daily_report(self, mock_db):
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         rep = generate_report(mock_db, ATHLETE, "daily", f"daily:{sid}", session_id=sid, view="athlete")
         keys = {s["key"] for s in rep["sections"]}
         assert "window_score" in keys
@@ -60,11 +215,11 @@ class TestGeneratorMock:
         assert "sample_gate" in keys  # 390 < 1040 门槛 → 不出判定词
 
     def test_anchor_mdc_judgement_and_persistence(self, mock_db):
-        sid = mock_db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = mock_db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(mock_db, ATHLETE, sid)
         rep = generate_report(mock_db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
         keys = {s["key"] for s in rep["sections"]}
-        assert "avg_vs_anchor" in keys  # 有锚点 → 出 MDC 段
+        assert "level" in keys  # 有锚点 → level 段出 MDC 判定
         mems = mock_db.list_memories(ATHLETE)
         assert mems, "结论应回写记忆"
         assert any(m["conclusion_type"] == "judgement" for m in mems)
@@ -75,11 +230,13 @@ class TestGeneratorMock:
         from app.ingest.mock_source import MockSource
         db = Database(degraded_env[1])
         ingest_source(db, MockSource())
-        sid = db.query("SELECT session_id FROM session_dim ORDER BY session_time_utc LIMIT 1")[0]["session_id"]
+        sid = db.sessions_of_athlete(ATHLETE)[0]["session_id"]
         seed_anchor(db, ATHLETE, sid)
         rep = generate_report(db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
-        texts = " ".join(s["content"][0] for s in rep["sections"])
-        assert "未判定" in texts or "MDC 口径待专家共识" in texts  # 降级：只描述不判定
+        level = [s for s in rep["sections"] if s["key"] == "level"][0]
+        text = " ".join(level["content"])
+        assert "降级期" in text and "暂无进步/退步判定" in text  # 降级提示（ADR-0002）
+        assert "未判定" in text  # 锚点降级模板：只描述不判定
         db.close()
 
 
@@ -126,4 +283,651 @@ class TestAntiHardcoding:
         t2 = " ".join(s["content"][0] for s in r2["sections"])
         assert "8.83" in t1 and "10.4" in t2  # 数字来自数据而非硬编码
         assert t1 != t2
+        db.close()
+
+
+class TestDualCaliberScore:
+    """T2 验收：window_score 并列双口径 + 脱靶率；口径版本递增使旧缓存失效（ADR-0001）。"""
+
+    def test_dual_average_score_display(self, engine_env):
+        """已知脱靶样本：含脱靶均环 / 有效箭均环 / 脱靶率并列且数值正确，内十/远弹/命中保留。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 10 箭脱靶（0 环）+ 20 箭 8 环：含脱靶 160/30=5.33，有效箭 8.00，脱靶率 10/30=33.3%
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [0.0] * 10 + [8.0] * 20,
+                     wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        ws = [s for s in draft.report["sections"] if s["key"] == "window_score"][0]
+        text = ws["content"][0]
+        assert "含脱靶均环 5.33" in text
+        assert "有效箭均环 8.00" in text
+        assert "脱靶率 33.3%" in text
+        assert "内十率" in text and "远弹率" in text and "命中率" in text
+        db.close()
+
+    def test_cache_invalidation_on_caliber_version_bump(self, engine_env, tmp_path):
+        """递增报告口径版本 → 旧缓存不再命中，重新生成返回新 report_id。"""
+        import json
+
+        import app.config as cfgmod
+
+        cfg_dict, db_path = engine_env
+        cfg_path = tmp_path / "config.json"
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+
+        r1 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r1["cached"] is False
+        r2 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r2["cached"] is True and r2["report_id"] == r1["report_id"]
+
+        cfg_dict["report_caliber_version"] = "v-next"
+        cfg_path.write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        cfgmod.get_config.cache_clear()
+
+        r3 = generate_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert r3["cached"] is False
+        assert r3["report_id"] != r1["report_id"]
+        db.close()
+
+
+class TestDegradedLevelSection:
+    """T3 验收：降级期 level 段出降级提示 + 滚动基线水平描述；有 MDC 仍出方向判定（ADR-0002）。"""
+
+    # 方向判定词：降级期除提示行外不得出现
+    DIRECTION_WORDS = ("进步", "退步", "提升", "下降", "收窄", "增大", "回落", "升高", "缩短", "延长")
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_degraded_level_shows_hint_without_direction_judgement(self, degraded_env):
+        """降级期：level 段出现「降级期，暂无进步/退步判定」提示，其余行不含任何方向判定词。"""
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        lines = self._level(draft.report)["content"]
+        hint = [ln for ln in lines if "降级期" in ln]
+        assert hint, "降级期 level 段应出现降级提示"
+        assert "暂无进步/退步判定" in hint[0]
+        for line in [ln for ln in lines if "降级期" not in ln]:
+            assert not any(w in line for w in self.DIRECTION_WORDS), f"降级期不应出方向判定词：{line}"
+        db.close()
+
+    def test_degraded_level_describes_rolling_baseline(self, degraded_env):
+        """降级期：level 段改述滚动基线水平（只描述不判定）；基线只取窗口前的箭。"""
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "滚动基线" in text
+        assert "窗口前近 30 箭" in text   # 基线 = 窗口前的 S-A，不含窗口内 S-B
+        assert "9.00" in text            # S-A 均环
+        assert "+0.50" in text           # 本窗口 9.50 较基线 +0.50
+        db.close()
+
+    def test_level_without_anchor_emits_trial_baseline_hint(self, engine_env):
+        """有 MDC 试行口径但无锚点：level 段按滚动基线出方向提示（试行口径、参考），不出强断言判定。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "较滚动基线" in text and "+0.50" in text
+        assert "方向提示（试行口径，参考" in text   # 参考档：未达强断言门槛
+        assert "判定：进步" not in text and "判定：退步" not in text  # 强断言判定仍归锚点
+        assert "无锚点" in text
+        db.close()
+
+    def test_rolling_baseline_excludes_shots_after_window(self, engine_env):
+        """滚动基线只取窗口前的箭：窗口之后的箭不得进入基线（时间语义）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        seed_session(db, ATHLETE, "S-C", "2026-09-01T01:00:00.000Z", [10.0] * 30)  # 窗口之后
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "8.00" in text        # 基线 = 窗口前 S-A
+        assert "10.00" not in text   # 窗口后的 S-C 不进基线
+        db.close()
+
+    def test_mdc_configured_still_judges_direction(self, engine_env):
+        """有 MDC 配置：level 段仍出方向判定（较锚点/与锚点），且不出现降级提示（回归不破）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        lines = self._level(draft.report)["content"]
+        assert any(("较锚点" in ln) or ("与锚点" in ln) for ln in lines)
+        assert not any("降级期" in ln for ln in lines)
+        db.close()
+
+
+class TestBaselineDirectionHint:
+    """ADR-0006 修订：试行口径下无锚点按滚动基线出方向提示（参考），不出强断言判定词，不落记忆。"""
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_assertive_level_change_still_worded_as_reference(self, engine_env):
+        """大幅变化（≥强断言门槛）：给「上升 X 环，方向提示（试行口径，参考）」，不出现判定词。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "较滚动基线" in text and "上升 1.5 环" in text
+        assert "方向提示（试行口径，参考" in text
+        assert "判定：进步" not in text and "判定：退步" not in text
+        db.close()
+
+    def test_change_below_noise_suppresses_hint(self, engine_env):
+        """微小变化（≤噪声底）：不出方向提示，显式说明低于噪声底。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.05] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "低于噪声底" in text and "不出方向提示" in text
+        db.close()
+
+    def test_hint_absent_when_caliber_not_trial(self, engine_env, tmp_path):
+        """非试行口径：无锚点回落为只描述不判定的滚动基线水平描述（无方向提示）。"""
+        import json
+
+        import app.config as cfgmod
+
+        cfg_dict, db_path = engine_env
+        cfg_path = tmp_path / "config.json"
+        cfg_dict["change_caliber_trial"] = False
+        cfg_path.write_text(json.dumps(cfg_dict, ensure_ascii=False, indent=2), encoding="utf-8")
+        cfgmod.get_config.cache_clear()
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "方向提示" not in text
+        assert "水平描述，非判定" in text
+        db.close()
+
+    def test_hint_not_written_to_conclusions_or_memory(self, engine_env):
+        """无锚点方向提示不入结论记忆（记忆判定为锚点专属），build_report 保持无副作用。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        assert draft.conclusions == []
+        assert db.list_memories(ATHLETE) == []
+        db.close()
+
+    def test_no_anchor_and_no_baseline_does_not_promise_hint(self, engine_env):
+        """无锚点且窗口前无记分箭（首训场次）：不得谎称「按滚动基线给方向提示」——无基线即无提示。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 仅本窗口一场，窗口前没有任何记分箭 → 无滚动基线
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        text = " ".join(self._level(draft.report)["content"])
+        assert "按滚动基线给方向提示" not in text   # 无基线时不承诺提示
+        assert "较滚动基线" not in text             # 不产出基线方向提示行
+        assert "方向提示（试行口径" not in text
+        assert "无滚动基线" in text                 # 如实说明无基线
+        db.close()
+
+    def test_baseline_hint_also_emits_matching_suggestion(self, engine_env):
+        """建议层与正文一致：无锚点试行方向提示应同步出一条「较滚动基线…方向提示（试行口径，参考）」建议。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [8.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        sug = " ".join(draft.report["suggestions"])
+        assert "较滚动基线" in sug and "方向提示（试行口径，参考" in sug, sug
+        assert "判定进步" not in sug and "判定退步" not in sug, sug  # 无锚点不出强断言
+        db.close()
+
+    def test_baseline_steady_emits_no_trend_suggestion(self, engine_env):
+        """基线差在噪声底内（正文未出方向提示）时，建议层不得出现趋势建议。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.05] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        sug = " ".join(draft.report["suggestions"])
+        assert "较滚动基线" not in sug, sug
+        db.close()
+
+
+class TestAnchorGuidance:
+    """P1 无锚点引导：level 段显式说明缺锚点；coach_extra.anchor_setup 给出候选场次（仅教练，ADR-0005）。"""
+
+    @staticmethod
+    def _level(report: dict) -> dict:
+        return [s for s in report["sections"] if s["key"] == "level"][0]
+
+    def test_no_anchor_hint_and_setup_candidates(self, engine_env):
+        """无锚点：level 段出「无锚点」说明；coach_extra.anchor_setup 候选只含早于窗口的场次。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        rep = draft.report
+        assert "无锚点" in " ".join(self._level(rep)["content"])
+        setup = rep["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True and setup["primary_bow"] == "反曲弓"
+        assert [c["session_id"] for c in setup["candidates"]] == ["S-A"]  # 窗口内的 S-B 不作候选
+        assert setup["candidates"][0]["distance_m"] == 70
+        db.close()
+
+    def test_setup_absent_when_anchor_exists(self, engine_env):
+        """已有锚点：anchor_setup.needs_anchor=False 且无候选（不重复引导）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        db.close()
+
+    def test_setup_only_in_coach_view(self, engine_env):
+        """anchor_setup 属运维字段：仅 coach 返回，运动员视图不泄露（ADR-0005）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete")
+        assert "anchor_setup" not in draft.report["coach_extra"]
+        db.close()
+
+    def test_setup_suppressed_when_sample_insufficient(self, engine_env):
+        """样本不足：不出无锚点引导（建立后仍需样本达标），level 段显式说明样本不足。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 20
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        assert "样本不足" in setup["reason"]
+        text = " ".join(self._level(draft.report)["content"])
+        assert "样本不足" in text and "无锚点" not in text
+        db.close()
+
+    def test_setup_suppressed_in_degraded_period(self, degraded_env):
+        """降级期：建立锚点不解锁判定，抑制无锚点引导并说明降级原因。"""
+        cfg, db_path = degraded_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is False and setup["candidates"] == []
+        assert "降级期" in setup["reason"]
+        text = " ".join(self._level(draft.report)["content"])
+        assert "降级期" in text and "无锚点" not in text
+        db.close()
+
+    def test_candidate_excludes_session_without_usable_metadata(self, engine_env):
+        """候选与 create_anchor_snapshot 元数据校验对齐：元数据不可用的场次不作候选（避免死候选）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # S-A 距离为 0（不可用元数据，建立时必失败）；S-B 正常作窗口
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, distance_m=0)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True
+        assert setup["candidates"] == []  # S-A 元数据不可用 → 不作候选
+        db.close()
+
+    def test_candidate_excludes_thin_session(self, engine_env):
+        """候选记分箭最小样本门槛：早于窗口但记分箭不足（<6）的场次不作候选，reason 说明原因。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < min_shots_for_description
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert setup["needs_anchor"] is True
+        assert setup["candidates"] == []  # 记分箭过少 → 不作候选
+        assert "记分箭均不足" in setup["reason"]
+        db.close()
+
+    def test_candidate_keeps_session_at_threshold(self, engine_env):
+        """门槛为闭区间：恰好 6 支记分箭的场次仍作候选（不误伤边界）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 6)
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.5] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-B", session_id="S-B", view="coach")
+        setup = draft.report["coach_extra"]["anchor_setup"]
+        assert [c["session_id"] for c in setup["candidates"]] == ["S-A"]
+        db.close()
+
+
+class TestAnchorCreationMinShots:
+    """锚点建立记分箭最小样本门槛：与候选过滤对齐，过小场次拒绝建锚（避免噪声底过高拖累判定）。"""
+
+    def test_create_anchor_rejects_thin_session(self, engine_env):
+        from app.memory.baseline import create_anchor_snapshot
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)  # 5 < 6
+        with pytest.raises(ValueError, match="记分箭不足"):
+            create_anchor_snapshot(db, ATHLETE, "反曲弓", "S-A")
+        db.close()
+
+
+class TestAnchorCreationBowIsolation:
+    """锚点建立只取目标弓种记分箭（ADR-0004）：场次含多弓种时不混算。"""
+
+    def test_create_anchor_uses_only_target_bow(self, engine_env):
+        """同场次混弓：按反曲弓建锚点只取反曲弓 10 箭（9.0），不被复合弓 1.0 拉低。"""
+        from app.memory.baseline import create_anchor_snapshot
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 10 + [1.0] * 20)
+        # 后 20 箭改标为复合弓（同一场次内混弓）
+        db._execute("UPDATE shot_fact SET bow_type='复合弓' WHERE session_id=? AND shot_seq>10", ("S-A",))
+        snap = create_anchor_snapshot(db, ATHLETE, "反曲弓", "S-A")
+        assert snap["n_shots"] == 10
+        assert snap["avg_score"] == 9.0  # 只用反曲弓；未混算复合弓
+        db.close()
+
+
+class TestPrimaryBowAggregation:
+    """T4 验收：窗口按主弓种（箭数最多）聚合，其余弓种显式标注不计入，报告体带 bow_type（ADR-0004）。"""
+
+    @staticmethod
+    def _section(report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_single_bow_window_counts_all_shots(self, engine_env):
+        """单弓种窗口：全部箭计入指标，bow_type 为该弓种，无「未计入」标注。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, bow_type="反曲弓")
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        rep = draft.report
+        assert rep["bow_type"] == "反曲弓"
+        assert "（n=30）" in self._section(rep, "window_score")["content"][0]
+        assert "未计入" not in " ".join(self._section(rep, "data_integrity")["content"])
+        db.close()
+
+    def test_multi_bow_window_filters_to_primary_and_annotates_others(self, engine_env):
+        """多弓种窗口：仅主弓种参与指标，其余弓种在 data_integrity 标注箭数与名称。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [5.0] * 10, bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        rep = draft.report
+        assert rep["bow_type"] == "反曲弓"
+        score = self._section(rep, "window_score")["content"][0]
+        assert "（n=20）" in score  # 只计入主弓种 20 箭
+        assert "9.00" in score     # 均环取自主弓种，未被 5.0 的复合弓拉低
+        integrity = " ".join(self._section(rep, "data_integrity")["content"])
+        assert "另有 10 箭为 复合弓 弓种，未计入" in integrity
+        db.close()
+
+    def test_primary_bow_tie_break_is_deterministic(self, engine_env):
+        """箭数并列时按弓种名升序取主弓种，保证跨次生成结果一致。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 10, bow_type="复合弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [9.5] * 10, bow_type="反曲弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        assert draft.report["bow_type"] == "反曲弓"  # 并列时 '反' < '复'（码点序）
+        db.close()
+
+    def test_level_ignores_anchor_of_other_bow(self, engine_env):
+        """主弓种窗口不拿另一弓种的锚点做对比（ADR-0004：不同项目基线不混用）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 窗口：反曲弓两场（过周报 ≥2 场门槛）；唯一锚点却属于复合弓
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-C", "2026-08-05T01:00:00.000Z", [9.0] * 20, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-07-01T01:00:00.000Z", [8.0] * 30, bow_type="复合弓")
+        seed_anchor(db, ATHLETE, "S-B", bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        text = " ".join(self._section(draft.report, "level")["content"])
+        assert "较锚点" not in text and "与锚点" not in text  # 不跨弓种对比
+        assert "无锚点" in text  # 本弓种无锚点 → 显式说明
+        assert draft.report["bow_type"] == "反曲弓"
+        db.close()
+
+    def test_sample_gate_counts_only_primary_bow_sessions(self, engine_env):
+        """样本门槛的训练次数按主弓种过滤：非主弓种场次不计入周报 ≥2 场护栏。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        # 反曲弓 1 场 30 箭（主弓种）；复合弓 1 场 30 箭 → 主弓种仅 1 场，未达周报 ≥2 场
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, bow_type="反曲弓")
+        seed_session(db, ATHLETE, "S-B", "2026-08-04T01:00:00.000Z", [5.0] * 30, bow_type="复合弓")
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        assert "样本不足" in self._section(draft.report, "sample_gate")["content"][0]
+        db.close()
+
+
+class TestWindowRangeMetadata:
+    """T5 验收：报告体含 window_start / window_end，取值与窗口边界一致（daily 用场次时间）。"""
+
+    def test_daily_uses_session_time(self, engine_env):
+        """daily：本期区间取场次时间（点区间，start == end）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert rep["window_start"] == "2026-08-03T01:00:00.000Z"
+        assert rep["window_end"] == "2026-08-03T01:00:00.000Z"
+        db.close()
+
+    def test_weekly_matches_window_bounds(self, engine_env):
+        """weekly：本期区间 = 窗口 [start, end) 边界（本地时区切窗 → UTC 存储，左闭右开）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach").report
+        assert rep["window_start"] == "2026-08-02T16:00:00.000Z"  # 2026-08-03 00:00 (Asia/Shanghai)
+        assert rep["window_end"] == "2026-08-09T16:00:00.000Z"    # 2026-08-10 00:00（右开）
+        db.close()
+
+    def test_monthly_quarterly_yearly_match_window_bounds(self, engine_env):
+        """monthly/quarterly/yearly：本期区间同样等于各自窗口 [start, end) 边界。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        expected = {
+            ("monthly", "2026-08"): ("2026-07-31T16:00:00.000Z", "2026-08-31T16:00:00.000Z"),
+            ("quarterly", "2026Q3"): ("2026-06-30T16:00:00.000Z", "2026-09-30T16:00:00.000Z"),
+            ("yearly", "2026"): ("2025-12-31T16:00:00.000Z", "2026-12-31T16:00:00.000Z"),
+        }
+        for (gran, key), (start, end) in expected.items():
+            rep = build_report(db, ATHLETE, gran, key, view="coach").report
+            assert (rep["window_start"], rep["window_end"]) == (start, end), gran
+        db.close()
+
+
+class TestViewCoachExtraGating:
+    """T6 验收：正文两视图内容一致（备注为既定例外）；运维字段仅 coach 返回（ADR-0005）。"""
+
+    def _section(self, report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_sections_identical_across_views(self, engine_env):
+        """双方可见备注（injury/goal）场景：coach / athlete 的 sections 逐字一致。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        add_note(db, ATHLETE, "injury", "右肩轻微酸痛", "athlete", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert rep_a["sections"] == rep_c["sections"]
+        db.close()
+
+    def test_ops_fields_gated_to_coach(self, engine_env):
+        """运维字段（anchor_rebuild_hint / evidence 明细）只在 coach 的 coach_extra；
+        正文 sections 不含 evidence 明细，顶层也不再挂 anchor_rebuild_hint。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        # coach：附注区含运维字段
+        assert "anchor_rebuild_hint" in rep_c["coach_extra"]
+        assert rep_c["coach_extra"]["evidence"]
+        # athlete：附注区保留非运维键，但不含运维字段
+        assert set(rep_a["coach_extra"]) <= {"warnings", "load", "rolling_baseline"}
+        assert "anchor_rebuild_hint" not in rep_a["coach_extra"]
+        assert "evidence" not in rep_a["coach_extra"]
+        # 正文两视图都不再携带 evidence 明细；顶层 anchor_rebuild_hint 已移除
+        assert all("evidence" not in s for s in rep_c["sections"])
+        assert "anchor_rebuild_hint" not in rep_c
+        db.close()
+
+    def test_athlete_notes_only_injury_goal(self, engine_env):
+        """备注过滤沿用 notes_visibility：athlete 只见 injury/goal，coach 全量。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30)
+        add_note(db, ATHLETE, "coach_note", "私密教练观察", "coach", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        aux_a = " ".join(self._section(rep_a, "auxiliary")["content"])
+        aux_c = " ".join(self._section(rep_c, "auxiliary")["content"])
+        assert "私密教练观察" not in aux_a
+        assert "私密教练观察" in aux_c
+        db.close()
+
+    def test_only_coach_extra_and_notes_differ(self, engine_env):
+        """两视图差异只发生在 coach_extra 与 auxiliary 备注：其余五段逐字一致。"""
+        from app.memory.notes import add_note
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        add_note(db, ATHLETE, "coach_note", "私密教练观察", "coach", ATHLETE)
+        rep_a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        rep_c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert _keys(rep_a) == _keys(rep_c) == CANONICAL_SIX
+        for key in CANONICAL_SIX:
+            if key == "auxiliary":  # 备注为既定例外
+                continue
+            assert self._section(rep_a, key) == self._section(rep_c, key), key
+        assert rep_a["coach_extra"] != rep_c["coach_extra"]
+        db.close()
+
+
+class TestDataQualityGuardrail:
+    """P0 验收：不可能分布 / 过小样本在 data_integrity 显式标注「数据存疑」；
+    结构矛盾时抑制 level 段方向判定，避免用不可信数据误导教练。"""
+
+    @staticmethod
+    def _section(report: dict, key: str) -> dict:
+        return [s for s in report["sections"] if s["key"] == key][0]
+
+    def test_small_sample_flagged_in_data_integrity(self, engine_env):
+        """过小样本（n=5 < 6）：data_integrity 显式标注「数据存疑」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 5)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" in integrity and "过小" in integrity
+        db.close()
+
+    def test_clean_sample_not_flagged(self, engine_env):
+        """分布自洽、样本充足：data_integrity 不出现「数据存疑」。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" not in integrity
+        db.close()
+
+    def test_contradiction_suppresses_direction_judgement(self, engine_env, monkeypatch):
+        """结构矛盾（护栏判 block）：level 段不出方向判定并显式说明，data_integrity 展示原因。"""
+        import app.reports.generator as gen
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        seed_anchor(db, ATHLETE, "S-A")
+        seed_session(db, ATHLETE, "S-B", "2026-08-05T01:00:00.000Z", [9.8] * 30, wind=[1.0] * 30)
+        monkeypatch.setattr(gen.Q, "assess_quality", lambda m, dq: {
+            "suspect": True, "block_judgement": True,
+            "reasons": ["远弹率 0.0% 低于脱靶率 61.5%（0 环箭必为远弹）"]})
+        draft = build_report(db, ATHLETE, "weekly", "2026-W32", view="coach")
+        level = " ".join(self._section(draft.report, "level")["content"])
+        integrity = " ".join(self._section(draft.report, "data_integrity")["content"])
+        assert "数据存疑" in level and "不出方向判定" in level
+        assert "数据存疑" in integrity and "低于脱靶率" in integrity
+        # 结构矛盾时不落任何强断言方向结论
+        assert not any(c["conclusion_key"] in ("progress", "regression") for c in draft.conclusions)
+        db.close()
+
+
+class TestAdviceLayer:
+    """P0 验收：建议层填充 report.suggestions（由判断信号确定性生成）；
+    两视图正文一致，evidence 仅教练附注区可见；空窗口/数据存疑时给显式空状态或拒绝。"""
+
+    def test_miss_heavy_window_populates_advice(self, engine_env):
+        """脱靶率高的窗口：suggestions 出脱靶建议，evidence 仅教练附注区。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z",
+                     [0.0] * 15 + [9.0] * 15, wind=[0.8] * 30, hr=[70] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert any("脱靶" in x for x in draft.report["suggestions"])
+        assert any(e["ref"] == "advice_miss"
+                   for e in draft.report["coach_extra"]["advice_evidence"])
+        db.close()
+
+    def test_advice_body_identical_across_views(self, engine_env):
+        """suggestions 属共享正文：两视图一致；advice_evidence 仅教练可见。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30,
+                     wind=[0.8] * 30, hr=[70] * 30)
+        a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert a["suggestions"] == c["suggestions"]
+        assert "advice_evidence" not in a["coach_extra"]
+        assert "advice_evidence" in c["coach_extra"]
+        db.close()
+
+    def test_empty_window_has_empty_suggestions(self, engine_env):
+        """空窗口：suggestions 为空（真实空状态）。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-EMPTY",
+                             session_id="S-EMPTY", view="coach")
+        assert draft.report["suggestions"] == []
+        db.close()
+
+    def test_contradiction_blocks_advice(self, engine_env, monkeypatch):
+        """数据存疑（结构矛盾）：不出建议，显式拒绝。"""
+        import app.reports.generator as gen
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.5] * 30, wind=[1.0] * 30)
+        monkeypatch.setattr(gen.Q, "assess_quality", lambda m, dq: {
+            "suspect": True, "block_judgement": True, "reasons": ["矛盾"]})
+        draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
+        assert draft.report["suggestions"] == ["本窗口数据存疑（分布存在结构性矛盾），暂不给出训练建议"]
         db.close()

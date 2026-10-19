@@ -177,11 +177,14 @@ def compute_plateau(db: Database, cfg: EngineConfig, athlete_id: str, granularit
     cur_start = _window_start(db, cfg, granularity, window_key)
     candidates: list[tuple[str, dict]] = []
     if cur_start is not None:
+        # 缓存键与 generator._report_cache_version 对齐（mdc=…;caliber=…）
+        from app.reports.generator import _report_cache_version
+        cache_ver = _report_cache_version(cfg)
         rows = db.query(
             """SELECT report_id, window_key, report_json FROM report_cache
                WHERE athlete_id=? AND granularity=? AND window_key<>? AND report_json IS NOT NULL
                  AND (mdc_version IS ? OR mdc_version=?)""",
-            (athlete_id, granularity, window_key, cfg.mdc_source, cfg.mdc_source))
+            (athlete_id, granularity, window_key, cache_ver, cache_ver))
         for r in rows:
             start = _window_start(db, cfg, granularity, r["window_key"])
             if start is None or start >= cur_start:

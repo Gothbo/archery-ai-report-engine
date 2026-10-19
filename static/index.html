@@ -139,6 +139,18 @@
   .g-alert.err { background: #fdf1f0; color: #8c1d18; }
   .g-alert.warn { background: #fff8e6; color: #5c3b00; }
   .g-code { font-size: 12px; color: var(--text-2); margin-top: 6px; }
+
+  .rh-range { display: block; margin-top: 4px; font-size: 12px; color: var(--muted, #6b7280); font-weight: 400; }
+  .advice { background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
+  .advice h3 { margin: 0 0 8px; font-size: 14px; color: #065f46; }
+  .advice ul { margin: 0; padding-left: 18px; }
+  .advice li { margin: 4px 0; font-size: 13px; line-height: 1.45; color: #064e3b; }
+  .meta-line { display: flex; gap: 8px; font-size: 12px; color: #6b7280; margin: 2px 0; }
+  .meta-line .mk { min-width: 64px; color: #9ca3af; }
+  .anchor-setup { background: #fff7ed; border: 1px solid #fdba74; border-radius: 8px; padding: 12px; margin: 10px 0; }
+  .anchor-setup h3 { margin: 0 0 6px; font-size: 14px; color: #9a3412; }
+  .as-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
+  .as-row select { flex: 1; }
 </style>
 </head>
 <body>
@@ -542,6 +554,57 @@ document.querySelectorAll('.gran-btn').forEach((b) => {
   b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
 });
 
+function windowRange(r) {
+  if (!r || !r.window_start || !r.window_end) return '';
+  const fmt = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit'
+  });
+  const s = new Date(r.window_start), e0 = new Date(r.window_end);
+  if (isNaN(s) || isNaN(e0)) return '';
+  const sd = fmt.format(s), ed = fmt.format(new Date(e0.getTime() - 1));
+  return (sd === ed ? sd : sd + ' ~ ' + ed) + '（北京时间）';
+}
+
+function adviceCard(suggestions) {
+  const card = document.createElement('div');
+  card.className = 'advice';
+  card.innerHTML = '<h3>训练建议</h3><ul>' +
+    suggestions.map((t) => '<li>' + esc(t) + '</li>').join('') + '</ul>';
+  return card;
+}
+
+function anchorSetupCard(setup) {
+  const card = document.createElement('div');
+  card.className = 'anchor-setup';
+  let html = '<h3>建立锚点</h3><p>' + esc(setup.reason || '当前无锚点，无法判定方向。') + '</p>';
+  const cands = setup.candidates || [];
+  if (!cands.length) {
+    html += '<p>暂无可作锚点的场次（需早于当前窗口、含距离信息，且记分箭达最小样本）。</p>';
+    card.innerHTML = html;
+    return card;
+  }
+  card.innerHTML = html + '<div class="as-row"><select id="anchorCand"></select>' +
+    '<button class="primary" id="anchorBtn">建立锚点</button></div>';
+  const sel = card.querySelector('#anchorCand');
+  cands.forEach((c) => {
+    const o = document.createElement('option');
+    o.value = c.session_id;
+    o.textContent = (c.session_time_utc || '').slice(0, 10) + ' · ' + (c.distance_m || '?') + 'm · ' +
+      (c.scoring_shots || 0) + '箭';
+    sel.appendChild(o);
+  });
+  card.querySelector('#anchorBtn').onclick = () => {
+    const btn = card.querySelector('#anchorBtn');
+    btn.disabled = true;
+    api('/api/v1/athletes/' + athleteId + '/baseline/anchor', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ bow_type: setup.primary_bow, source_session_id: sel.value }),
+    }).then(() => { setStatus('锚点已建立'); if (typeof lastRequest !== 'undefined' && lastRequest) generate(lastRequest); })
+      .catch((e) => { btn.disabled = false; alert('建立锚点失败：' + e.message); });
+  };
+  return card;
+}
+
 function renderReport(r) {
   $('reportEmpty').style.display = 'none';
   $('reportPanel').style.display = '';
@@ -551,13 +614,39 @@ function renderReport(r) {
   $('guidancePanel').style.display = '';
   gIdle();
   const names = { daily: '日', weekly: '周', monthly: '月', quarterly: '季', yearly: '年' };
-  $('reportHead').textContent =
-    (r.athlete ? (r.athlete.name || '未命名选手') : '') + ' · ' + names[r.granularity] + '报告 · ' + r.window_key +
-    (view === 'coach' ? ' · 教练视角' : ' · 运动员视角');
+  const who = r.athlete ? (r.athlete.name || '未命名选手') : '';
+  const rng = windowRange(r);
+  const wk = r.granularity === 'daily' ? String(r.window_key || '').replace(/^daily:/, '') : r.window_key;
+  $('reportHead').innerHTML =
+    esc(who) + ' · ' + esc(names[r.granularity] || r.granularity) + '报告 · ' + esc(wk) +
+    (view === 'coach' ? ' · 教练视角' : ' · 运动员视角') +
+    (rng ? '<span class="rh-range">' + esc(rng) + '</span>' : '');
 
   const body = $('reportBody');
   body.innerHTML = '';
+  // 建议高亮卡（阶段 1）
+  if (r.suggestions && r.suggestions.length) body.appendChild(adviceCard(r.suggestions));
+  const byKey = {};
+  (r.sections || []).forEach((s) => { byKey[s.key] = s; });
+  const order = ['window_score', 'level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary', 'notes'];
+  const seen = {};
+  order.forEach((k) => {
+    const s = byKey[k];
+    if (!s) return;
+    seen[k] = true;
+    const card = document.createElement('div');
+    card.className = 'report-card';
+    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
+      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+    body.appendChild(card);
+    if (k === 'level' && view === 'coach') {
+      const setup = (r.coach_extra || {}).anchor_setup;
+      if (setup && setup.needs_anchor) body.appendChild(anchorSetupCard(setup));
+    }
+  });
+  // 其余未知段（如历史遗留）仍展示
   (r.sections || []).forEach((s) => {
+    if (seen[s.key]) return;
     const card = document.createElement('div');
     card.className = 'report-card';
     card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
@@ -565,17 +654,19 @@ function renderReport(r) {
     body.appendChild(card);
   });
 
-  const meta = [];
   const ce = r.coach_extra || {};
+  const items = [];
+  if (r.bow_type) items.push(['主弓种', r.bow_type]);
   if (ce.rolling_baseline) {
-    const rb = ce.rolling_baseline;
-    meta.push('滚动基线：最近 ' + rb.n_shots + ' 箭 · 均环 ' + rb.avg_score);
+    items.push(['滚动基线', '最近 ' + ce.rolling_baseline.n_shots + ' 箭 · 均环 ' + ce.rolling_baseline.avg_score]);
   }
-  if (ce.warnings && ce.warnings.length) meta.push('警告：' + ce.warnings.join('；'));
-  if (r.suggestions && r.suggestions.length) meta.push('建议：' + r.suggestions.join('；'));
-  if (r.anchor_rebuild_hint && r.anchor_rebuild_hint.reason) meta.push('锚点提示：' + r.anchor_rebuild_hint.reason);
-  if (r.generated_at_utc) meta.push('生成时间(UTC)：' + r.generated_at_utc);
-  $('reportMeta').textContent = meta.join('\n');
+  if (ce.warnings && ce.warnings.length) items.push(['警告', ce.warnings.join('；')]);
+  const hint = (ce.anchor_rebuild_hint || r.anchor_rebuild_hint);
+  if (hint && hint.reason) items.push(['锚点提示', hint.reason]);
+  if (r.generated_at_utc) items.push(['生成时间', r.generated_at_utc + '（UTC）']);
+  $('reportMeta').innerHTML = items.map((it) =>
+    '<div class="meta-line"><span class="mk">' + esc(it[0]) + '</span><span class="mv">' + esc(it[1]) + '</span></div>'
+  ).join('');
 }
 
 /* ---- PR #3 AI 训练指导（流式 + 真取消）。状态：idle / reading / writing / verifying / stopping /
