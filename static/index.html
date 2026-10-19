@@ -8,11 +8,57 @@
   :root {
     --bg: #f5f5f7;
     --card: #ffffff;
+    --header-bg: rgba(255,255,255,0.85);
     --text: #1d1d1f;
     --text-2: #6e6e73;
-    --accent: #0071e3;
+    --accent: #0068d6;
+    --accent-solid: #0068d6;
+    --accent-solid-hover: #0071e3;
+    --accent-soft: rgba(0,113,227,.06);
+    --accent-line: rgba(0,113,227,.16);
+    --accent-ring: rgba(0,113,227,.22);
     --border: #e5e5ea;
+    --fill-1: #e8e8ed;
+    --fill-2: #c7c7cc;
+    --disabled-bg: #8e8e93;
+    --seg-thumb: #ffffff;
+    --bubble: #f0f0f2;
+    --card-soft: #fbfbfd;
+    --danger: #ff3b30;
+    --warn: #b2501a;
     --radius: 14px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
+    --shadow-1: 0 1px 2px rgba(0,0,0,.04);
+    --shadow-2: 0 8px 24px rgba(0,0,0,.08);
+  }
+  /* ---- 暗色模式：仅覆盖 token，组件规则不动 ---- */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: #000000;
+      --card: #1c1c1e;
+      --header-bg: rgba(28,28,30,0.8);
+      --text: #f5f5f7;
+      --text-2: #98989d;
+      --accent: #409cff;
+      --accent-solid: #0a6ad0;
+      --accent-solid-hover: #0a6fd6;
+      --accent-soft: rgba(10,132,255,.14);
+      --accent-line: rgba(10,132,255,.30);
+      --accent-ring: rgba(10,132,255,.40);
+      --border: #38383a;
+      --fill-1: #2c2c2e;
+      --fill-2: #48484a;
+      --disabled-bg: #48484a;
+      --seg-thumb: #636366;
+      --bubble: #2c2c2e;
+      --card-soft: #232325;
+      --danger: #ff453a;
+      --warn: #ff9f0a;
+      --shadow-1: 0 1px 2px rgba(0,0,0,.5);
+      --shadow-2: 0 8px 24px rgba(0,0,0,.6);
+    }
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
@@ -23,7 +69,7 @@
   }
   header {
     position: sticky; top: 0; z-index: 10;
-    background: rgba(255,255,255,0.85);
+    background: var(--header-bg);
     backdrop-filter: saturate(180%) blur(20px);
     border-bottom: 1px solid var(--border);
     padding: 12px 24px;
@@ -31,14 +77,14 @@
   }
   header h1 { font-size: 17px; font-weight: 600; margin-right: auto; }
   .segmented {
-    display: inline-flex; background: #e8e8ed; border-radius: 8px; padding: 2px;
+    display: inline-flex; background: var(--fill-1); border-radius: var(--radius-sm); padding: 2px;
   }
   .segmented button {
     border: none; background: transparent; padding: 6px 16px;
     font-size: 13px; color: var(--text-2); border-radius: 7px; cursor: pointer;
     font-family: inherit;
   }
-  .segmented button.active { background: #fff; color: var(--text); font-weight: 600; box-shadow: 0 1px 3px rgba(0,0,0,0.12); }
+  .segmented button.active { background: var(--seg-thumb); color: var(--text); font-weight: 600; box-shadow: var(--shadow-1); }
   main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
   .panel {
     background: var(--card); border-radius: var(--radius);
@@ -55,11 +101,11 @@
   .label { font-size: 12px; color: var(--text-2); margin-right: -2px; }
   button.primary {
     font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
-    background: var(--accent); border: none; border-radius: 8px;
+    background: var(--accent-solid); border: none; border-radius: var(--radius-sm);
     padding: 8px 18px; cursor: pointer;
   }
-  button.primary:hover { background: #0077ed; }
-  button.primary:disabled { background: #c7c7cc; cursor: default; }
+  button.primary:hover { background: var(--accent-solid-hover); }
+  button.primary:disabled { background: var(--disabled-bg); cursor: default; }
   button.ghost {
     font-family: inherit; font-size: 13px; color: var(--text);
     background: #fff; border: 1px solid var(--border); border-radius: 8px;
@@ -88,7 +134,7 @@
   .note .content { font-size: 14px; line-height: 1.5; flex: 1; }
   .note .who { font-size: 12px; color: var(--text-2); min-width: 40px; text-align: right; }
   .note .del { font-size: 12px; color: #c7c7cc; background: none; border: none; cursor: pointer; font-family: inherit; }
-  .note .del:hover { color: #ff3b30; }
+  .note .del:hover { color: var(--danger); }
   .memory { font-size: 13px; line-height: 1.6; padding: 8px 0; border-top: 1px solid var(--border); }
   .memory:first-child { border-top: none; }
   .memory .k { color: var(--text-2); }
@@ -105,8 +151,8 @@
   .msg.assistant { justify-content: flex-start; }
   .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
   .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
-  .msg.assistant .bubble { background: #f0f0f2; color: var(--text); border-bottom-left-radius: 4px; }
-  .bubble .degraded { font-size: 12px; color: #b2501a; margin-top: 6px; }
+  .msg.assistant .bubble { background: var(--bubble); color: var(--text); border-bottom-left-radius: 4px; }
+  .bubble .degraded { font-size: 12px; color: var(--warn); margin-top: 6px; }
   .chat-foot { display: flex; gap: 8px; margin-top: 12px; }
   .chat-foot input { flex: 1; }
   details.sources { margin-top: 8px; font-size: 12px; }
@@ -115,7 +161,7 @@
   details.sources .src-type { color: var(--accent); font-weight: 600; }
   .note-card {
     margin-top: 8px; border: 1px solid var(--border); border-radius: 10px;
-    padding: 8px 12px; font-size: 12px; background: #fbfbfd;
+    padding: 8px 12px; font-size: 12px; background: var(--card-soft);
   }
   .note-card .nc-head { color: var(--text-2); margin-bottom: 4px; }
   .note-card .nc-content { font-size: 13px; line-height: 1.5; }
@@ -130,7 +176,7 @@
   .g-steps .on { color: var(--accent); font-weight: 600; }
   .g-steps .done { color: var(--text-2); }
   .g-body { margin-top: 10px; font-size: 15px; line-height: 1.7; white-space: pre-wrap; }
-  .g-draft { color: #8e8e93; border: 1px dashed #d1d1d6; border-radius: 10px; padding: 10px 14px; background: #fbfbfd; }
+  .g-draft { color: var(--text-2); border: 1px dashed var(--border); border-radius: 10px; padding: 10px 14px; background: var(--card-soft); }
   .g-draft .g-tag { display: block; font-size: 12px; font-weight: 600; color: #6e6e73; margin-bottom: 4px; white-space: normal; }
   .g-draft .g-cursor::after { content: "▍"; animation: g-blink 1s steps(1) infinite; color: var(--accent); }
   @keyframes g-blink { 50% { opacity: 0; } }
@@ -140,11 +186,33 @@
   .g-alert.warn { background: #fff8e6; color: #5c3b00; }
   .g-code { font-size: 12px; color: var(--text-2); margin-top: 6px; }
 
+
+  /* ---- 成绩数字主角（从 master 移植：metricGrid）---- */
+  .hero { margin-bottom: 4px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 12px; }
+  @media (max-width: 720px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+  .metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .metric .v {
+    font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric .v .u { font-size: 12px; font-weight: 500; color: var(--text-2); margin-left: 1px; }
+  .metric .l { font-size: 12px; color: var(--text-2); }
+  .hero-foot { margin-top: 12px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+  .hero-empty { padding: 20px 0 6px; font-size: 14px; color: var(--text-2); }
+
   .rh-range { display: block; margin-top: 4px; font-size: 12px; color: var(--muted, #6b7280); font-weight: 400; }
-  .advice { background: #ecfdf5; border: 1px solid #6ee7b7; border-radius: 8px; padding: 12px 14px; margin: 10px 0; }
-  .advice h3 { margin: 0 0 8px; font-size: 14px; color: #065f46; }
-  .advice ul { margin: 0; padding-left: 18px; }
-  .advice li { margin: 4px 0; font-size: 13px; line-height: 1.45; color: #064e3b; }
+  .advice {
+    margin: 10px 0; padding: 14px 16px; border-radius: 12px;
+    background: var(--accent-soft); border: 1px solid var(--accent-line);
+  }
+  .advice h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
+  .advice ul { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  .advice li { margin: 0; padding-left: 14px; position: relative; font-size: 14px; line-height: 1.6; color: var(--text); }
+  .advice li::before {
+    content: ''; position: absolute; left: 2px; top: .6em;
+    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+  }
   .meta-line { display: flex; gap: 8px; font-size: 12px; color: #6b7280; margin: 2px 0; }
   .meta-line .mk { min-width: 64px; color: #9ca3af; }
   .anchor-setup { background: #fff7ed; border: 1px solid #fdba74; border-radius: 8px; padding: 12px; margin: 10px 0; }
@@ -187,6 +255,8 @@
 
   <div id="reportPanel" class="panel" style="display:none">
     <div class="section-title" id="reportHead"></div>
+    <div id="reportHero"></div>
+    <div id="reportAdvice"></div>
     <div id="reportBody"></div>
     <div class="meta" id="reportMeta"></div>
   </div>
@@ -565,6 +635,45 @@ function windowRange(r) {
   return (sd === ed ? sd : sd + ' ~ ' + ed) + '（北京时间）';
 }
 
+// 从「含脱靶均环 4.23，有效箭均环 7.89，脱靶率 46.4%…（n=233）」类固定文案提取指标；
+// 识别失败返回 null → 退回整段正文（不冒险渲染）。
+function parseMetrics(line) {
+  const nMatch = line.match(/[（(]\s*n\s*=\s*(\d+)\s*[）)]/);
+  const body = line.replace(/[（(]\s*n\s*=\s*\d+\s*[）)]/, '').trim();
+  const parts = body.split(/[，,]/).map((s) => s.trim()).filter(Boolean);
+  if (parts.length < 2) return null;
+  const items = [];
+  for (const p of parts) {
+    const mm = p.match(/^(.+?)\s*([\d.]+)\s*(%?)$/);
+    if (!mm) return null;
+    items.push({ label: mm[1].trim(), value: mm[2], unit: mm[3] || '' });
+  }
+  return { items, n: nMatch ? nMatch[1] : null };
+}
+
+function metricGrid(parsed) {
+  const card = document.createElement('div');
+  card.className = 'hero';
+  const grid = document.createElement('div');
+  grid.className = 'metric-grid';
+  parsed.items.forEach((it) => {
+    const el = document.createElement('div');
+    el.className = 'metric';
+    el.innerHTML = '<div class="v">' + esc(it.value) +
+      (it.unit ? '<span class="u">' + esc(it.unit) + '</span>' : '') + '</div>' +
+      '<div class="l">' + esc(it.label) + '</div>';
+    grid.appendChild(el);
+  });
+  card.appendChild(grid);
+  if (parsed.n) {
+    const foot = document.createElement('div');
+    foot.className = 'hero-foot';
+    foot.textContent = '样本 ' + parsed.n + ' 箭';
+    card.appendChild(foot);
+  }
+  return card;
+}
+
 function adviceCard(suggestions) {
   const card = document.createElement('div');
   card.className = 'advice';
@@ -622,14 +731,36 @@ function renderReport(r) {
     (view === 'coach' ? ' · 教练视角' : ' · 运动员视角') +
     (rng ? '<span class="rh-range">' + esc(rng) + '</span>' : '');
 
-  const body = $('reportBody');
-  body.innerHTML = '';
-  // 建议高亮卡（阶段 1）
-  if (r.suggestions && r.suggestions.length) body.appendChild(adviceCard(r.suggestions));
   const byKey = {};
   (r.sections || []).forEach((s) => { byKey[s.key] = s; });
-  const order = ['window_score', 'level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary', 'notes'];
-  const seen = {};
+
+  // ① 成绩：可解析则做 metricGrid 数字块；否则空态/原文
+  const hero = $('reportHero');
+  hero.innerHTML = '';
+  const ws = byKey['window_score'];
+  if (ws) {
+    const line = (ws.content || [])[0] || '';
+    const parsed = parseMetrics(line);
+    if (parsed) {
+      hero.appendChild(metricGrid(parsed));
+    } else {
+      const el = document.createElement('div');
+      el.className = 'hero-empty';
+      el.textContent = line || '本窗口无箭';
+      hero.appendChild(el);
+    }
+  }
+
+  // ② 建议：紧接数字
+  const advBox = $('reportAdvice');
+  advBox.innerHTML = '';
+  if (r.suggestions && r.suggestions.length) advBox.appendChild(adviceCard(r.suggestions));
+
+  // ③ 支撑段（window_score 已在 hero，不再重复）
+  const body = $('reportBody');
+  body.innerHTML = '';
+  const order = ['level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary', 'notes'];
+  const seen = { window_score: true };
   order.forEach((k) => {
     const s = byKey[k];
     if (!s) return;
