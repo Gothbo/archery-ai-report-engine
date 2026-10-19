@@ -5,15 +5,18 @@
 - 关：降级模板（P1 链路零改动验证点）
 - 开：LLM 解读骨架 → G1/G2/G3 护栏（失败回退降级模板）
 返回：answer + sources 溯源 + context_version + suggested_note（只读展示，不落库 D4）。
+PR #3：调 LLM 前先拿单飞锁（与流式训练指导共用）；引擎忙 → 409 COACH-BUSY（非流式，不可中途取消）。
 """
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
+from app.api.llm import busy_response
 from app.config import get_config
 from app.llm.client import LLMError, get_llm_client
 from app.llm.guardrails import check_guards
+from app.llm.tasks import LLMBusy, get_registry
 from app.rag.context import assemble_context
 from app.store.database import get_database
 
@@ -44,11 +47,20 @@ def ask(athlete_id: str, body: AskRequest) -> dict:
     if not cfg.llm.enabled:
         return _answer(ctx, DEGRADED_OFF, degraded=True, reason="llm.enabled=false")
 
+    registry = get_registry()
+    try:
+        task = registry.try_acquire(kind="ask", view=body.view,
+                                    deadline_sec=cfg.llm.timeout_sec * (cfg.llm.max_retries + 1),
+                                    tz=cfg.timezone, cancellable=False)
+    except LLMBusy as exc:
+        return busy_response(exc.task)
     try:
         client = get_llm_client(cfg.llm)
         raw = client.chat(_messages(ctx, cfg))
     except LLMError as exc:
         return _answer(ctx, DEGRADED_LLM_FAIL, degraded=True, reason=str(exc))
+    finally:
+        registry.release(task)
 
     ok, reason = check_guards(raw, ctx, cfg.forbidden_phrases)
     if not ok:

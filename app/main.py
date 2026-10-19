@@ -18,7 +18,9 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.ask import router as ask_router
 from app.api.athletes import router as athletes_router
+from app.api.guidance import router as guidance_router
 from app.api.ingest import router as ingest_router
+from app.api.llm import router as llm_router
 from app.api.reports import router as reports_router
 from app.api.sessions import notes_router, sessions_router
 from app.config import get_config
@@ -51,6 +53,8 @@ app.include_router(athletes_router)
 app.include_router(sessions_router)
 app.include_router(notes_router)
 app.include_router(ask_router)
+app.include_router(guidance_router)
+app.include_router(llm_router)
 
 _SWAGGER_STATIC = os.path.join(os.path.dirname(swagger_ui.__file__), "static")
 app.mount("/swagger-static", StaticFiles(directory=_SWAGGER_STATIC), name="swagger-static")

@@ -26,12 +26,20 @@ REM  no auth and serves athlete data). Only change this behind an auth proxy.
 set "ENGINE_HOST=127.0.0.1"
 
 REM ---- 2) local model server, optional --------------------------------
-REM  Started only when the model file exists and the port is still free.
-REM  Leave LLM_PORT free / keep an external server (llama.cpp Vulkan build,
-REM  Ollama) on that port and this step simply reuses it.
+REM  Native llama.cpp "llama-server" (NOT llama-cpp-python): it stops a
+REM  generation as soon as the engine closes the connection, which the AI
+REM  guidance "cancel" button relies on.
+REM  Started only when the model file exists, llama-server is found and the
+REM  port is still free. Unzip the llama.cpp Windows release (Vulkan build,
+REM  llama-bNNNN-bin-win-vulkan-x64.zip) into llama.cpp\ or put it on PATH.
+REM  If another server already listens on LLM_PORT, it is simply reused.
+REM  -np 1 : one slot (the engine runs one LLM task at a time)
+REM  -c    : context for guidance prompt + answer
 set "LLM_PORT=8090"
 set "LLM_MODEL=models\qwen2.5-1.5b-instruct-q4_k_m.gguf"
 set "LLM_ALIAS=qwen2.5-1.5b-instruct-q4_k_m"
+set "LLM_CTX=4096"
+set "LLAMA_SERVER=llama.cpp\llama-server.exe"
 
 REM ---- 3) virtualenv --------------------------------------------------
 if not exist ".venv\Scripts\python.exe" (
@@ -55,6 +63,9 @@ if errorlevel 1 (
 )
 
 REM ---- 5) local model server ------------------------------------------
+set "LLM_EXE="
+if exist "%LLAMA_SERVER%" set "LLM_EXE=%LLAMA_SERVER%"
+if not defined LLM_EXE ( where llama-server >nul 2>nul && set "LLM_EXE=llama-server" )
 if not exist "%LLM_MODEL%" (
     echo [3/4] Model file missing - skipping local model server.
     echo        Expected: %LLM_MODEL%
@@ -62,9 +73,12 @@ if not exist "%LLM_MODEL%" (
     powershell -NoProfile -Command "exit (Get-NetTCPConnection -State Listen -LocalPort %LLM_PORT% -ErrorAction SilentlyContinue | Measure-Object).Count"
     if errorlevel 1 (
         echo [3/4] Port %LLM_PORT% already serving - reusing it.
+    ) else if not defined LLM_EXE (
+        echo [3/4] llama-server not found - skipping local model server.
+        echo        Expected: %LLAMA_SERVER% or llama-server on PATH
     ) else (
-        echo [3/4] Starting local model server on :%LLM_PORT% - first load takes about 30s ...
-        start "llm-server :%LLM_PORT%" "%PY%" -m llama_cpp.server --model "%LLM_MODEL%" --model_alias "%LLM_ALIAS%" --host 127.0.0.1 --port %LLM_PORT% --n_ctx 2048
+        echo [3/4] Starting llama-server on :%LLM_PORT% - first load takes about 30s ...
+        start "llm-server :%LLM_PORT%" "%LLM_EXE%" -m "%LLM_MODEL%" --alias "%LLM_ALIAS%" --host 127.0.0.1 --port %LLM_PORT% -c %LLM_CTX% -np 1
     )
 )
 

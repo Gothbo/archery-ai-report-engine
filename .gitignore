@@ -11,3 +11,4 @@ logs/
 *.egg-info/
 models/
 athlete_id.key
+llama.cpp/

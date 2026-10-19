@@ -81,6 +81,12 @@ class LLMConfig(BaseModel):
     max_retries: int = Field(default=1, ge=0)
     temperature: float = Field(default=0.2, ge=0.0, le=2.0)
     num_ctx: int = Field(default=2048, gt=0)
+    # ---- 流式 AI 训练指导（PR #3）：只用于流式路径；非流式 /ask 仍用 timeout_sec + max_retries ----
+    connect_timeout_sec: float = Field(default=5.0, gt=0)      # 连不上模型服务 → COACH-OFFLINE
+    first_token_timeout_sec: float = Field(default=90, gt=0)    # 读取数据（引擎组装 + 模型 prefill）上限
+    idle_timeout_sec: float = Field(default=30, gt=0)          # 两个 token 之间的最长空闲
+    total_timeout_sec: float = Field(default=180, gt=0)        # 单次指导总截止（不自动重试）
+    guidance_max_len: int = Field(default=1000, gt=0)          # 指导全文 G3 上限（字）；超出即提前停上游
 
     @field_validator("provider")
     @classmethod
