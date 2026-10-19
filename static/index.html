@@ -6,31 +6,42 @@
 <title>射箭 AI 训练报告引擎</title>
 <style>
   :root {
-    --bg: #f5f5f7;
+    /* CUX V1 tokens（六六）：正文黑 / 品牌蓝 / 页底；审计用 --accent 取更深品牌字色 */
+    --bg: #EDF2F7;
+    --page: #EDF2F7;
     --card: #ffffff;
-    --header-bg: rgba(255,255,255,0.85);
-    --text: #1d1d1f;
-    --text-2: #6e6e73;
-    --accent: #0068d6;
-    --accent-solid: #0068d6;
-    --accent-solid-hover: #0071e3;
-    --accent-soft: rgba(0,113,227,.06);
-    --accent-line: rgba(0,113,227,.16);
-    --accent-ring: rgba(0,113,227,.22);
-    --border: #e5e5ea;
-    --fill-1: #e8e8ed;
-    --fill-2: #c7c7cc;
-    --disabled-bg: #8e8e93;
+    --header-bg: rgba(255,255,255,0.92);
+    --text: #000000;
+    --text-2: #5C6B82;
+    --brand: #2098D8;
+    --brand-600: #1A84C2;
+    --brand-700: #136FA9;
+    --brand-100: #E3F2FB;
+    --brand-050: #F2F8FD;
+    --accent: #136FA9;
+    --accent-solid: #136FA9;
+    --accent-solid-hover: #0E6A9E;
+    --accent-soft: #E3F2FB;
+    --accent-line: #BFDFF2;
+    --accent-ring: rgba(32,152,216,.28);
+    --border: #E3E9F1;
+    --row: #EEF2F7;
+    --fill-1: #F6F9FC;
+    --fill-2: #C9D3E0;
+    --disabled-bg: #8593A8;
     --seg-thumb: #ffffff;
-    --bubble: #f0f0f2;
-    --card-soft: #fbfbfd;
-    --danger: #ff3b30;
-    --warn: #b2501a;
-    --radius: 14px;
+    --bubble: #F6F9FC;
+    --card-soft: #F6F9FC;
+    --surface-2: #F6F9FC;
+    --danger: #E5484D;
+    --warn: #B2501A;
+    --ok: #22A55F;
+    --mute: #8593A8;
+    --radius: 16px;
     --radius-sm: 8px;
-    --radius-xs: 6px;
-    --shadow-1: 0 1px 2px rgba(0,0,0,.04);
-    --shadow-2: 0 8px 24px rgba(0,0,0,.08);
+    --radius-xs: 8px;
+    --shadow-1: 0 1px 2px rgba(16, 35, 78, 0.05);
+    --shadow-2: 0 8px 24px rgba(16, 35, 78, 0.08);
   }
   /* ---- 暗色模式：仅覆盖 token，组件规则不动 ---- */
   @media (prefers-color-scheme: dark) {
@@ -62,7 +73,7 @@
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    font-family: Inter, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", system-ui, sans-serif;
     background: var(--bg);
     color: var(--text);
     -webkit-font-smoothing: antialiased;
@@ -75,7 +86,7 @@
     padding: 12px 24px;
     display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
   }
-  header h1 { font-size: 17px; font-weight: 600; margin-right: auto; }
+  header h1 { font-size: 17px; font-weight: 700; margin-right: auto; letter-spacing: -0.01em; }
   .segmented {
     display: inline-flex; background: var(--fill-1); border-radius: var(--radius-sm); padding: 2px;
   }
@@ -84,45 +95,51 @@
     font-size: 13px; color: var(--text-2); border-radius: 7px; cursor: pointer;
     font-family: inherit;
   }
-  .segmented button.active { background: var(--seg-thumb); color: var(--text); font-weight: 600; box-shadow: var(--shadow-1); }
+  .segmented button.active { background: var(--seg-thumb); color: var(--text); font-weight: 700; box-shadow: var(--shadow-1); }
   main { max-width: 860px; margin: 0 auto; padding: 24px 16px 60px; }
   .panel {
     background: var(--card); border-radius: var(--radius);
+    border: 1px solid var(--border);
     padding: 18px 20px; margin-bottom: 16px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+    box-shadow: var(--shadow-1);
   }
   .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
   select, input, textarea {
     font-family: inherit; font-size: 14px; color: var(--text);
-    background: #fff; border: 1px solid var(--border); border-radius: 8px;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
     padding: 7px 10px; outline: none;
+    transition: border-color 150ms ease-out;
   }
-  select:focus, input:focus, textarea:focus { border-color: var(--accent); }
+  select:focus, input:focus, textarea:focus { border-color: var(--brand); }
   .label { font-size: 12px; color: var(--text-2); margin-right: -2px; }
   button.primary {
-    font-family: inherit; font-size: 14px; font-weight: 500; color: #fff;
+    font-family: inherit; font-size: 14px; font-weight: 700; color: #fff;
     background: var(--accent-solid); border: none; border-radius: var(--radius-sm);
     padding: 8px 18px; cursor: pointer;
+    transition: background 150ms ease-out, transform 80ms ease-out;
   }
   button.primary:hover { background: var(--accent-solid-hover); }
+  button.primary:active { transform: scale(0.98); }
   button.primary:disabled { background: var(--disabled-bg); cursor: default; }
   button.ghost {
     font-family: inherit; font-size: 13px; color: var(--text);
     background: #fff; border: 1px solid var(--border); border-radius: 8px;
     padding: 6px 12px; cursor: pointer;
   }
-  button.ghost:hover { border-color: var(--accent); color: var(--accent); }
+  button.ghost:hover { border-color: var(--brand); background: var(--brand-050); }
   .granularity-bar { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
   .gran-btn {
-    font-family: inherit; font-size: 14px; font-weight: 500;
-    background: #fff; border: 1px solid var(--border); border-radius: 8px;
-    padding: 8px 20px; cursor: pointer; color: var(--text);
+    font-family: inherit; font-size: 13px; font-weight: 400;
+    background: var(--card); border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 16px; cursor: pointer; color: var(--text);
+    transition: border-color 150ms ease-out, background 150ms ease-out;
   }
-  .gran-btn:hover { border-color: var(--accent); color: var(--accent); }
-  .gran-btn:disabled { color: #c7c7cc; border-color: #ececf0; cursor: default; }
-  .section-title { font-size: 15px; font-weight: 600; margin-bottom: 10px; }
+  .gran-btn:hover { border-color: var(--brand); background: var(--brand-050); }
+  .gran-btn.active { border-color: var(--brand); background: var(--brand-100); font-weight: 700; }
+  .gran-btn:disabled { color: var(--mute); border-color: var(--row); cursor: default; }
+  .section-title { font-size: 16px; font-weight: 700; margin-bottom: 10px; }
   .report-card { margin-bottom: 12px; }
-  .report-card h3 { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+  .report-card h3 { font-size: 13px; font-weight: 700; color: var(--text-2); margin-bottom: 6px; }
   .report-card p { font-size: 15px; line-height: 1.6; }
   .report-card p.notice {
     color: var(--text-2); font-size: 13px; line-height: 1.6;
@@ -135,19 +152,27 @@
     font-variant-numeric: tabular-nums; margin-top: 4px;
   }
   .report-card .wb-table th, .report-card .wb-table td {
-    text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border);
+    text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--row);
   }
-  .report-card .wb-table th { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
+  .report-card .wb-table th { font-size: 12px; font-weight: 700; color: var(--text-2); letter-spacing: .02em; }
   .report-card .wb-table th.num, .report-card .wb-table td.num { text-align: right; }
-  .report-card .wb-table td.num { color: var(--text); font-weight: 500; }
+  .report-card .wb-table td.num { color: var(--text); font-weight: 700; }
+  .report-card .wb-table tr:hover td { background: var(--brand-050); }
+  .report-card .wb-table tr.dim td { opacity: 0.5; }
   .report-card .wb-table tbody tr:last-child td { border-bottom: none; }
   .meta { font-size: 12px; color: var(--text-2); margin-top: 12px; line-height: 1.7; }
   .empty {
     text-align: center; color: var(--text-2); font-size: 14px; padding: 48px 0;
   }
+  .empty-report { text-align: left; padding: 8px 4px 4px; }
+  .empty-report h2 { font-size: 18px; font-weight: 700; margin-bottom: 8px; color: var(--text); }
+  .empty-report p { font-size: 14px; line-height: 1.6; color: var(--text-2); margin-bottom: 12px; }
+  .empty-hints { list-style: none; display: flex; flex-direction: column; gap: 6px; }
+  .empty-hints li { font-size: 13px; color: var(--text); padding: 8px 12px; background: var(--card-soft); border: 1px solid var(--border); border-radius: 8px; }
+  .empty-hints strong { font-weight: 700; color: var(--brand-700); margin-right: 4px; }
   .note { border-top: 1px solid var(--border); padding: 10px 0; display: flex; gap: 12px; align-items: baseline; }
   .note:first-child { border-top: none; }
-  .note .type { font-size: 12px; color: var(--accent); font-weight: 600; min-width: 64px; }
+  .note .type { font-size: 12px; color: var(--brand-700); font-weight: 700; min-width: 64px; }
   .note .content { font-size: 14px; line-height: 1.5; flex: 1; }
   .note .who { font-size: 12px; color: var(--text-2); min-width: 40px; text-align: right; }
   .note .del { font-size: 12px; color: #c7c7cc; background: none; border: none; cursor: pointer; font-family: inherit; }
@@ -167,7 +192,7 @@
   .msg.user { justify-content: flex-end; }
   .msg.assistant { justify-content: flex-start; }
   .bubble { max-width: 78%; padding: 10px 14px; border-radius: 14px; font-size: 14px; line-height: 1.6; }
-  .msg.user .bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.user .bubble { background: var(--brand); color: #fff; border-bottom-right-radius: 4px; }
   .msg.assistant .bubble { background: var(--bubble); color: var(--text); border-bottom-left-radius: 4px; }
   .bubble .degraded { font-size: 12px; color: var(--warn); margin-top: 6px; }
   .chat-foot { display: flex; gap: 8px; margin-top: 12px; }
@@ -184,11 +209,11 @@
   .note-card .nc-content { font-size: 13px; line-height: 1.5; }
   .note-card .nc-badge { float: right; color: var(--accent); font-size: 11px; }
   /* ---- PR #3 AI 训练指导：状态徽章 / 阶段进度 / 灰色草稿 / 正文（对齐 V17.2 §16.4 状态表）---- */
-  .g-badge { font-size: 12px; font-weight: 600; padding: 2px 10px; border-radius: 999px; background: #ececf0; color: var(--text-2); }
-  .g-badge.ok { background: #e3f5e8; color: #1e7a3c; }
-  .g-badge.run { background: #e5f0fd; color: #0058b0; }
-  .g-badge.err { background: #fde8e7; color: #b3261e; }
-  .g-badge.warn { background: #fff3d6; color: #7a4f00; }
+  .g-badge { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 999px; background: var(--card-soft); border: 1px solid var(--border); color: var(--text); }
+  .g-badge.ok { background: #E8F7EE; border-color: rgba(34,165,95,0.35); color: var(--text); }
+  .g-badge.run { background: var(--brand-100); border-color: rgba(32,152,216,0.35); color: var(--text); }
+  .g-badge.err { background: #FDECEC; border-color: rgba(229,72,77,0.35); color: var(--text); }
+  .g-badge.warn { background: #FFF4E0; border-color: rgba(240,160,32,0.4); color: var(--text); }
   .g-steps { font-size: 13px; color: #c7c7cc; margin-top: 10px; }
   .g-steps .on { color: var(--accent); font-weight: 600; }
   .g-steps .done { color: var(--text-2); }
@@ -204,31 +229,36 @@
   .g-code { font-size: 12px; color: var(--text-2); margin-top: 6px; }
 
 
-  /* ---- 成绩数字主角（从 master 移植：metricGrid）---- */
+  /* ---- MetricGrid（六六 V1：读 metrics.*）---- */
   .hero { margin-bottom: 4px; }
-  .metric-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px 12px; }
-  @media (max-width: 720px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
-  .metric { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-  .metric .v {
-    font-size: 22px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.15;
-    font-variant-numeric: tabular-nums;
+  .hero .card-sub { font-size: 13px; font-weight: 400; color: var(--text-2); margin: -4px 0 12px; }
+  .metric-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  @media (max-width: 800px) { .metric-grid { grid-template-columns: repeat(2, 1fr); } }
+  .metric {
+    display: flex; flex-direction: column; gap: 4px; min-width: 0;
+    background: var(--card-soft); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 12px 14px;
   }
-  .metric .v .u { font-size: 12px; font-weight: 500; color: var(--text-2); margin-left: 1px; }
-  .metric .l { font-size: 12px; color: var(--text-2); }
+  .metric .v {
+    font-size: 36px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.05;
+    font-variant-numeric: tabular-nums; color: var(--text);
+  }
+  .metric .v .u { font-size: 14px; font-weight: 700; color: var(--text-2); margin-left: 2px; }
+  .metric .l { font-size: 13px; font-weight: 400; color: var(--text-2); }
   .hero-foot { margin-top: 12px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
   .hero-empty { padding: 20px 0 6px; font-size: 14px; color: var(--text-2); }
 
   .rh-range { display: block; margin-top: 4px; font-size: 12px; color: var(--muted, #6b7280); font-weight: 400; }
   .advice {
-    margin: 10px 0; padding: 14px 16px; border-radius: 12px;
-    background: var(--accent-soft); border: 1px solid var(--accent-line);
+    margin: 10px 0; padding: 16px 18px; border-radius: var(--radius);
+    background: var(--brand-050); border: 1px solid var(--brand-100);
   }
-  .advice h3 { margin: 0 0 8px; font-size: 13px; font-weight: 600; color: var(--accent); }
+  .advice h3 { margin: 0 0 10px; font-size: 14px; font-weight: 700; color: var(--brand-700); }
   .advice ul { margin: 0; padding-left: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
-  .advice li { margin: 0; padding-left: 14px; position: relative; font-size: 14px; line-height: 1.6; color: var(--text); }
+  .advice li { margin: 0; padding-left: 16px; position: relative; font-size: 14px; line-height: 1.6; color: var(--text); }
   .advice li::before {
-    content: ''; position: absolute; left: 2px; top: .6em;
-    width: 5px; height: 5px; border-radius: 50%; background: var(--accent);
+    content: ''; position: absolute; left: 2px; top: .65em;
+    width: 6px; height: 6px; border-radius: 50%; background: var(--brand);
   }
   .meta-line { display: flex; gap: 8px; font-size: 12px; color: #6b7280; margin: 2px 0; }
   .meta-line .mk { min-width: 64px; color: #9ca3af; }
@@ -236,6 +266,115 @@
   .anchor-setup h3 { margin: 0 0 6px; font-size: 14px; color: #9a3412; }
   .as-row { display: flex; gap: 8px; margin-top: 8px; align-items: center; }
   .as-row select { flex: 1; }
+
+  /* ---- 六六 V1：水平对比 / 环比 / 风档 gap / 证据 / 规则骨架 ---- */
+  .verdict-table { width: 100%; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+  .verdict-table th {
+    text-align: left; font-size: 12px; font-weight: 700; color: var(--text-2);
+    padding: 8px 10px; border-bottom: 1px solid var(--border);
+  }
+  .verdict-table td {
+    padding: 12px 10px; border-bottom: 1px solid var(--row); vertical-align: middle; color: var(--text);
+  }
+  .verdict-table tr:last-child td { border-bottom: none; }
+  .verdict-table tr:hover td { background: var(--brand-050); }
+  .verdict-table .num { font-weight: 700; font-size: 15px; }
+  .delta-cell { display: flex; align-items: center; gap: 6px; font-weight: 700; }
+  .arrow {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 999px; font-size: 12px; font-weight: 700;
+  }
+  .arrow.up, .arrow.down { background: #E8F7EE; }
+  .arrow.flat, .arrow.na { background: #EEF1F5; }
+  .chip {
+    display: inline-block; font-size: 12px; font-weight: 700;
+    padding: 3px 10px; border-radius: 999px; color: var(--text);
+  }
+  .chip.progress { background: #E8F7EE; box-shadow: inset 0 0 0 1px rgba(34,165,95,0.35); }
+  .chip.regress { background: #FFF4E0; box-shadow: inset 0 0 0 1px rgba(240,160,32,0.4); }
+  .chip.steady { background: #EEF1F5; box-shadow: inset 0 0 0 1px rgba(133,147,168,0.35); }
+  .chip.pending { background: #EEF1F5; box-shadow: inset 0 0 0 1px rgba(133,147,168,0.35); }
+  .reason { font-size: 12px; color: var(--text-2); margin-top: 4px; }
+
+  .compare-strip {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    background: var(--brand-050); border: 1px solid var(--brand-100);
+    border-radius: var(--radius-sm); padding: 14px 18px;
+  }
+  .compare-strip .big {
+    font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: -0.02em;
+  }
+  .compare-strip .desc { font-size: 14px; }
+  .compare-strip .desc strong { font-weight: 700; }
+
+  .gap-strip {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    background: var(--card-soft); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 10px 14px; margin-bottom: 14px; font-size: 13px;
+  }
+  .gap-strip .tag {
+    font-size: 12px; font-weight: 700; padding: 2px 8px; border-radius: 999px; color: var(--text);
+    background: #FFF4E0; box-shadow: inset 0 0 0 1px rgba(240,160,32,0.35);
+  }
+  .gap-strip .tag.ok {
+    background: #E8F7EE; box-shadow: inset 0 0 0 1px rgba(34,165,95,0.35);
+  }
+
+  details.evidence {
+    border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--card); box-shadow: var(--shadow-1); margin: 12px 0 4px;
+  }
+  details.evidence > summary {
+    cursor: pointer; user-select: none; list-style: none;
+    padding: 14px 18px; font-size: 15px; font-weight: 700;
+    display: flex; align-items: center; gap: 10px;
+  }
+  details.evidence > summary::-webkit-details-marker { display: none; }
+  details.evidence > summary::after {
+    content: '展开'; margin-left: auto; font-size: 12px; font-weight: 400; color: var(--text-2);
+  }
+  details.evidence[open] > summary::after { content: '收起'; }
+  details.evidence > summary:hover { background: var(--brand-050); border-radius: var(--radius); }
+  .ev-body { padding: 0 18px 16px; }
+  .ev-table { width: 100%; border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+  .ev-table th, .ev-table td { padding: 8px 10px; border-bottom: 1px solid var(--row); text-align: left; }
+  .ev-table th { font-size: 12px; font-weight: 700; color: var(--text-2); }
+  .ev-table td.num { text-align: right; font-weight: 700; }
+  .ev-table th.num { text-align: right; }
+  .ev-meta { margin-top: 12px; font-size: 13px; line-height: 1.7; color: var(--text-2); }
+  .ev-meta .k { display: inline-block; min-width: 96px; color: var(--text-2); opacity: 0.85; }
+  .ev-warn {
+    margin-top: 10px; padding: 8px 12px; border-radius: 8px; font-size: 13px; color: var(--text);
+    background: #FFF4E0; box-shadow: inset 0 0 0 1px rgba(240,160,32,0.35);
+  }
+
+  .rules-box {
+    margin-top: 12px; background: var(--card-soft); border: 1px dashed var(--border);
+    border-radius: var(--radius-sm); padding: 14px 16px;
+  }
+  .rules-box .rh {
+    font-size: 13px; font-weight: 700; margin-bottom: 10px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .rules-box .rh .pill {
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 999px; color: var(--text);
+    background: #EEF1F5; box-shadow: inset 0 0 0 1px rgba(133,147,168,0.35);
+  }
+  .rules-box ul { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 0; padding: 0; }
+  .rules-box li {
+    font-size: 13px; line-height: 1.55; padding: 8px 10px; color: var(--text);
+    background: var(--card); border: 1px solid var(--border); border-radius: var(--radius-sm); opacity: 0.75;
+  }
+  .rules-box li em { font-style: normal; font-weight: 700; font-size: 11px; color: var(--text-2); margin-left: 6px; }
+  .basis-skel { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .skel {
+    height: 10px; border-radius: 4px;
+    background: linear-gradient(90deg, var(--row), #e8edf3, var(--row));
+    background-size: 200% 100%; animation: sk 1.2s ease-in-out infinite;
+  }
+  @keyframes sk { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+  .block-title { font-size: 15px; font-weight: 700; margin: 4px 0 10px; }
+  .block-title .sub { font-size: 12px; font-weight: 400; color: var(--text-2); margin-left: 8px; }
 </style>
 </head>
 <body>
@@ -273,11 +412,19 @@
   <div id="reportPanel" class="panel" style="display:none">
     <div class="section-title" id="reportHead"></div>
     <div id="reportHero"></div>
-    <div id="reportAdvice"></div>
     <div id="reportBody"></div>
+    <div id="reportAdvice"></div>
     <div class="meta" id="reportMeta"></div>
   </div>
-  <div id="reportEmpty" class="empty">选择运动员，点击上方按钮生成报告</div>
+  <div id="reportEmpty" class="panel empty-report">
+    <h2>选择运动员并生成报告</h2>
+    <p>选定运动员与粒度后，点击上方日/周/月等按钮生成报告。满态将展示成绩 KPI、水平对比、环比与风档等结构化区块。</p>
+    <ul class="empty-hints">
+      <li><strong>1.</strong> 在上方选择运动员（如张明）</li>
+      <li><strong>2.</strong> 选择日 / 周 / 月等粒度；窗口可留空取当前</li>
+      <li><strong>3.</strong> 点击粒度按钮生成报告</li>
+    </ul>
+  </div>
 
   <!-- PR #3 AI 训练指导：一次生成绑定「当前报告 + 视角」；换报告 / 切视角 / 换运动员 = 取消并丢弃 -->
   <div id="guidancePanel" class="panel" style="display:none">
@@ -286,10 +433,11 @@
       <span class="g-badge" id="gBadge">未生成</span>
       <span style="margin-left:auto" class="row">
         <button class="ghost" id="gCancelBtn" style="display:none">取消</button>
-        <button class="primary" id="gGenBtn">生成训练指导</button>
+        <button class="primary" id="gGenBtn">生成AI指导</button>
       </span>
     </div>
     <div class="meta" id="gBasis" style="margin-top:6px"></div>
+    <div id="gRulesSkeleton"></div>
     <div class="g-steps" id="gSteps" style="display:none">
       <span id="gStep1">① 正在读取数据</span> · <span id="gStep2">② 正在撰写</span> · <span id="gStep3">③ 核对数据</span>
       <span id="gElapsed" style="margin-left:8px;color:var(--text-2)"></span>
@@ -638,7 +786,12 @@ function generate(g) {
 }
 
 document.querySelectorAll('.gran-btn').forEach((b) => {
-  b.onclick = () => { $('windowHint').textContent = ''; generate(b.dataset.g); };
+  b.onclick = () => {
+    document.querySelectorAll('.gran-btn').forEach((x) => x.classList.remove('active'));
+    b.classList.add('active');
+    $('windowHint').textContent = '';
+    generate(b.dataset.g);
+  };
 });
 
 function windowRange(r) {
@@ -652,8 +805,7 @@ function windowRange(r) {
   return (sd === ed ? sd : sd + ' ~ ' + ed) + '（北京时间）';
 }
 
-// 从「含脱靶均环 4.23，有效箭均环 7.89，脱靶率 46.4%…（n=233）」类固定文案提取指标；
-// 识别失败返回 null → 退回整段正文（不冒险渲染）。
+// ---- 六六 V1：结构化 metrics / conclusions（保留 prose 解析作回退）----
 function parseMetrics(line) {
   const nMatch = line.match(/[（(]\s*n\s*=\s*(\d+)\s*[）)]/);
   const body = line.replace(/[（(]\s*n\s*=\s*\d+\s*[）)]/, '').trim();
@@ -666,6 +818,33 @@ function parseMetrics(line) {
     items.push({ label: mm[1].trim(), value: mm[2], unit: mm[3] || '' });
   }
   return { items, n: nMatch ? nMatch[1] : null };
+}
+
+function fmtNum(v, digits) {
+  if (v == null || v === '' || Number.isNaN(Number(v))) return '—';
+  const n = Number(v);
+  return Number.isInteger(digits) ? n.toFixed(digits) : String(n);
+}
+
+function fmtSignedFixed(v, digits, unit) {
+  if (v == null || Number.isNaN(Number(v))) return '—';
+  const n = Number(v);
+  const core = (n > 0 ? '+' : (n < 0 ? '−' : '')) + Math.abs(n).toFixed(digits);
+  return core + (unit || '');
+}
+
+function fmtShanghai(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d)) return String(iso);
+  const parts = new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(d);
+  const get = (t) => (parts.find((p) => p.type === t) || {}).value || '';
+  return get('year') + '-' + get('month') + '-' + get('day') + ' ' +
+    get('hour') + ':' + get('minute') + ':' + get('second') + '（Asia/Shanghai）';
 }
 
 function metricGrid(parsed) {
@@ -691,41 +870,231 @@ function metricGrid(parsed) {
   return card;
 }
 
-/* 风档对照：把「…档：均环 X（n=Y）」解析成对齐小表；非该格式的行按普通/缺失样式呈现 */
+/** 优先读 r.metrics；缺失时回退 window_score 散文解析（不删旧路径） */
+function metricGridFromMetrics(m) {
+  if (!m || typeof m !== 'object') return null;
+  const items = [
+    { label: '均环', value: fmtNum(m.avg_score, 2), unit: '' },
+    { label: '有效均环', value: fmtNum(m.effective_avg_score, 2), unit: '' },
+    { label: '内十率', value: fmtNum(m.inner10_rate, 1), unit: '%' },
+    { label: '命中率', value: fmtNum(m.hit_rate, 1), unit: '%' },
+    { label: '散布', value: fmtNum(m.dispersion_mm, 1), unit: 'mm' },
+    { label: '撒放', value: fmtNum(m.mcr_t, 3), unit: 's' },
+    { label: '心率波动', value: fmtNum(m.hr_volatility, 1), unit: 'bpm' },
+    { label: 'n箭', value: m.n_shots != null ? String(m.n_shots) : '—', unit: '' },
+  ];
+  if (items.every((it) => it.value === '—')) return null;
+  const wrap = document.createElement('div');
+  wrap.className = 'hero';
+  wrap.innerHTML = '<div class="block-title">成绩<span class="sub">来自 metrics</span></div>';
+  const grid = metricGrid({ items, n: null });
+  wrap.appendChild(grid.querySelector('.metric-grid'));
+  return wrap;
+}
+
+/* 风档对照：优先 evidence.wind_band_avg；否则解析「…档：均环 X（n=Y）」 */
 const NOTICE_RE = /无风速数据|无心率数据|空窗口|不可用|未计入|数据存疑|暂无可|暂无|样本不足|样本偏少|无锚点|降级期/;
 const WB_RE = /^(.*?档)\s*[：:]\s*均环\s*([\d.]+)\s*[（(]\s*n\s*=\s*(\d+)\s*[）)]\s*$/;
-function windBandsCard(s) {
+const WIND_BAND_LABELS = {
+  '0': '[0.0, 1.5)',
+  '1': '[1.5, 2.0)',
+  '2': '[2.0, 2.5)',
+  '3': '≥ 2.5',
+};
+
+function windGapStrip(wg) {
+  if (!wg || typeof wg !== 'object') return null;
+  const el = document.createElement('div');
+  el.className = 'gap-strip';
+  if (wg.status && wg.status !== 'ok') {
+    el.innerHTML = '<span class="tag">wind_gap</span><span>' + esc(wg.status) +
+      (wg.reason ? ' · ' + esc(wg.reason) : '') + '</span>';
+    return el;
+  }
+  const tags = [];
+  if (wg.provisional) tags.push('<span class="tag">provisional</span>');
+  if (wg.triggered) tags.push('<span class="tag">已触发</span>');
+  else tags.push('<span class="tag ok">未触发</span>');
+  const gap = wg.gap != null ? fmtNum(wg.gap, 2) : '—';
+  const thr = wg.threshold != null ? fmtNum(wg.threshold, 2) : '—';
+  const low = wg.low || {};
+  const high = wg.high || {};
+  const split = wg.split_mps != null ? fmtNum(wg.split_mps, 1) : '—';
+  el.innerHTML = tags.join('') +
+    '<span>高低风均环差 <strong style="font-weight:700">gap ' + esc(gap) +
+    '</strong>（阈值 ' + esc(thr) + ' · ' + (wg.triggered ? '已触发' : '未触发') + '）</span>' +
+    '<span style="color:var(--text-2)">低风(&lt;' + esc(split) + ' m/s) ' +
+    esc(fmtNum(low.avg_score, 2)) + ' / n=' + esc(low.n_shots != null ? low.n_shots : '—') +
+    ' · 高风 ' + esc(fmtNum(high.avg_score, 2)) + ' / n=' +
+    esc(high.n_shots != null ? high.n_shots : '—') + '</span>';
+  return el;
+}
+
+function windBandsCard(s, evidenceBands, windGap) {
   const card = document.createElement('div');
   card.className = 'report-card';
-  const h = document.createElement('h3');
-  h.textContent = s.title;
+  const h = document.createElement('div');
+  h.className = 'block-title';
+  h.innerHTML = esc(s && s.title ? s.title : '风档对照') +
+    '<span class="sub">sections.wind_bands + conclusions.wind_gap</span>';
   card.appendChild(h);
-  const rows = [];
-  (s.content || []).forEach((c) => {
-    const m = c.match(WB_RE);
-    if (m) {
-      rows.push({ band: m[1], avg: m[2], n: m[3] });
-    } else {
-      const p = document.createElement('p');
-      p.textContent = c;
-      if (NOTICE_RE.test(c)) p.className = 'notice';
-      card.appendChild(p);
-    }
-  });
+
+  const gapEl = windGapStrip(windGap);
+  if (gapEl) card.appendChild(gapEl);
+
+  let rows = [];
+  const bandVal = evidenceBands && evidenceBands[0] && evidenceBands[0].value;
+  if (bandVal && typeof bandVal === 'object') {
+    const proseList = [];
+    ((s && s.content) || []).forEach((c) => {
+      const m = c.match(WB_RE);
+      if (m) proseList.push({ band: m[1], avg: m[2], n: m[3] });
+    });
+    Object.keys(WIND_BAND_LABELS).forEach((k, i) => {
+      if (bandVal[k] == null && bandVal[Number(k)] == null) return;
+      const avg = bandVal[k] != null ? bandVal[k] : bandVal[Number(k)];
+      const prose = proseList[i] || {};
+      const n = prose.n;
+      const note = (k === '3' && n != null && Number(n) < 15) ? '样本偏少，未参与风档比较' : '—';
+      rows.push({
+        band: WIND_BAND_LABELS[k],
+        avg: fmtNum(avg, 3),
+        n: n != null ? n : '—',
+        note: note,
+        dim: k === '3' && n != null && Number(n) < 15,
+      });
+    });
+  }
+
+  if (!rows.length) {
+    ((s && s.content) || []).forEach((c) => {
+      const m = c.match(WB_RE);
+      if (m) {
+        rows.push({ band: m[1], avg: m[2], n: m[3], note: '—', dim: false });
+      } else {
+        const p = document.createElement('p');
+        p.textContent = c;
+        if (NOTICE_RE.test(c)) p.className = 'notice';
+        card.appendChild(p);
+      }
+    });
+  }
+
   if (rows.length) {
     const t = document.createElement('table');
     t.className = 'wb-table';
-    t.innerHTML = '<thead><tr><th>风档</th><th class="num">均环</th><th class="num">n</th></tr></thead>';
+    t.innerHTML = '<thead><tr><th>风档 (m/s)</th><th class="num">均环</th><th class="num">箭数 n</th><th>备注</th></tr></thead>';
     const tb = document.createElement('tbody');
     rows.forEach((r) => {
       const tr = document.createElement('tr');
+      if (r.dim) tr.className = 'dim';
       tr.innerHTML = '<td>' + esc(r.band) + '</td><td class="num">' + esc(r.avg) +
-        '</td><td class="num">' + esc(r.n) + '</td>';
+        '</td><td class="num">' + esc(r.n) + '</td><td>' + esc(r.note || '—') + '</td>';
       tb.appendChild(tr);
     });
     t.appendChild(tb);
     card.appendChild(t);
   }
+  return card;
+}
+
+const VERDICT_META = {
+  avgScore: { name: '平均环', unit: '', digits: 2, lowerBetter: false },
+  mcrT: { name: '撒放用时', unit: ' s', digits: 3, lowerBetter: true },
+  dispersionMm: { name: '散布', unit: ' mm', digits: 1, lowerBetter: true },
+  hrVolatility: { name: '心率波动', unit: ' bpm', digits: 1, lowerBetter: true },
+};
+const VERDICT_ORDER = ['avgScore', 'mcrT', 'dispersionMm', 'hrVolatility'];
+const VERDICT_CHIP = {
+  progress: { cls: 'progress', text: '进步' },
+  regression: { cls: 'regress', text: '退步' },
+  steady: { cls: 'steady', text: '持平' },
+};
+const REASON_ZH = {
+  mdc_pending: 'MDC 阈值待专家共识，暂未判定',
+  above_mdc: '',
+  below_mdc: '',
+  within_mdc: '',
+  no_anchor: '无锚点，无法判定',
+  insufficient_sample: '样本不足，暂未判定',
+};
+
+function verdictsCard(verdicts, anchorHint) {
+  if (!verdicts || typeof verdicts !== 'object') return null;
+  const card = document.createElement('div');
+  card.className = 'report-card';
+  const sub = anchorHint ? ('相对锚点 ' + anchorHint) : 'conclusions.verdicts';
+  card.innerHTML = '<div class="block-title">水平对比<span class="sub">' + esc(sub) + '</span></div>';
+  const table = document.createElement('table');
+  table.className = 'verdict-table';
+  table.innerHTML = '<thead><tr><th>指标</th><th>当前</th><th>变化</th><th>锚点</th><th>判定</th></tr></thead>';
+  const tb = document.createElement('tbody');
+  VERDICT_ORDER.forEach((key) => {
+    const v = verdicts[key];
+    if (!v) return;
+    const meta = VERDICT_META[key] || { name: key, unit: '', digits: 2, lowerBetter: false };
+    const verdict = v.verdict;
+    const chip = verdict == null
+      ? { cls: 'pending', text: '未判定' }
+      : (VERDICT_CHIP[verdict] || { cls: 'pending', text: String(verdict) });
+    let arrowCls = 'na';
+    let arrowSym = '—';
+    if (verdict === 'progress') {
+      arrowCls = meta.lowerBetter ? 'down' : 'up';
+      arrowSym = meta.lowerBetter ? '↓' : '↑';
+    } else if (verdict === 'regression') {
+      arrowCls = meta.lowerBetter ? 'up' : 'down';
+      arrowSym = meta.lowerBetter ? '↑' : '↓';
+    } else if (verdict === 'steady') {
+      arrowCls = 'flat';
+      arrowSym = '—';
+    }
+    const reason = REASON_ZH[v.reason] != null ? REASON_ZH[v.reason] : (v.reason || '');
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + esc(meta.name) + '</td>' +
+      '<td class="num">' + esc(fmtNum(v.value, meta.digits) + meta.unit) + '</td>' +
+      '<td><div class="delta-cell"><span class="arrow ' + arrowCls + '">' + arrowSym +
+      '</span><span>' + esc(fmtSignedFixed(v.delta, meta.digits, meta.unit)) + '</span></div>' +
+      (verdict == null && reason ? '<div class="reason">' + esc(reason) + '</div>' : '') +
+      '</td>' +
+      '<td class="num">' + esc(fmtNum(v.anchor, meta.digits) + meta.unit) + '</td>' +
+      '<td><span class="chip ' + chip.cls + '">' + esc(chip.text) + '</span></td>';
+    tb.appendChild(tr);
+  });
+  table.appendChild(tb);
+  card.appendChild(table);
+  return card;
+}
+
+function selfCompareCard(sc) {
+  if (!sc || typeof sc !== 'object') return null;
+  const card = document.createElement('div');
+  card.className = 'report-card';
+  card.innerHTML = '<div class="block-title">环比<span class="sub">conclusions.self_compare</span></div>';
+  const strip = document.createElement('div');
+  strip.className = 'compare-strip';
+  if (sc.status && sc.status !== 'ok') {
+    strip.innerHTML = '<div class="desc">环比不可用：' + esc(sc.status) +
+      (sc.reason ? ' · ' + esc(sc.reason) : '') + '</div>';
+    card.appendChild(strip);
+    return card;
+  }
+  const prev = sc.previous || {};
+  const dir = sc.direction;
+  let arrow = '—';
+  if (dir === 'higher') arrow = '↑';
+  else if (dir === 'lower') arrow = '↓';
+  strip.innerHTML =
+    '<div><div class="label" style="margin-bottom:4px">较上一窗口</div>' +
+    '<div class="desc"><strong>vs ' + esc(prev.window_key || '—') + '</strong>（' +
+    esc(prev.n_shots != null ? prev.n_shots : '—') + ' 箭 · 均环 ' +
+    esc(fmtNum(prev.avg_score, 2)) + '）</div></div>' +
+    '<div style="margin-left:auto;text-align:right">' +
+    '<div class="label">均环变化</div>' +
+    '<div class="big">' + esc(arrow + ' ' + fmtSignedFixed(sc.delta, 2, '')) + '</div>' +
+    '<div class="desc" style="color:var(--text-2)">direction: ' + esc(dir || '—') + '</div></div>';
+  card.appendChild(strip);
   return card;
 }
 
@@ -763,16 +1132,94 @@ function anchorSetupCard(setup) {
     api('/api/v1/athletes/' + athleteId + '/baseline/anchor', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ bow_type: setup.primary_bow, source_session_id: sel.value }),
-    }).then(() => { setStatus('锚点已建立'); if (typeof lastRequest !== 'undefined' && lastRequest) generate(lastRequest); })
+    }).then(() => { $('status').textContent = '锚点已建立'; if (typeof lastRequest !== 'undefined' && lastRequest) generate(lastRequest); })
       .catch((e) => { btn.disabled = false; alert('建立锚点失败：' + e.message); });
   };
   return card;
 }
 
+function coachEvidenceCard(ce) {
+  if (view !== 'coach' || !ce) return null;
+  const levelEv = ((ce.evidence || {}).level) || [];
+  const hasLevel = levelEv.length > 0;
+  const rb = ce.rolling_baseline;
+  const warnings = ce.warnings || [];
+  // 运动员视角已由 view 拦截；教练但无 evidence/基线/警告时不渲染空壳
+  if (!hasLevel && !rb && !warnings.length && !ce.anchor_rebuild_hint) return null;
+  const details = document.createElement('details');
+  details.className = 'evidence';
+  details.innerHTML = '<summary>证据（教练） <span style="font-size:12px;font-weight:400;color:var(--text-2)">coach_extra.evidence</span></summary>';
+  const body = document.createElement('div');
+  body.className = 'ev-body';
+  if (hasLevel) {
+    const t = document.createElement('table');
+    t.className = 'ev-table';
+    t.innerHTML = '<thead><tr><th>指标</th><th class="num">now</th><th class="num">ref</th>' +
+      '<th class="num">delta</th><th class="num">mdc</th><th>锚点日</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    levelEv.forEach((row) => {
+      if (!row || row.ref == null) return;
+      const v = row.value || {};
+      const tr = document.createElement('tr');
+      const delta = v.delta;
+      const deltaStr = delta == null ? '—' : fmtSignedFixed(delta, Math.abs(Number(delta)) < 1 ? 3 : 2, '');
+      tr.innerHTML = '<td>' + esc(row.ref) + '</td>' +
+        '<td class="num">' + esc(v.now != null ? v.now : '—') + '</td>' +
+        '<td class="num">' + esc(v.ref != null ? v.ref : '—') + '</td>' +
+        '<td class="num">' + esc(deltaStr) + '</td>' +
+        '<td class="num">' + esc(v.mdc != null ? v.mdc : '—') + '</td>' +
+        '<td>' + esc(v.ref_date || '—') + '</td>';
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    body.appendChild(t);
+  } else {
+    const p = document.createElement('p');
+    p.className = 'hero-empty';
+    p.textContent = '暂无水平对比证据行';
+    body.appendChild(p);
+  }
+  const meta = document.createElement('div');
+  meta.className = 'ev-meta';
+  const lines = [];
+  if (rb) {
+    lines.push('<div><span class="k">滚动基线</span> n=' + esc(rb.n_shots) +
+      ' · 均环 ' + esc(rb.avg_score) +
+      (rb.collected_at_utc ? ' · 采集 ' + esc(fmtShanghai(rb.collected_at_utc)) : '') + '</div>');
+  }
+  const hint = ce.anchor_rebuild_hint;
+  if (hint && hint.reason) {
+    lines.push('<div><span class="k">锚点提示</span> ' + esc(hint.reason) + '</div>');
+  }
+  meta.innerHTML = lines.join('');
+  if (lines.length) body.appendChild(meta);
+  if (warnings.length) {
+    const w = document.createElement('div');
+    w.className = 'ev-warn';
+    w.textContent = '警告：' + warnings.join('；');
+    body.appendChild(w);
+  }
+  details.appendChild(body);
+  return details;
+}
+
+function rulesSkeletonHtml(suggestions) {
+  const stubs = (suggestions && suggestions.length)
+    ? suggestions.slice(0, 3)
+    : [
+      '保持当前训练负荷与抗风组节奏',
+      '巩固内十率：热身组强调瞄点稳定',
+      '监控撒放节奏与心率波动、大风场表现',
+    ];
+  return '<div class="rules-box"><div class="rh">规则建议骨架 <span class="pill">规则引擎预留</span></div><ul>' +
+    stubs.map((t) => '<li>' + esc(t) + ' <em>规则引擎预留</em></li>').join('') +
+    '</ul></div>' +
+    '<p class="g-hint" style="margin-top:10px">规则引擎接线后替换占位条目；AI 流式指导沿用读取 → 撰写 → 核对 → final。</p>';
+}
+
 function renderReport(r) {
   $('reportEmpty').style.display = 'none';
   $('reportPanel').style.display = '';
-  // 新报告（含切视角重取）：作废上一份报告的在途指导，指导区回到未生成
   discardGuidance();
   currentReport = r;
   $('guidancePanel').style.display = '';
@@ -781,60 +1228,90 @@ function renderReport(r) {
   const who = r.athlete ? (r.athlete.name || '未命名选手') : '';
   const rng = windowRange(r);
   const wk = r.granularity === 'daily' ? String(r.window_key || '').replace(/^daily:/, '') : r.window_key;
+  const genLocal = r.generated_at_utc ? fmtShanghai(r.generated_at_utc) : '';
   $('reportHead').innerHTML =
-    esc(who) + ' · ' + esc(names[r.granularity] || r.granularity) + '报告 · ' + esc(wk) +
+    esc(who) + ' · ' + esc(names[r.granularity] || r.granularity) + '报 ' + esc(wk) +
     (view === 'coach' ? ' · 教练视角' : ' · 运动员视角') +
-    (rng ? '<span class="rh-range">' + esc(rng) + '</span>' : '');
+    (genLocal ? '<span class="rh-range">生成时间 ' + esc(genLocal) +
+      (r.bow_type ? ' · 弓种 ' + esc(r.bow_type) : '') +
+      (r.metrics && r.metrics.n_shots != null ? ' · 窗口箭数 ' + esc(r.metrics.n_shots) : '') +
+      '</span>' : (rng ? '<span class="rh-range">' + esc(rng) + '</span>' : ''));
 
   const byKey = {};
   (r.sections || []).forEach((s) => { byKey[s.key] = s; });
+  const conclusions = r.conclusions || {};
+  const ce = r.coach_extra || {};
 
-  // ① 成绩：可解析则做 metricGrid 数字块；否则空态/原文
   const hero = $('reportHero');
   hero.innerHTML = '';
-  const ws = byKey['window_score'];
-  if (ws) {
-    const line = (ws.content || [])[0] || '';
-    const parsed = parseMetrics(line);
-    if (parsed) {
-      hero.appendChild(metricGrid(parsed));
-    } else {
-      const el = document.createElement('div');
-      el.className = 'hero-empty';
-      el.textContent = line || '本窗口无箭';
-      hero.appendChild(el);
+  const fromMetrics = metricGridFromMetrics(r.metrics);
+  if (fromMetrics) {
+    const title = fromMetrics.querySelector('.block-title');
+    if (title) title.childNodes[0].textContent = (names[r.granularity] || '') + '成绩';
+    hero.appendChild(fromMetrics);
+  } else {
+    const ws = byKey['window_score'];
+    if (ws) {
+      const line = (ws.content || [])[0] || '';
+      const parsed = parseMetrics(line);
+      if (parsed) hero.appendChild(metricGrid(parsed));
+      else {
+        const el = document.createElement('div');
+        el.className = 'hero-empty';
+        el.textContent = line || '本窗口无箭';
+        hero.appendChild(el);
+      }
     }
   }
 
-  // ② 建议：紧接数字
-  const advBox = $('reportAdvice');
-  advBox.innerHTML = '';
-  if (r.suggestions && r.suggestions.length) advBox.appendChild(adviceCard(r.suggestions));
-
-  // ③ 支撑段（window_score 已在 hero，不再重复）
   const body = $('reportBody');
   body.innerHTML = '';
-  const order = ['level', 'data_integrity', 'wind_bands', 'sample_gate', 'auxiliary', 'notes'];
-  const seen = { window_score: true };
-  order.forEach((k) => {
+
+  let anchorDate = '';
+  const levelEv = ((ce.evidence || {}).level) || [];
+  if (levelEv[0] && levelEv[0].value && levelEv[0].value.ref_date) {
+    anchorDate = levelEv[0].value.ref_date;
+  }
+  const vCard = verdictsCard(conclusions.verdicts, anchorDate);
+  if (vCard) {
+    body.appendChild(vCard);
+    if (view === 'coach') {
+      const setup = ce.anchor_setup;
+      if (setup && setup.needs_anchor) body.appendChild(anchorSetupCard(setup));
+    }
+  } else if (byKey['level']) {
+    const s = byKey['level'];
+    const card = document.createElement('div');
+    card.className = 'report-card';
+    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
+      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+    body.appendChild(card);
+    if (view === 'coach') {
+      const setup = ce.anchor_setup;
+      if (setup && setup.needs_anchor) body.appendChild(anchorSetupCard(setup));
+    }
+  }
+
+  const scCard = selfCompareCard(conclusions.self_compare);
+  if (scCard) body.appendChild(scCard);
+
+  const windEv = (ce.evidence || {}).wind_bands;
+  if (byKey['wind_bands'] || conclusions.wind_gap) {
+    body.appendChild(windBandsCard(byKey['wind_bands'] || { title: '风档对照', content: [] }, windEv, conclusions.wind_gap));
+  }
+
+  const proseOrder = ['data_integrity', 'sample_gate', 'auxiliary', 'notes'];
+  const seen = { window_score: true, level: true, wind_bands: true };
+  proseOrder.forEach((k) => {
     const s = byKey[k];
     if (!s) return;
     seen[k] = true;
-    if (k === 'wind_bands') {
-      body.appendChild(windBandsCard(s));
-    } else {
-      const card = document.createElement('div');
-      card.className = 'report-card';
-      card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
-        (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
-      body.appendChild(card);
-    }
-    if (k === 'level' && view === 'coach') {
-      const setup = (r.coach_extra || {}).anchor_setup;
-      if (setup && setup.needs_anchor) body.appendChild(anchorSetupCard(setup));
-    }
+    const card = document.createElement('div');
+    card.className = 'report-card';
+    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
+      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+    body.appendChild(card);
   });
-  // 其余未知段（如历史遗留）仍展示
   (r.sections || []).forEach((s) => {
     if (seen[s.key]) return;
     const card = document.createElement('div');
@@ -844,16 +1321,28 @@ function renderReport(r) {
     body.appendChild(card);
   });
 
-  const ce = r.coach_extra || {};
+  const advBox = $('reportAdvice');
+  advBox.innerHTML = '';
+  if (r.suggestions && r.suggestions.length) advBox.appendChild(adviceCard(r.suggestions));
+
+  // 证据在建议之后、meta 之前（运动员视图不渲染）
+  const prevEv = $('reportPanel').querySelector('details.evidence');
+  if (prevEv) prevEv.remove();
+  const evCard = coachEvidenceCard(ce);
+  if (evCard) $('reportPanel').insertBefore(evCard, $('reportMeta'));
+
   const items = [];
   if (r.bow_type) items.push(['主弓种', r.bow_type]);
-  if (ce.rolling_baseline) {
+  if (view === 'coach' && ce.rolling_baseline && !evCard) {
     items.push(['滚动基线', '最近 ' + ce.rolling_baseline.n_shots + ' 箭 · 均环 ' + ce.rolling_baseline.avg_score]);
   }
-  if (ce.warnings && ce.warnings.length) items.push(['警告', ce.warnings.join('；')]);
+  if (view === 'coach' && ce.warnings && ce.warnings.length) {
+    items.push(['警告', ce.warnings.join('；')]);
+  }
   const hint = (ce.anchor_rebuild_hint || r.anchor_rebuild_hint);
-  if (hint && hint.reason) items.push(['锚点提示', hint.reason]);
-  if (r.generated_at_utc) items.push(['生成时间', r.generated_at_utc + '（UTC）']);
+  if (hint && hint.reason && !evCard) items.push(['锚点提示', hint.reason]);
+  if (r.generated_at_utc) items.push(['生成时间', fmtShanghai(r.generated_at_utc)]);
+  if (rng) items.push(['窗口', rng]);
   $('reportMeta').innerHTML = items.map((it) =>
     '<div class="meta-line"><span class="mk">' + esc(it[0]) + '</span><span class="mv">' + esc(it[1]) + '</span></div>'
   ).join('');
@@ -899,12 +1388,22 @@ function gIdle(note) {
   gSteps(null);
   gBadge('未生成');
   gButtons(false, false);
-  $('gGenBtn').textContent = '生成训练指导';
-  $('gActions').style.display = 'none';
+  $('gGenBtn').textContent = '生成AI指导';
+  $('gActions').style.display = '';
+  $('gRetryBtn').style.display = 'none';
+  $('gRulesBtn').style.display = '';
   $('gBasis').textContent = currentReport
     ? '依据 ' + (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) + ' · 面向 ' + gViewLabel(view)
     : '';
-  $('gBody').innerHTML = '<div class="g-hint">' + esc(note || '总评 · 数据基础 · 技术表现 · 状态与负荷 · 提升方案。本机模型生成，通常约 1 分钟；不会自动调用 AI。') + '</div>';
+  const skel = $('gRulesSkeleton');
+  if (skel) {
+    skel.innerHTML = currentReport
+      ? ''
+      : '<div class="basis-skel" aria-hidden="true"><div class="skel" style="width:68%"></div><div class="skel" style="width:44%"></div></div>';
+  }
+  const sug = (currentReport && currentReport.suggestions) || [];
+  $('gBody').innerHTML = rulesSkeletonHtml(sug) +
+    (note ? '<div class="g-hint" style="margin-top:8px">' + esc(note) + '</div>' : '');
 }
 
 // 作废在途任务：先请服务端真取消，再断开连接（断开本身也是服务端的兜底取消）
@@ -926,6 +1425,7 @@ function startGuidance() {
   gBadge('生成中', 'run');
   gButtons(true, false);
   $('gActions').style.display = 'none';
+  if ($('gRulesSkeleton')) $('gRulesSkeleton').innerHTML = '';
   $('gBasis').textContent = '依据 ' + (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) + ' · 面向 ' + gViewLabel(view);
   gStage('reading');
   gTick = setInterval(() => {
@@ -1026,6 +1526,7 @@ function gFinal(d) {
   gButtons(false, false);
   $('gGenBtn').textContent = '重新生成';
   $('gActions').style.display = 'none';
+  if ($('gRulesSkeleton')) $('gRulesSkeleton').innerHTML = '';
   const t = (d.generated_at || '').slice(11, 19);
   $('gBasis').textContent = 'AI 教练 + 规则引擎 · 生成于 ' + t + ' · 依据 ' + (G_NAMES[d.granularity] || '') + '报告 ' +
     windowLabel(d) + ' · 面向 ' + gViewLabel(d.view) + ' · ✓ 已通过数据核对';
@@ -1039,8 +1540,11 @@ function gFailCommon(badgeText, basis) {
   gSteps(null);
   gBadge(badgeText, 'err');
   gButtons(false, false);
-  $('gGenBtn').textContent = '生成训练指导';
+  $('gGenBtn').textContent = '生成AI指导';
   $('gActions').style.display = '';
+  $('gRetryBtn').style.display = '';
+  $('gRulesBtn').style.display = '';
+  if ($('gRulesSkeleton')) $('gRulesSkeleton').innerHTML = '';
   $('gBasis').textContent = basis;
 }
 
@@ -1064,10 +1568,11 @@ function gRules(note) {
   gButtons(false, false);
   $('gGenBtn').textContent = '重新生成';
   $('gActions').style.display = 'none';
+  if ($('gRulesSkeleton')) $('gRulesSkeleton').innerHTML = '';
   $('gBasis').textContent = '规则引擎 · ' + (currentReport ? (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) : '');
   const sug = (currentReport && currentReport.suggestions) || [];
   $('gBody').innerHTML = (note ? '<div class="g-alert warn">' + esc(note) + '</div>' : '') +
-    (sug.length ? sug.map((x) => '<p>' + esc(x) + '</p>').join('') : '<div class="g-hint">本期报告没有规则建议。</div>');
+    rulesSkeletonHtml(sug);
 }
 
 function gBusy(d) {
