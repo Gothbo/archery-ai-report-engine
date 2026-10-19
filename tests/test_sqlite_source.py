@@ -151,6 +151,73 @@ class TestSqliteSource:
         assert total == 4  # 2009 行（6 位身份号 + 早于 min_time）被过滤
 
 
+def _make_interleaved_db(path: str, reverse_insert: bool = False, athletes=(IDENT, IDENT_X)) -> None:
+    """多人同时段射箭：每人 10 箭、20s 一箭，行按时间交错（A,X,A,X…）。"""
+    rows = []
+    for i in range(10):
+        for j, ident in enumerate(athletes):
+            ts = f"2024-06-22 09:{(i * 20) // 60:02d}:{(i * 20) % 60:02d}.{j:03d}"
+            rows.append((len(rows) + 1, "9.00", 0, "1.0", "1.0", 171, 3, ts, ident, ident, "Qualification", i + 1))
+    if reverse_insert:  # 物理行序打乱 → 结果应完全一致
+        rows.reverse()
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE ScoreInfoNew (
+            Id INTEGER, Score TEXT, IsGood INTEGER, X_ TEXT, Y_ TEXT,
+            ProjectId INTEGER, ShotType INTEGER, ShootingTime TEXT, IdentityID TEXT,
+            RegisterNum TEXT, MatchType TEXT, Num INTEGER);
+        CREATE TABLE HeartRateData (IdentityID TEXT, HeartRate INTEGER, CreateDate TEXT);
+        CREATE TABLE WindSpeedDirection (
+            RegisterNum TEXT, AthleteName TEXT, WindSpeed REAL, WindDirection TEXT, CreateTime TEXT);
+    """)
+    conn.executemany("""INSERT INTO ScoreInfoNew
+        (Id, Score, IsGood, X_, Y_, ProjectId, ShotType, ShootingTime, IdentityID, RegisterNum, MatchType, Num)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""", rows)
+    conn.commit()
+    conn.close()
+
+
+class TestSqliteInterleavedAthletes:
+    """回归：多人同时段、行交错时，场次不能按相邻行被切碎成单箭场。"""
+
+    def _summary(self, path: str) -> list[tuple[str, str, int, tuple]]:
+        return [(s.session_id, s.athlete_id, len(s.shots),
+                 tuple((sh.shot_seq, sh.shot_time_utc) for sh in s.shots))
+                for s in SQLiteSource(path).iter_sessions()]
+
+    def test_two_athletes_interleaved_two_sessions(self, engine_env):
+        path = engine_env[1].replace("facts.db", "interleaved.db")
+        _make_interleaved_db(path)
+        sessions = list(SQLiteSource(path).iter_sessions())
+        assert len(sessions) == 2
+        assert sorted(s.athlete_id for s in sessions) == sorted([AID, AID_X])
+        for s in sessions:
+            assert len(s.shots) == 10
+            assert [sh.shot_seq for sh in s.shots] == list(range(1, 11))
+            assert all(sh.athlete_id == s.athlete_id and sh.session_id == s.session_id for sh in s.shots)
+        assert {s.session_id for s in sessions} == {f"{AID}_20240622_01", f"{AID_X}_20240622_01"}
+
+    def test_interleaved_session_ids_stable(self, engine_env):
+        path = engine_env[1].replace("facts.db", "interleaved.db")
+        path_rev = engine_env[1].replace("facts.db", "interleaved_rev.db")
+        _make_interleaved_db(path)
+        _make_interleaved_db(path_rev, reverse_insert=True)
+        first = self._summary(path)
+        assert first == self._summary(path)       # 重复导入同结果
+        assert first == self._summary(path_rev)   # 物理行序不同也同结果
+
+    def test_single_athlete_unchanged_by_other_athlete(self, engine_env):
+        """同一运动员的场次不因他人交错而改变（与单人库结果一致）。"""
+        path = engine_env[1].replace("facts.db", "interleaved.db")
+        path_solo = engine_env[1].replace("facts.db", "solo.db")
+        _make_interleaved_db(path)
+        _make_interleaved_db(path_solo, athletes=(IDENT,))
+        mixed = [x for x in self._summary(path) if x[1] == AID]
+        solo = self._summary(path_solo)
+        assert len(solo) == 1 and solo[0][2] == 10
+        assert [(sid, n) for sid, _, n, _ in mixed] == [(sid, n) for sid, _, n, _ in solo]
+
+
 class TestSqliteIngestPipeline:
     def test_ingest_sqlite_source_end_to_end(self, fake_real_db, engine_env):
         db = Database(engine_env[1])

@@ -169,7 +169,7 @@
         <select id="noteType">
           <option value="injury">伤病</option>
           <option value="goal">训练目标</option>
-          <option value="coach_obs">教练观察</option>
+          <option value="coach_note">教练观察</option>
         </select>
         <input id="noteContent" class="content-input" placeholder="录入内容…">
         <button class="primary" id="addNoteBtn">添加</button>
@@ -318,7 +318,7 @@ function refreshSidePanels() {
       '<div class="note"><span class="type">' + typeLabel(n.note_type) + '</span>' +
       '<span class="content">' + esc(n.content) + '</span>' +
       '<span class="who">' + esc(n.author_role || '') + '</span>' +
-      '<button class="del" data-id="' + n.note_id + '">删除</button></div>'
+      '<button class="del" data-id="' + n.id + '">删除</button></div>'
     ).join('');
     box.querySelectorAll('.del').forEach((b) => b.onclick = () => deleteNote(b.dataset.id));
   }).catch((e) => { $('notesList').innerHTML = '<div class="empty">加载失败</div>'; });
@@ -336,7 +336,7 @@ function refreshSidePanels() {
 }
 
 function typeLabel(t) {
-  return { injury: '伤病', goal: '目标', coach_obs: '教练观察' }[t] || t;
+  return { injury: '伤病', goal: '目标', coach_note: '教练观察' }[t] || t;
 }
 
 /* ---- B1-6 对话窗：引用已生成报告 → ask → 回答 + 折叠溯源 + 建议记录卡片 ---- */
