@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
-"""演示环境初始化：清空张明旧 mock 数据 → 导入 14 周扩展数据 → 建立锚点（S101）。
+"""演示环境初始化：清空张明旧 mock 数据 → 导入 W27–W43 扩展数据 → 建立锚点（S101）。
 
 幂等：可重复执行。只动张明（1963169497552654337），不影响其他运动员（真库导入的葛靖等）。
-用法：python scripts/demo_reset.py
+数据覆盖至 2026-W43，使 UI「窗口留空 = 默认当前周」在 2026-10-19 附近有满态报告。
+用法：ENGINE_CONFIG=config.demo.json python scripts/demo_reset.py
 """
 from __future__ import annotations
 
@@ -51,7 +52,7 @@ def main():
                        (ATHLETE_ID,))[0]["c"]
     rollings = db.query("SELECT COUNT(*) AS c FROM baseline_snapshots WHERE athlete_id=? AND snap_type='rolling'",
                         (ATHLETE_ID,))[0]["c"]
-    print(f"4) 校验：张明箭数 {n}（预期 43 场 × 30 = 1290）、锚点 {anchors}、滚动快照 {rollings}")
+    print(f"4) 校验：张明箭数 {n}（预期 52 场 × 30 = 1560）、锚点 {anchors}、滚动快照 {rollings}")
 
 
 if __name__ == "__main__":
