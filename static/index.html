@@ -124,6 +124,23 @@
   .report-card { margin-bottom: 12px; }
   .report-card h3 { font-size: 14px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
   .report-card p { font-size: 15px; line-height: 1.6; }
+  .report-card p.notice {
+    color: var(--text-2); font-size: 13px; line-height: 1.6;
+    background: var(--card-soft); border: 1px solid var(--border);
+    border-radius: var(--radius-xs); padding: 8px 10px; margin-top: 6px;
+  }
+  /* 风档对照：对齐小表（从 master 移植） */
+  .report-card .wb-table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+    font-variant-numeric: tabular-nums; margin-top: 4px;
+  }
+  .report-card .wb-table th, .report-card .wb-table td {
+    text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border);
+  }
+  .report-card .wb-table th { font-size: 12px; font-weight: 600; color: var(--text-2); letter-spacing: .02em; }
+  .report-card .wb-table th.num, .report-card .wb-table td.num { text-align: right; }
+  .report-card .wb-table td.num { color: var(--text); font-weight: 500; }
+  .report-card .wb-table tbody tr:last-child td { border-bottom: none; }
   .meta { font-size: 12px; color: var(--text-2); margin-top: 12px; line-height: 1.7; }
   .empty {
     text-align: center; color: var(--text-2); font-size: 14px; padding: 48px 0;
@@ -674,6 +691,44 @@ function metricGrid(parsed) {
   return card;
 }
 
+/* 风档对照：把「…档：均环 X（n=Y）」解析成对齐小表；非该格式的行按普通/缺失样式呈现 */
+const NOTICE_RE = /无风速数据|无心率数据|空窗口|不可用|未计入|数据存疑|暂无可|暂无|样本不足|样本偏少|无锚点|降级期/;
+const WB_RE = /^(.*?档)\s*[：:]\s*均环\s*([\d.]+)\s*[（(]\s*n\s*=\s*(\d+)\s*[）)]\s*$/;
+function windBandsCard(s) {
+  const card = document.createElement('div');
+  card.className = 'report-card';
+  const h = document.createElement('h3');
+  h.textContent = s.title;
+  card.appendChild(h);
+  const rows = [];
+  (s.content || []).forEach((c) => {
+    const m = c.match(WB_RE);
+    if (m) {
+      rows.push({ band: m[1], avg: m[2], n: m[3] });
+    } else {
+      const p = document.createElement('p');
+      p.textContent = c;
+      if (NOTICE_RE.test(c)) p.className = 'notice';
+      card.appendChild(p);
+    }
+  });
+  if (rows.length) {
+    const t = document.createElement('table');
+    t.className = 'wb-table';
+    t.innerHTML = '<thead><tr><th>风档</th><th class="num">均环</th><th class="num">n</th></tr></thead>';
+    const tb = document.createElement('tbody');
+    rows.forEach((r) => {
+      const tr = document.createElement('tr');
+      tr.innerHTML = '<td>' + esc(r.band) + '</td><td class="num">' + esc(r.avg) +
+        '</td><td class="num">' + esc(r.n) + '</td>';
+      tb.appendChild(tr);
+    });
+    t.appendChild(tb);
+    card.appendChild(t);
+  }
+  return card;
+}
+
 function adviceCard(suggestions) {
   const card = document.createElement('div');
   card.className = 'advice';
@@ -765,11 +820,15 @@ function renderReport(r) {
     const s = byKey[k];
     if (!s) return;
     seen[k] = true;
-    const card = document.createElement('div');
-    card.className = 'report-card';
-    card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
-      (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
-    body.appendChild(card);
+    if (k === 'wind_bands') {
+      body.appendChild(windBandsCard(s));
+    } else {
+      const card = document.createElement('div');
+      card.className = 'report-card';
+      card.innerHTML = '<h3>' + esc(s.title) + '</h3>' +
+        (s.content || []).map((c) => '<p>' + esc(c) + '</p>').join('');
+      body.appendChild(card);
+    }
     if (k === 'level' && view === 'coach') {
       const setup = (r.coach_extra || {}).anchor_setup;
       if (setup && setup.needs_anchor) body.appendChild(anchorSetupCard(setup));
