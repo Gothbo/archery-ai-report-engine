@@ -5,7 +5,7 @@ import pytest
 from app.memory.notes import add_note
 from app.rag.context import assemble_context, extract_numbers
 from app.reports.generator import generate_report
-from tests.conftest import ATHLETE, seed_anchor
+from tests.conftest import ATHLETE, seed_anchor, seed_session
 
 
 class TestContextErrors:
@@ -49,10 +49,13 @@ class TestContextAssembly:
         assert ctx["version"]
 
     def test_sources_include_report_and_baseline(self, mock_db):
+        # 滚动基线时间语义：基线取「窗口起点之前」的箭。2026-W32 起于 08-03，mock 首场即当日，
+        # 故须在窗口前追加一场训练，基线才真实存在（与 generator 时间语义一致）。
+        seed_session(mock_db, ATHLETE, "S-PRE", "2026-07-30T09:00:00.000Z", [9.0] * 30)
         ctx = self._prep(mock_db)
         types = {s["type"] for s in ctx["sources"]}
         assert "report" in types
-        assert "baseline" in types  # mock 导入会建滚动基线
+        assert "baseline" in types  # 窗口前有箭 → 报告带窗口前滚动基线
         report_src = next(s for s in ctx["sources"] if s["type"] == "report")
         assert report_src["ref"] == "weekly:2026-W32"
 

@@ -8,6 +8,8 @@ from fastapi.testclient import TestClient
 import tests.conftest as ct
 from app.main import app
 from app.memory.notes import add_note
+from app.reports.generator import _report_cache_version
+from app.config import get_config
 from app.store.database import get_database
 from tests.conftest import ATHLETE, seed_anchor
 
@@ -126,7 +128,7 @@ class TestContentEndpoint:
 
     def test_legacy_row_without_body(self, client):
         db = get_database()
-        db.put_cached_report("LEGACY-1", ATHLETE, "weekly", "2026-W34", "test-consensus-v1")
+        db.put_cached_report("LEGACY-1", ATHLETE, "weekly", "2026-W34", _report_cache_version(get_config()))
         r = client.get("/api/v1/reports/LEGACY-1/content")
         assert r.status_code == 404 and r.json()["code"] == "REPORT-BODY-MISSING"
         # 生成接口（不带 refresh）命中旧行：按未命中重新计算并补存正文，report_id 不变（真引擎联调 #2）
@@ -139,7 +141,7 @@ class TestContentEndpoint:
         a = client.post(f"{BASE}/ask", json={"question": "怎么样", "granularity": "weekly",
                                              "window_key": "2026-W34", "view": "coach"})
         assert a.status_code == 200
-        row = db.get_cached_report_row(ATHLETE, "weekly", "2026-W34", "test-consensus-v1")
+        row = db.get_cached_report_row(ATHLETE, "weekly", "2026-W34", _report_cache_version(get_config()))
         assert row["report_id"] == "LEGACY-1" and row["report_json"]
 
     def test_body_missing_regenerate_keeps_id_and_memories(self, client):
@@ -200,7 +202,7 @@ class TestAskReusesStoredBody:
         a = client.post(f"{BASE}/ask", json={"question": "怎么样", "granularity": "weekly",
                                              "window_key": "2026-W32", "view": "coach"})
         assert a.status_code == 200
-        assert get_database().get_cached_report_row(ATHLETE, "weekly", "2026-W32", "test-consensus-v1")
+        assert get_database().get_cached_report_row(ATHLETE, "weekly", "2026-W32", _report_cache_version(get_config()))
 
 
 class TestGuidanceReusesStoredBody:

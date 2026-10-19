@@ -228,6 +228,89 @@ class Database:
 
     # ---- M2b：记忆层 ----
 
+
+    def shots_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+        """窗口箭集：本地时间窗 [start, end) 内该运动员的全部箭。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? ORDER BY shot_time_utc""",
+            (athlete_id, start_iso, end_iso),
+        )
+
+    def sessions_by_ids(self, session_ids: list[str]) -> list[sqlite3.Row]:
+        if not session_ids:
+            return []
+        marks = ",".join("?" * len(session_ids))
+        return self._query(
+            f"SELECT * FROM session_dim WHERE session_id IN ({marks})", tuple(session_ids))
+
+    def session_of(self, session_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM session_dim WHERE session_id=?", (session_id,))
+        return rows[0] if rows else None
+
+    def recent_scoring_shots(self, athlete_id: str, bow_type: str, limit: int) -> list[sqlite3.Row]:
+        """最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线口径）。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1
+               ORDER BY shot_time_utc DESC LIMIT ?""",
+            (athlete_id, bow_type, limit),
+        )
+
+    def recent_scoring_shots_before(self, athlete_id: str, bow_type: str,
+                                    before_iso: str, limit: int) -> list[sqlite3.Row]:
+        """窗口起点前最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线按窗口时点截断）。"""
+        return self._query(
+            """SELECT * FROM shot_fact
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<?
+               ORDER BY shot_time_utc DESC LIMIT ?""",
+            (athlete_id, bow_type, before_iso, limit),
+        )
+
+    def scoring_shots_of_session(self, session_id: str, bow_type: str | None = None) -> list[sqlite3.Row]:
+        """场次记分箭（shooting_mode=1）；指定 bow_type 时只取该弓种（锚点不混弓，ADR-0004）。"""
+        if bow_type is None:
+            return self._query(
+                "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
+        return self._query(
+            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1 AND bow_type=?",
+            (session_id, bow_type))
+
+    def bow_types_of_athlete(self, athlete_id: str) -> list[str]:
+        rows = self._query(
+            "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,))
+        return [r["bow_type"] for r in rows]
+
+    def anchor_candidate_sessions(self, athlete_id: str, bow_type: str) -> list[sqlite3.Row]:
+        """可作锚点来源的场次：含该弓种记分箭，且具备可比性元数据（distance_m/mode_composition）。
+
+        供「建立锚点」引导列出候选（A3 要求来源场次元数据必填）；按时间升序，赛季初场次在前。
+        元数据校验与 create_anchor_snapshot 的真值判定对齐（distance_m>0 且 mode_composition 非空），
+        避免列出建立时必失败的「死候选」。
+        """
+        return self._query(
+            """SELECT s.session_id, s.session_time_utc, s.distance_m, s.mode_composition,
+                      (SELECT COUNT(*) FROM shot_fact f
+                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                      AS scoring_shots
+               FROM session_dim s
+               WHERE s.athlete_id=? AND s.distance_m IS NOT NULL AND s.distance_m > 0
+                 AND s.mode_composition IS NOT NULL AND s.mode_composition != ''
+                 AND EXISTS (SELECT 1 FROM shot_fact f
+                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+               ORDER BY s.session_time_utc""",
+            (bow_type, athlete_id, bow_type),
+        )
+
+    def athletes_with_last_session(self) -> list[sqlite3.Row]:
+        """档案列表 + 最近训练时间（供前端默认选中最近有训练的运动员）。"""
+        return self._query(
+            "SELECT p.athlete_id, p.name, p.bow_type, p.level, "
+            "(SELECT MAX(s.session_time_utc) FROM session_dim s WHERE s.athlete_id = p.athlete_id) "
+            "AS last_session_utc FROM athlete_profile p ORDER BY p.name")
+
+    # ---- M2b：记忆层 ----
+
     def upsert_profile(self, profile: dict) -> None:
         """档案 upsert。P0 隐私：identity_id（身份证号）一律不落库，传入也忽略（恒写 NULL）。"""
         self._execute(
@@ -465,6 +548,38 @@ class Database:
                 "SELECT MAX(received_at_utc) AS t FROM ingest_messages WHERE data_type=?", (dt,))
             out[dt] = row[0]["t"] if row else None
         return out
+
+    def recent_judgements(self, athlete_id: str, granularity: str, limit: int,
+                          with_delta: bool = False) -> list[sqlite3.Row]:
+        """最近 N 条同粒度 judgement（时间倒序）。
+
+        with_delta=True 只取带 delta_value 的判定（锚点重建触发④要求「提升均超 MDC」，
+        delta 为空的行不参与）。平台期识别与锚点重建共用此方法。
+        """
+        sql = ("SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?"
+               " AND conclusion_type='judgement'")
+        if with_delta:
+            sql += " AND delta_value IS NOT NULL"
+        sql += " ORDER BY generated_at_utc DESC LIMIT ?"
+        return self._query(sql, (athlete_id, granularity, limit))
+
+    def cached_report_by_id(self, report_id: str) -> sqlite3.Row | None:
+        """按 report_id 读取缓存行（GET /reports/{id} 校验报告是否仍有效）。"""
+        rows = self._query("SELECT * FROM report_cache WHERE report_id=?", (report_id,))
+        return rows[0] if rows else None
+
+    def cached_reports_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
+        """该运动员全部缓存报告，时间倒序（前端「引用报告」列表）。"""
+        return self._query(
+            "SELECT * FROM report_cache WHERE athlete_id=? ORDER BY generated_at_utc DESC",
+            (athlete_id,))
+
+    def latest_report_window(self, athlete_id: str) -> sqlite3.Row | None:
+        """最近一份已生成报告的 (granularity, window_key)（对话未指定窗口时的兜底）。"""
+        rows = self._query(
+            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=?"
+            " ORDER BY generated_at_utc DESC LIMIT 1", (athlete_id,))
+        return rows[0] if rows else None
 
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
         """B10①：同 session_id 重新导入 → 失效该场次缓存报告（daily 窗口键 = daily:<session_id>）。"""

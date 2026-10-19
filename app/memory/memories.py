@@ -9,19 +9,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
 
 from app.store.database import Database
+from app.timeutil import iso_now_utc
 
 logger = logging.getLogger("engine.memory.memories")
 
 # 参与历史引用的判定类：progress/regression/plateau/steady/risk；steady 落库供平台期识别（C3）
-JUDGEMENT_KEYS = {"progress", "regression", "plateau", "steady", "risk"}
+# *_ref 为参考档方向提示（超 SWC 未达 MDC95）：落库留痕，但不参与锚点重建（弱于强断言）
+JUDGEMENT_KEYS = {"progress", "regression", "plateau", "steady", "risk",
+                  "progress_ref", "regression_ref"}
 ATTRIBUTION_KEYS = {"wind"}
-
-
-def _now_utc() -> str:
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def record_conclusion(db: Database, *, athlete_id: str, report_id: str, granularity: str,
@@ -45,7 +43,7 @@ def record_conclusion(db: Database, *, athlete_id: str, report_id: str, granular
         "judge_basis": judge_basis,
         "delta_value": delta_value,
         "evidence": evidence,
-        "generated_at_utc": _now_utc(),
+        "generated_at_utc": iso_now_utc(),
     }
     mid = db.insert_report_memory(mem)
     logger.info("结论沉淀 id=%d athlete=%s key=%s", mid, athlete_id, conclusion_key)

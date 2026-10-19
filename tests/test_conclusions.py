@@ -20,7 +20,7 @@ def _seed_weeks(db, scores_by_week=None, *, distance=70):
     days = {"2026-W32": ("2026-08-03", "2026-08-05"), "2026-W33": ("2026-08-10", "2026-08-12"),
             "2026-W34": ("2026-08-17", "2026-08-19")}
     for wk, (d1, d2) in days.items():
-        sc = (scores_by_week or {}).get(wk, [9.1] * 15)
+        sc = (scores_by_week or {}).get(wk, [9.25] * 15)
         seed_session(db, A, f"{wk}-a", f"{d1}T01:00:00.000Z", sc, distance_m=distance)
         seed_session(db, A, f"{wk}-b", f"{d2}T01:00:00.000Z", sc, distance_m=distance)
 
@@ -33,10 +33,12 @@ class TestMetricsAndVerdicts:
     def test_metrics_block(self, mock_db):
         rep = generate_report(mock_db, ATHLETE, "weekly", "2026-W33", view="coach")
         m = rep["metrics"]
-        assert set(m) == {"n_shots", "avg_score", "inner10_rate", "far_miss_rate", "hit_rate",
-                          "total_score", "mcr_t", "hr_volatility", "dispersion_mm"}
+        assert set(m) >= {"n_shots", "avg_score", "effective_avg_score", "miss_rate",
+                            "inner10_rate", "far_miss_rate", "hit_rate",
+                            "total_score", "mcr_t", "hr_volatility", "dispersion_mm"}
         assert m["n_shots"] == 90
-        assert f"平均环 {m['avg_score']}" in rep["sections"][0]["content"][0]  # 与文案同源
+        # 阶段 1 双口径文案：含脱靶均环（与 metrics.avg_score 同源）
+        assert f"{m['avg_score']}" in rep["sections"][0]["content"][0]
         assert rep["conclusions"]["schema_version"] == 1
 
     def test_no_anchor(self, mock_db):
@@ -80,7 +82,7 @@ class TestMetricsAndVerdicts:
         _seed_weeks(db, distance=50)  # 锚点 70 m，窗口 50 m
         v = _rep(db, "2026-W32")["conclusions"]["verdicts"]
         assert v["avgScore"]["verdict"] is None and v["avgScore"]["reason"] == "not_comparable"
-        assert v["avgScore"]["delta"] == pytest.approx(0.1)
+        assert v["avgScore"]["delta"] == pytest.approx(0.25)
 
 
 class TestWindGap:
@@ -201,7 +203,8 @@ class TestPlateau:
         assert [r["window_key"] for r in p3["recent"]] == ["2026-W32", "2026-W33", "2026-W34"]
         assert p3["recent"][-1]["report_id"] == rep3["report_id"]
         assert p3["metric"] == "avgScore" and p3["periods"] == 3
-        assert any(s["key"] == "plateau" for s in rep3["sections"])
+        assert rep3["conclusions"]["plateau"]["triggered"] is True
+        assert any("疑似进入平台期" in line for s in rep3["sections"] if s["key"] == "auxiliary" for line in s["content"])
         keys = [r["conclusion_key"] for r in db.query(
             "SELECT conclusion_key FROM report_memories WHERE report_id=?", (rep3["report_id"],))]
         assert "plateau" in keys
@@ -221,7 +224,7 @@ class TestPlateau:
         assert n >= 3
         r2 = _rep(db, "2026-W33")
         assert r2["conclusions"]["plateau"]["triggered"] is False
-        assert not any(s["key"] == "plateau" for s in r2["sections"])
+        assert not any("疑似进入平台期" in line for s in r2["sections"] if s["key"] == "auxiliary" for line in s["content"])
 
     def test_non_steady_breaks_plateau(self, db):
         _seed_weeks(db, {"2026-W33": [9.6] * 15})  # W33 超过 MDC → progress
@@ -259,7 +262,7 @@ class TestPlateau:
         seed_session(db, A, "ANC", "2026-07-28T01:00:00.000Z", [9.0] * 30)
         seed_anchor(db, A, "ANC")
         for i, sid in enumerate(["Z3", "Z1", "Z2"]):  # 场次号顺序与时间顺序不同
-            seed_session(db, A, sid, f"2026-08-0{[5, 3, 4][i]}T01:00:00.000Z", [9.1] * 25)
+            seed_session(db, A, sid, f"2026-08-0{[5, 3, 4][i]}T01:00:00.000Z", [9.25] * 25)
         for sid in ("Z1", "Z2", "Z3"):
             rep = generate_report(db, A, "daily", f"daily:{sid}", session_id=sid)
         p = rep["conclusions"]["plateau"]  # Z3 时间最晚（08-05）

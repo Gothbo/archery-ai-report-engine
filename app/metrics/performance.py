@@ -23,5 +23,16 @@ def hit_rate(hits: list[bool]) -> float:
     return sum(1 for h in hits if h) / len(hits) * 100 if hits else 0.0
 
 
+def effective_avg_score(scores: list[float]) -> float | None:
+    """有效箭均环：剔除 0 环（脱靶）后的均环；无有效箭返回 None。"""
+    valid = [s for s in scores if s > 0]
+    return fmean(valid) if valid else None
+
+
+def miss_rate(scores: list[float]) -> float:
+    """脱靶率（%）：0 环箭占比。"""
+    return sum(1 for s in scores if s == 0) / len(scores) * 100 if scores else 0.0
+
+
 def total_score(scores: list[float]) -> float:
     return round(sum(scores), 1)

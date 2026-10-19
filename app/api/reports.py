@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 
 from app.reports.generator import (SessionNotFound, generate_report, load_stored_report, public_view,
                                    render_for_view)
+from app.reports.window import WindowKey
 from app.store.database import get_database
 
 router = APIRouter(prefix="/api/v1", tags=["reports"])
@@ -81,26 +82,18 @@ def list_reports(athlete_id: str) -> dict:
 
 def _window_key(granularity: str, session_id: str | None, week: str | None,
                 month: str | None, quarter: str | None, year: str | None) -> str:
-    # 窗口键契约：daily 带 "daily:" 前缀（缓存失效依赖 B10①）；其余粒度用裸键
-    # （2026-W32 / 2026-08 / 2026Q3 / 2026），与 window_bounds/测试口径一致
+    # 请求参数 → 存储窗口键：拼装/前缀契约由 WindowKey 统一承载（与 window_bounds 同源）
     if granularity == "daily":
         if not session_id:
             raise ValueError("daily 报告必须带 session_id")
-        return f"daily:{session_id}"
-    if granularity == "weekly":
-        if not week:
-            raise ValueError("weekly 报告必须带 week（如 2026-W36）")
-        return week
-    if granularity == "monthly":
-        if not month:
-            raise ValueError("monthly 报告必须带 month（如 2026-08）")
-        return month
-    if granularity == "quarterly":
-        if not quarter:
-            raise ValueError("quarterly 报告必须带 quarter（如 2026Q3）")
-        return quarter
-    if granularity == "yearly":
-        if not year:
-            raise ValueError("yearly 报告必须带 year（如 2026）")
-        return year
-    raise ValueError("未知粒度")
+        return WindowKey.daily(session_id).text
+    provided = {"weekly": (week, "week", "2026-W36"),
+                "monthly": (month, "month", "2026-08"),
+                "quarterly": (quarter, "quarter", "2026Q3"),
+                "yearly": (year, "year", "2026")}.get(granularity)
+    if provided is None:
+        raise ValueError("未知粒度")
+    value, param, example = provided
+    if not value:
+        raise ValueError(f"{granularity} 报告必须带 {param}（如 {example}）")
+    return WindowKey(granularity, value).text

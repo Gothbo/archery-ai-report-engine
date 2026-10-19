@@ -9,24 +9,84 @@
     "yearly": 1040,
     "_basis": "本队实际训练频率(3次/周×30箭)×20% 推导；基础护栏=周报≥2次训练；换队伍/换频率需重算"
   },
-  "wind_bands": [[0, 1.5], [1.5, 2.0], [2.0, 2.5], [2.5, 99]],
+  "wind_bands": [
+    [
+      0,
+      1.5
+    ],
+    [
+      1.5,
+      2.0
+    ],
+    [
+      2.0,
+      2.5
+    ],
+    [
+      2.5,
+      99
+    ]
+  ],
   "wind_bands_note": "左闭右开 lo<=w<hi；1.5 继承 D4 单阈值，2.0/2.5 按风对弹道影响经验曲线扩展（教练/运动科学评审 2026-09 冻结）",
   "mdc": {
-    "avgScore": { "threshold": 0.30, "direction": 1 },
-    "mcrT": { "threshold": 0.05, "direction": -1 },
-    "hrVolatility": { "threshold": null, "direction": -1 },
-    "dispersionMm": { "threshold": 2.0, "direction": -1 }
+    "avgScore": {
+      "threshold": 0.3,
+      "direction": 1,
+      "te": 0.29,
+      "swc": 0.32,
+      "bands": [
+        {
+          "max": 8.0,
+          "te": 0.45,
+          "swc": 0.6
+        },
+        {
+          "max": 9.5,
+          "te": 0.2,
+          "swc": 0.3
+        },
+        {
+          "max": 10.6,
+          "te": 0.12,
+          "swc": 0.15
+        }
+      ]
+    },
+    "mcrT": {
+      "threshold": 0.05,
+      "direction": -1
+    },
+    "hrVolatility": {
+      "threshold": null,
+      "direction": -1
+    },
+    "dispersionMm": {
+      "threshold": 2.0,
+      "direction": -1
+    }
   },
   "mdc_note": "演示配置：mdc_source 置为 demo 版本以展示 MDC 判定效果；对话 LLM 用 provider=mock（骨架取数，G2 恒通过），不绑真实模型",
-  "mdc_source": "demo-thresholds-20260928",
-  "forbidden_phrases": ["练它即提分"],
+  "mdc_source": "v1-trial-20261010",
+  "forbidden_phrases": [
+    "练它即提分"
+  ],
   "rolling_window_shots": 288,
-  "notes_visibility": { "athlete_visible_types": ["injury", "goal"] },
+  "notes_visibility": {
+    "athlete_visible_types": [
+      "injury",
+      "goal"
+    ]
+  },
   "memory": {
     "rolling_snapshot_keep": 12,
     "rolling_snapshot_keep_note": "滑动窗口高度重叠，仅保留最近12条滚动快照（本队训练频率约8.8个月），更旧自动删除（B8）",
     "anchor_rebuild_policy": {
-      "triggers": ["season_change", "bow_change", "coach_manual", "four_week_mdc"],
+      "triggers": [
+        "season_change",
+        "bow_change",
+        "coach_manual",
+        "four_week_mdc"
+      ],
       "check_timing": "weekly_report_generation",
       "four_week_min_weeks": 4
     },
@@ -38,8 +98,14 @@
     "sqlite_min_time": "2024-01-01",
     "session_gap_minutes": 90,
     "default_distance_m": 70,
-    "shot_type_map": { "1": 0, "3": 1, "7": 1 },
-    "project_bow_map": { "171": "反曲弓" }
+    "shot_type_map": {
+      "1": 0,
+      "3": 1,
+      "7": 1
+    },
+    "project_bow_map": {
+      "171": "反曲弓"
+    }
   },
   "llm": {
     "enabled": true,
@@ -52,5 +118,18 @@
     "temperature": 0.2,
     "num_ctx": 2048
   },
-  "log_dir": "logs"
+  "log_dir": "logs",
+  "data_quality": {
+    "min_shots_for_description": 6,
+    "score_max": 10.9
+  },
+  "advice": {
+    "miss_rate_high": 10.0,
+    "far_miss_high": 30.0,
+    "inner10_low": 20.0,
+    "wind_band_delta": 0.5,
+    "min_band_shots": 10
+  },
+  "change_caliber_trial": true,
+  "report_caliber_version": "v4"
 }
