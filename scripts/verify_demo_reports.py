@@ -20,11 +20,14 @@ ATHLETE_ID = "1963169497552654337"
 # (粒度, 窗口键, 备注)
 CASES = [
     ("weekly", "2026-W34", "平台期（W33-W36 均环 10.12~10.16，差值稳定超 MDC）"),
-    ("weekly", "2026-W40", "再进步（均环 10.16+，含跨日早训场 S143）"),
+    ("weekly", "2026-W40", "再进步（均环 10.16+）"),
+    ("weekly", "2026-W43", "近端巩固（UI 默认当前周；含跨日早训场 S152）"),
     ("monthly", "2026-08", "八月（W32-W35：稳态→超 MDC 进步）"),
     ("monthly", "2026-09", "九月（W36-W39：平台→再进步）"),
+    ("monthly", "2026-10", "十月（W40-W43：再进步→近端巩固）"),
     ("quarterly", "2026Q3", "完整季度（W27-W39，含入队测试锚点周）"),
-    ("daily", "daily:S143", "跨日早训场（A1：UTC 22:00 → 北京次日 06:00）"),
+    ("quarterly", "2026Q4", "四季度开头（W40-W43，对齐今天）"),
+    ("daily", "daily:S152", "跨日早训场（A1：UTC 22:00 → 北京次日 06:00）"),
 ]
 
 
@@ -39,7 +42,7 @@ def main():
 
     for granularity, window_key, note in CASES:
         report = generate_report(db, ATHLETE_ID, granularity, window_key, view="coach", force=True,
-                                 session_id="S143" if granularity == "daily" else None)
+                                 session_id="S152" if granularity == "daily" else None)
         print(f"\n{'=' * 72}")
         print(f"[{report['granularity']}] {report['window_key']}  {note}")
         print(f"  report_id={report['report_id'][:8]}  anchor_rebuild_hint={report['coach_extra'].get('anchor_rebuild_hint')}")
