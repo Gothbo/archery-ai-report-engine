@@ -106,6 +106,8 @@ start.bat
 
 `mock_data/训练数据集_4周_张明.json`：13 场 × 30 箭，自带逐箭心率/风速/MCRT，周均环单调上升。导入即建档（姓名等写入 `athlete_profile`）。
 
+演示满态（对齐 UI 默认「当前周」至 2026-W43）：用 `scripts/demo_reset.py` 导入 `mock_data/训练数据集_14周_张明.json`（W27–W43）。步骤见 `docs/demo_full_state.md`。
+
 ### 真 SQLite（M5，display_sys 只读消费）
 
 字段语义映射（源码摸底 + 探查核实）：
