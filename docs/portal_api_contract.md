@@ -92,6 +92,7 @@
   "view": "coach", "cached": false, "generated_at_utc": "2026-10-08T02:10:00.123Z",
   "sections": [ { "key": "window_score", "title": "本周成绩", "content": ["…"], "evidence": [] } ],
   "suggestions": [],
+  "rule_guidance": { "title": "规则引擎智能指导", "summary": "…", "bullets": [], "empty_reason": null },
   "coach_extra": { "warnings": [], "load": {}, "rolling_baseline": { "n_shots": 288, "avg_score": 9.1, "collected_at_utc": "…" } },
   "anchor_rebuild_hint": { "hint": false, "reason": "…" },
   "metrics": { "n_shots": 90, "avg_score": 9.12, "inner10_rate": 23.3, "far_miss_rate": 0.0, "hit_rate": 100.0,
@@ -101,6 +102,7 @@
 ```
 
 - 新增 `metrics`、`conclusions`；`sections` 等原有字段不变（引擎自带页面和问答骨架继续用）。
+- `rule_guidance`：确定性规则版指导骨架（与 `suggestions` 同源），供离线/规则版 UI；只增不破。
 - `athlete.name` 可为 `null`（未命名）。
 - `coach_extra` **只在 `view=coach` 时出现**（本 PR 起生成接口和 §3.1 都在服务端剔除）。
 - `metrics` 字段：`n_shots` integer；`avg_score`、`inner10_rate`（%）、`far_miss_rate`（%）、`hit_rate`（%）、`total_score` number；`mcr_t`（s）、`hr_volatility`（bpm）、`dispersion_mm`（mm）number 或 `null`（缺测）。

@@ -930,4 +930,36 @@ class TestAdviceLayer:
             "suspect": True, "block_judgement": True, "reasons": ["矛盾"]})
         draft = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach")
         assert draft.report["suggestions"] == ["本窗口数据存疑（分布存在结构性矛盾），暂不给出训练建议"]
+        assert draft.report["rule_guidance"]["empty_reason"] == "data_suspect"
+        db.close()
+
+    def test_report_includes_rule_guidance(self, engine_env):
+        """报告含 rule_guidance，与 suggestions 同源；两视图一致。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z",
+                     [0.0] * 15 + [9.0] * 15, wind=[0.8] * 30, hr=[70] * 30)
+        a = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="athlete").report
+        c = build_report(db, ATHLETE, "daily", "daily:S-A", session_id="S-A", view="coach").report
+        assert "rule_guidance" in a and "rule_guidance" in c
+        assert a["rule_guidance"] == c["rule_guidance"]
+        assert a["rule_guidance"]["empty_reason"] is None
+        texts = [b["text"] for b in a["rule_guidance"]["bullets"]]
+        assert any("脱靶" in t for t in texts)
+        # bullets 覆盖 suggestions（平台期可能额外追加，故为超集）
+        for s in a["suggestions"]:
+            assert s in texts
+        db.close()
+
+    def test_empty_window_rule_guidance_no_fabrication(self, engine_env):
+        """空窗口：rule_guidance 真实空状态，不编造。"""
+        cfg, db_path = engine_env
+        db = Database(db_path)
+        seed_session(db, ATHLETE, "S-A", "2026-08-03T01:00:00.000Z", [9.0] * 30, wind=[0.8] * 30)
+        draft = build_report(db, ATHLETE, "daily", "daily:S-EMPTY",
+                             session_id="S-EMPTY", view="coach")
+        rg = draft.report["rule_guidance"]
+        assert rg["empty_reason"] == "no_shots"
+        assert rg["bullets"] == []
+        assert "预留" not in rg["summary"]
         db.close()
