@@ -32,6 +32,7 @@ from app.metrics.vector import metric_vector
 
 from app.reports import advice as ADV
 from app.reports import conclusions as C
+from app.reports import rule_guidance as RG
 from app.reports import quality as Q
 from app.reports import rules as R
 from app.reports.window import window_bounds
@@ -665,6 +666,26 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             db, athlete_id, primary_bow, window_start, anchor_dict,
             gate_ok=gate_ok, data_ok=data_ok)
 
+    metrics_out = {k: m[k] for k in (
+        "n_shots", "avg_score", "effective_avg_score", "miss_rate",
+        "inner10_rate", "far_miss_rate", "hit_rate",
+        "total_score", "mcr_t", "hr_volatility", "dispersion_mm")}
+    conclusions_out = {
+        "schema_version": C.SCHEMA_VERSION,
+        "verdicts": verdicts,
+        "wind_gap": C.compute_wind_gap(cfg, shots),
+        "self_compare": C.compute_self_compare(
+            db, cfg, athlete_id, granularity, window_key, session_id, m, shots),
+        "plateau": plateau,
+    }
+    # 规则版指导骨架：与 suggestions 同源，供 idle / 规则版 / COACH-OFFLINE 展示
+    rule_guidance = RG.build_rule_guidance(
+        suggestions=adv["suggestions"],
+        advice_evidence=adv["evidence"],
+        metrics=metrics_out,
+        conclusions=conclusions_out,
+    )
+
     report = {
         "report_id": report_id,
         "granularity": granularity,
@@ -677,21 +698,12 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "generated_at_utc": iso_now_utc(),
         "sections": sections,
         "suggestions": adv["suggestions"],
+        "rule_guidance": rule_guidance,
         "coach_extra": coach_extra,
         "bow_type": primary_bow,
         # PR #4：结构化指标与结论（门户只展示）
-        "metrics": {k: m[k] for k in (
-            "n_shots", "avg_score", "effective_avg_score", "miss_rate",
-            "inner10_rate", "far_miss_rate", "hit_rate",
-            "total_score", "mcr_t", "hr_volatility", "dispersion_mm")},
-        "conclusions": {
-            "schema_version": C.SCHEMA_VERSION,
-            "verdicts": verdicts,
-            "wind_gap": C.compute_wind_gap(cfg, shots),
-            "self_compare": C.compute_self_compare(
-                db, cfg, athlete_id, granularity, window_key, session_id, m, shots),
-            "plateau": plateau,
-        },
+        "metrics": metrics_out,
+        "conclusions": conclusions_out,
     }
     return ReportDraft(report=report, conclusions=conclusions)
 

@@ -37,7 +37,7 @@
 | HTTP | `code` | 含义 | 建议界面状态（V17.2 §16.4） |
 | --- | --- | --- | --- |
 | 409 | `COACH-BUSY` | 引擎已有任务在跑或正在停止 | 3 已不再等待 / 重新生成禁用至空闲 |
-| 503 | `COACH-OFFLINE` | `llm.enabled=false` | 7 AI 离线 → 规则版 |
+| 503 | `COACH-OFFLINE` | `llm.enabled=false` | 7 AI 离线 → 规则版（文案来自报告 `rule_guidance`，与 `suggestions` 同源） |
 | 400 | — | 运动员不存在 / 窗口无数据等（`detail` 为说明） | 5 生成中断（COACH-4xx） |
 | 422 | — | 参数格式错误 | 5 生成中断（COACH-4xx） |
 

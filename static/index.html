@@ -1205,18 +1205,39 @@ function coachEvidenceCard(ce) {
   return details;
 }
 
-function rulesSkeletonHtml(suggestions) {
-  const stubs = (suggestions && suggestions.length)
-    ? suggestions.slice(0, 3)
-    : [
-      '保持当前训练负荷与抗风组节奏',
-      '巩固内十率：热身组强调瞄点稳定',
-      '监控撒放节奏与心率波动、大风场表现',
-    ];
-  return '<div class="rules-box"><div class="rh">规则建议骨架 <span class="pill">规则引擎预留</span></div><ul>' +
-    stubs.map((t) => '<li>' + esc(t) + ' <em>规则引擎预留</em></li>').join('') +
-    '</ul></div>' +
-    '<p class="g-hint" style="margin-top:10px">规则引擎接线后替换占位条目；AI 流式指导沿用读取 → 撰写 → 核对 → final。</p>';
+function rulesSkeletonHtml(report) {
+  const rg = (report && report.rule_guidance) || null;
+  const sug = (report && report.suggestions) || [];
+  let title = (rg && rg.title) || '规则引擎智能指导';
+  let summary = rg ? (rg.summary || '') : '';
+  let bullets = (rg && Array.isArray(rg.bullets)) ? rg.bullets : null;
+  if (!bullets) {
+    bullets = sug.map((t) => ({ text: t, source: 'advice' }));
+  }
+  const emptyReason = rg ? rg.empty_reason : (sug.length ? null : 'no_signals');
+  let pill = '规则引擎';
+  if (emptyReason === 'no_shots') pill = '无箭';
+  else if (emptyReason === 'data_suspect') pill = '数据存疑';
+  else if (emptyReason === 'no_signals') pill = '无触发';
+  else if (bullets.length) pill = bullets.length + ' 条';
+
+  let body;
+  if (!bullets.length) {
+    const emptyMsg = summary || '本窗口暂无规则建议';
+    body = '<p class="g-hint" style="margin:0">' + esc(emptyMsg) + '</p>';
+  } else {
+    const sumHtml = summary
+      ? '<p class="g-hint" style="margin:0 0 10px">' + esc(summary) + '</p>'
+      : '';
+    body = sumHtml + '<ul>' +
+      bullets.map((b) => {
+        const text = (b && b.text != null) ? b.text : String(b);
+        const src = (b && b.source) ? (' <em>' + esc(b.source) + '</em>') : '';
+        return '<li>' + esc(text) + src + '</li>';
+      }).join('') + '</ul>';
+  }
+  return '<div class="rules-box"><div class="rh">' + esc(title) +
+    ' <span class="pill">' + esc(pill) + '</span></div>' + body + '</div>';
 }
 
 function renderReport(r) {
@@ -1403,8 +1424,7 @@ function gIdle(note) {
       ? ''
       : '<div class="basis-skel" aria-hidden="true"><div class="skel" style="width:68%"></div><div class="skel" style="width:44%"></div></div>';
   }
-  const sug = (currentReport && currentReport.suggestions) || [];
-  $('gBody').innerHTML = rulesSkeletonHtml(sug) +
+  $('gBody').innerHTML = rulesSkeletonHtml(currentReport) +
     (note ? '<div class="g-hint" style="margin-top:8px">' + esc(note) + '</div>' : '');
 }
 
@@ -1572,9 +1592,8 @@ function gRules(note) {
   $('gActions').style.display = 'none';
   if ($('gRulesSkeleton')) $('gRulesSkeleton').innerHTML = '';
   $('gBasis').textContent = '规则引擎 · ' + (currentReport ? (G_NAMES[currentReport.granularity] || '') + '报告 ' + windowLabel(currentReport) : '');
-  const sug = (currentReport && currentReport.suggestions) || [];
   $('gBody').innerHTML = (note ? '<div class="g-alert warn">' + esc(note) + '</div>' : '') +
-    rulesSkeletonHtml(sug);
+    rulesSkeletonHtml(currentReport);
 }
 
 function gBusy(d) {
