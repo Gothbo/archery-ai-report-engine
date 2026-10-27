@@ -1,16 +1,16 @@
 # -*- coding: utf-8 -*-
 """扩展版 mock 数据生成器（14 周，演示"报告效果"用）。
 
-设计故事（张明，反曲弓，2026-W27 ~ W43，完整 Q3 + 对齐「今天」默认周）：
+设计故事（张明，反曲弓，2026-W27 ~ W44，完整 Q3 + 对齐「今天」默认周）：
 - 入队测试场 S101（2026-06-29）：锚点来源场（avg ~9.55 / mcrT ~0.46 / 散布 ~14mm）
 - 进步期 W27-W32：周均环 9.62 → 10.12（先稳态后超 MDC，MDC=0.30）
 - 平台期 W33-W36：均环 10.12~10.16 波动（差值稳定超 MDC，报告呈"持续进步但放缓"）
 - 再进步 W37-W40：均环 10.18 → 10.24
-- 近端巩固 W41-W43：均环 10.25 → 10.28（覆盖 UI「默认当前周」2026-W43 / 2026-10-19 起）
-- 撒放用时 mcrT：W27-W31 稳（~0.458），W32 起持续改善（0.43 → 0.35），
+- 近端巩固 W41-W44：均环 10.25 → 10.29（覆盖 UI「默认当前周」2026-W44 / 2026-10-27 起）
+- 撒放用时 mcrT：W27-W31 稳（~0.458），W32 起持续改善（0.43 → 0.348），
   差值 0.06+ 超 MDC 0.05 → 进步判定
 - 风暴场（风 >2.5）：W29-3 / W33-2 / W37-1 / W42-2；状态不佳日 W31-1（命中率低）；
-  高心率场 W35-3；跨日早训场 W43 周五 22:00Z → 北京次日 06:00
+  高心率场 W35-3；跨日早训场 W44 周五 22:00Z → 北京次日 06:00
 - 缺测：~4% heartRate、~3% windSpeed（每场有效 ≥ 20，不破样本门槛）
 
 约束沿用：seed=42、单场跨度 ≥20 分钟（箭间隔 40-60s）、物理自洽（环值/坐标/MCRT）、
@@ -31,7 +31,7 @@ OUT_DIR = Path(__file__).resolve().parent.parent / "mock_data"
 OUT_DIR.mkdir(exist_ok=True)
 
 WEEKS_FROM = 27   # 2026-W27（2026-06-29 周一）
-WEEKS_TO = 43     # 2026-W43（对齐 Asia/Shanghai「今天」默认周，界面空窗口有数据）
+WEEKS_TO = 44     # 2026-W44（对齐 Asia/Shanghai「今天」默认周，界面空窗口有数据）
 SESSIONS_PER_WEEK = 3
 SHOTS_PER_SESSION = 30
 MIN_SESSION_SPAN_MS = 20 * 60 * 1000
@@ -46,7 +46,7 @@ ATHLETE_ID = "1963169497552654337"
 WEEK_AVG_TARGET = {
     27: 9.62, 28: 9.74, 29: 9.86, 30: 9.98, 31: 10.06, 32: 10.12,
     33: 10.14, 34: 10.12, 35: 10.16, 36: 10.13, 37: 10.18, 38: 10.20,
-    39: 10.22, 40: 10.24, 41: 10.25, 42: 10.26, 43: 10.28,
+    39: 10.22, 40: 10.24, 41: 10.25, 42: 10.26, 43: 10.28, 44: 10.29,
 }
 # 锚点场（入队测试）skill 基准略低于首周目标
 ANCHOR_SKILL = 9.55
@@ -55,7 +55,7 @@ ANCHOR_SKILL = 9.55
 WEEK_MCRT = {
     27: 0.458, 28: 0.456, 29: 0.460, 30: 0.455, 31: 0.452, 32: 0.430,
     33: 0.420, 34: 0.410, 35: 0.398, 36: 0.390, 37: 0.385, 38: 0.378,
-    39: 0.372, 40: 0.365, 41: 0.360, 42: 0.355, 43: 0.350,
+    39: 0.372, 40: 0.365, 41: 0.360, 42: 0.355, 43: 0.350, 44: 0.348,
 }
 
 STORM_SESSIONS = {(29, 3), (33, 2), (37, 1), (42, 2)}  # (week, session_idx) 风暴
@@ -203,12 +203,14 @@ def self_check(sessions):
     w32_diff = avgs[32] - anchor
     w40_diff = avgs[40] - anchor
     w43_diff = avgs[43] - anchor
+    w44_diff = avgs[44] - anchor
     assert w27_diff < 0.30, f"W27 应未超 MDC（稳态）：{w27_diff}"
     assert w32_diff >= 0.30, f"W32 应超 MDC（进步）：{w32_diff}"
-    assert w40_diff >= 0.55, f"W40 应明显进步：{w40_diff}"  # 跨日场已迁至 W43，W40 仅 3 场
+    assert w40_diff >= 0.55, f"W40 应明显进步：{w40_diff}"  # 跨日场已迁至当前演示周，W40 仅 3 场
     assert w43_diff >= 0.65, f"W43 应巩固进步：{w43_diff}"
-    assert avgs[43] >= avgs[40] >= avgs[32], f"周均环不应倒退：{avgs}"
-    print(f"4) 周均环故事：W27 {avgs[27]}（+{w27_diff:.2f} 稳态）→ W32 {avgs[32]}（+{w32_diff:.2f} 进步）→ W40 {avgs[40]}（+{w40_diff:.2f}）→ W43 {avgs[43]}（+{w43_diff:.2f}）通过")
+    assert w44_diff >= 0.68, f"W44 应巩固进步：{w44_diff}"
+    assert avgs[44] >= avgs[43] >= avgs[40] >= avgs[32], f"周均环不应倒退：{avgs}"
+    print(f"4) 周均环故事：W27 {avgs[27]}（+{w27_diff:.2f} 稳态）→ W32 {avgs[32]}（+{w32_diff:.2f} 进步）→ W40 {avgs[40]}（+{w40_diff:.2f}）→ W44 {avgs[44]}（+{w44_diff:.2f}）通过")
 
     # 5) 风暴场
     for wk, sidx in STORM_SESSIONS:
@@ -233,15 +235,15 @@ def main():
             start = monday.timestamp() * 1000 + (s - 1) * SESSION_GAP_DAYS * 86400000
             sessions.append(gen_session(w, s, g, int(start)))
             g += 1
-    # 跨日早训场（W43 周五 22:00Z → 北京周六 06:00；保持「当前演示周」可点日报）
-    cross_start = datetime(2026, 10, 23, 22, 0, 0, tzinfo=timezone.utc)
-    sessions.append(gen_session(43, 4, g, int(cross_start.timestamp() * 1000), force_cross_day=True))
+    # 跨日早训场（W44 周五 22:00Z → 北京周六 06:00；保持「当前演示周」可点日报）
+    cross_start = datetime(2026, 10, 30, 22, 0, 0, tzinfo=timezone.utc)
+    sessions.append(gen_session(44, 4, g, int(cross_start.timestamp() * 1000), force_cross_day=True))
 
     data = {"athlete": ATHLETE, "sessions": sessions}
     out = OUT_DIR / "训练数据集_14周_张明.json"
     out.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
     self_check(sessions)
-    print(f"生成完成: {out}（{len(sessions)} 场 × {SHOTS_PER_SESSION} 箭，2026-W27 ~ W43）")
+    print(f"生成完成: {out}（{len(sessions)} 场 × {SHOTS_PER_SESSION} 箭，2026-W27 ~ W44）")
 
 
 if __name__ == "__main__":
