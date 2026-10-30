@@ -163,3 +163,10 @@ class TestLane:
     def test_unknown_athlete_lane_null(self, client):
         one = client.get("/api/v1/athletes/NOPE").json()
         assert one["lane"] is None and one["lane_seen_at_utc"] is None and one["profile"] is None
+
+
+def test_weekly_falls_back_to_latest_week_with_data():
+    """周报默认本周；本周无场次时回退到最近有数据的周，并给出提示。"""
+    html = STATIC.read_text(encoding="utf-8")
+    assert "本周暂无数据，已显示最近有数据的" in html
+    assert "weeks.indexOf(w.week) < 0" in html
