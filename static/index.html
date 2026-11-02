@@ -764,7 +764,16 @@ function windowParams(g) {
   }
   const w = currentWindow();
   $('windowHint').textContent = '';
-  if (g === 'weekly') return { week: w.week };
+  if (g === 'weekly') {
+    // 本周无场次时，回退到最近有数据的周（复用已加载的 /sessions 列表，不新增接口）
+    const weeks = sessions.map((s) => s.session_time_utc ? isoWeek(new Date(s.session_time_utc)) : '').filter(Boolean);
+    if (weeks.length && weeks.indexOf(w.week) < 0) {
+      const latest = weeks.slice().sort().pop();
+      $('windowHint').textContent = '本周暂无数据，已显示最近有数据的 ' + latest.split('-')[1];
+      return { week: latest };
+    }
+    return { week: w.week };
+  }
   if (g === 'monthly') return { month: w.month };
   if (g === 'quarterly') return { quarter: w.quarter };
   return { year: w.year };
