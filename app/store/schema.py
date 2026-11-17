@@ -226,4 +226,29 @@ CREATE TABLE IF NOT EXISTS v12_raw_message (
     release_time_utc TEXT,
     payload_json     TEXT NOT NULL
 );
+
+-- 多轮对话：每位运动员每个视角一条活动线程（刷新后可回放）
+CREATE TABLE IF NOT EXISTS conversations (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id      TEXT NOT NULL,
+    view            TEXT NOT NULL CHECK (view IN ('athlete', 'coach')),
+    created_at_utc  TEXT NOT NULL,
+    updated_at_utc  TEXT NOT NULL,
+    UNIQUE (athlete_id, view)
+);
+CREATE TABLE IF NOT EXISTS conversation_messages (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    conversation_id   INTEGER NOT NULL,
+    role              TEXT NOT NULL CHECK (role IN ('user', 'assistant')),
+    content           TEXT NOT NULL,
+    created_at_utc    TEXT NOT NULL,
+    report_id         TEXT,
+    granularity       TEXT,
+    window_key        TEXT,
+    degraded          INTEGER,
+    context_version   TEXT,
+    FOREIGN KEY (conversation_id) REFERENCES conversations(id)
+);
+CREATE INDEX IF NOT EXISTS idx_conv_messages
+    ON conversation_messages(conversation_id, id);
 """

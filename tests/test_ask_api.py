@@ -191,3 +191,162 @@ class TestAskMockOn:
         body = r.json()
         assert body["suggested_note"] is not None
         assert body["suggested_note"]["readonly"] is True  # D4：MVP 只展示不落库
+
+
+class TestAskMultiTurn:
+    @pytest.fixture()
+    def llm_env(self, tmp_path, monkeypatch):
+        import app.config as cfgmod
+        import app.store.database as dbmod
+        import tests.conftest as ct
+        cfg = ct._make_temp_config(tmp_path)
+        cfg["llm"] = {"enabled": True, "provider": "mock", "model": "mock",
+                      "endpoint": "http://127.0.0.1:1"}
+        (tmp_path / "config.json").write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+        monkeypatch.setenv("ENGINE_CONFIG", str(tmp_path / "config.json"))
+        monkeypatch.setattr(cfgmod, "CONFIG_PATH", tmp_path / "config.json")
+        cfgmod.get_config.cache_clear()
+        dbmod._SINGLETON = None
+        yield cfg
+        cfgmod.get_config.cache_clear()
+        dbmod._SINGLETON = None
+
+    @pytest.fixture()
+    def mclient(self, llm_env):
+        return TestClient(app)
+
+    def test_second_ask_includes_prior_turn(self, mclient, monkeypatch):
+        """同一 athlete+view 的第二次提问应带上第一轮，并写入同一线程。"""
+        _ingest_and_report(mclient)
+        captured: list[list[dict]] = []
+
+        def factory(cfg):
+            from app.llm.client import MockLLMClient
+
+            def responder(messages):
+                captured.append(messages)
+                return "请看本窗口报告结论。"
+
+            return MockLLMClient(responder=responder)
+
+        import app.api.ask as askmod
+        monkeypatch.setattr(askmod, "get_llm_client", factory)
+
+        r1 = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                          json={"question": "这周怎么样？", "view": "coach"})
+        assert r1.status_code == 200
+        body1 = r1.json()
+        assert body1["degraded"] is False
+        assert body1["conversation_id"]
+
+        r2 = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                          json={"question": "能再说一遍吗？", "view": "coach"})
+        assert r2.status_code == 200
+        body2 = r2.json()
+        assert body2["conversation_id"] == body1["conversation_id"]
+        assert len(captured) == 2
+        prior_text = "\n".join(m["content"] for m in captured[1])
+        assert "这周怎么样？" in prior_text
+        assert "请看本窗口报告结论。" in prior_text
+        assert captured[1][-1] == {"role": "user", "content": "能再说一遍吗？"}
+        assert captured[1][0]["role"] == "system"
+
+    def test_get_conversation_survives_new_client(self, mclient, monkeypatch):
+        _ingest_and_report(mclient)
+        from app.llm.client import MockLLMClient
+        mock = MockLLMClient(responses=["请看本窗口报告结论。", "可以继续问。"])
+
+        import app.api.ask as askmod
+        monkeypatch.setattr(askmod, "get_llm_client", lambda cfg: mock)
+        mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                     json={"question": "这周怎么样？", "view": "coach"})
+        mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                     json={"question": "还有补充吗？", "view": "coach"})
+
+        other = TestClient(app)
+        g = other.get(f"/api/v1/athletes/{ATHLETE}/conversation", params={"view": "coach"})
+        assert g.status_code == 200
+        body = g.json()
+        assert body["conversation_id"]
+        roles = [(m["role"], m["content"]) for m in body["messages"]]
+        assert roles == [
+            ("user", "这周怎么样？"),
+            ("assistant", "请看本窗口报告结论。"),
+            ("user", "还有补充吗？"),
+            ("assistant", "可以继续问。"),
+        ]
+
+        empty = other.get(f"/api/v1/athletes/{ATHLETE}/conversation", params={"view": "athlete"})
+        assert empty.status_code == 200
+        assert empty.json()["messages"] == []
+        assert empty.json()["conversation_id"] is None
+
+    def test_unknown_athlete_conversation_400(self, mclient):
+        r = mclient.get("/api/v1/athletes/NOPE/conversation")
+        assert r.status_code == 400
+
+    def test_old_note_in_ask_not_in_notes_panel(self, mclient):
+        """超过 14 天的 active 备注进入 ask 上下文，但不出现在备注面板。"""
+        _ingest_and_report(mclient)
+        db = get_database()
+        db.insert_note({
+            "athlete_id": ATHLETE,
+            "note_type": "goal",
+            "content": "旧目标守住 9.50 均环",
+            "author_role": "athlete",
+            "actor_id": ATHLETE,
+            "created_at_utc": "2026-01-01T00:00:00.000Z",
+        })
+        listed = mclient.get(f"/api/v1/athletes/{ATHLETE}/notes", params={"view": "coach"}).json()
+        assert all("旧目标守住 9.50" not in (n.get("content") or "") for n in listed["notes"])
+
+        r = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                         json={"question": "目标还记得吗？", "view": "coach"})
+        assert r.status_code == 200
+        body = r.json()
+        assert any("旧目标守住 9.50" in (s.get("summary") or "") for s in body["sources"])
+
+    def test_history_number_not_false_g2(self, mclient, monkeypatch):
+        """用户上一轮提到的数字应并入允许集合，跟问时不得被 G2 误降级。"""
+        _ingest_and_report(mclient)
+        from app.llm.client import MockLLMClient
+        replies = iter(["请看本窗口报告结论。", "你提到的 8.88 并不在本窗口骨架里。"])
+
+        def factory(cfg):
+            return MockLLMClient(responder=lambda _msgs: next(replies))
+
+        import app.api.ask as askmod
+        monkeypatch.setattr(askmod, "get_llm_client", factory)
+        r1 = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                          json={"question": "我记得有个 8.88 环", "view": "coach"})
+        assert r1.status_code == 200
+        assert r1.json()["degraded"] is False
+        r2 = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                          json={"question": "刚才那个 8.88 是怎么来的", "view": "coach"})
+        assert r2.status_code == 200
+        body = r2.json()
+        assert body["degraded"] is False
+        assert "8.88" in body["answer"]
+
+    def test_confirm_note_writeback_conversation(self, mclient):
+        """建议记录需确认后才落库；带 provenance=conversation。"""
+        _ingest_and_report(mclient)
+        add_note(get_database(), ATHLETE, "goal", "冲击 9.8 均环", "athlete", ATHLETE)
+        r = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask",
+                         json={"question": "怎么调整训练目标？", "view": "coach"})
+        sn = r.json()["suggested_note"]
+        assert sn["readonly"] is True
+        posted = mclient.post(f"/api/v1/athletes/{ATHLETE}/notes", json={
+            "note_type": sn["note_type"],
+            "content": sn["content"],
+            "author_role": "coach",
+            "actor_id": ATHLETE,
+            "provenance": "conversation",
+            "quote_text": "怎么调整训练目标？",
+        })
+        assert posted.status_code == 200
+        notes = mclient.get(f"/api/v1/athletes/{ATHLETE}/notes", params={"view": "coach"}).json()["notes"]
+        written = [n for n in notes if n["id"] == posted.json()["note_id"]][0]
+        assert written["provenance"] == "conversation"
+        assert written["quote_text"] == "怎么调整训练目标？"
+        assert written["confirmed_at_utc"]

@@ -31,6 +31,8 @@ class NoteCreate(BaseModel):
     content: str
     author_role: str
     actor_id: str  # 录入人雪花 ID（审计；归属校验 WHERE athlete_id，A6）
+    provenance: str | None = None  # conversation | report | manual；确认写入时用
+    quote_text: str | None = None
 
 
 @notes_router.get("/notes")
@@ -44,7 +46,8 @@ def list_notes(athlete_id: str, view: str = Query(default="athlete", pattern="^(
 def create_note(athlete_id: str, body: NoteCreate) -> dict:
     db = get_database()
     try:
-        nid = add_note(db, athlete_id, body.note_type, body.content, body.author_role, body.actor_id)
+        nid = add_note(db, athlete_id, body.note_type, body.content, body.author_role, body.actor_id,
+                       provenance=body.provenance, quote_text=body.quote_text)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok", "note_id": nid}
