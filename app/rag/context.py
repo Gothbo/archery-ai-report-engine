@@ -4,8 +4,9 @@
 数据源与报告生成器同源，保证「对话里的数字能在报告里找到」（G2 承诺）：
 - 档案 athlete_profile
 - 目标窗口报告 sections（指定窗口则生成该窗口；未指定取最近一份已生成报告）
-- 历史结论（同粒度最近 1 条 judgement，沿用记忆契约 B2/D5）
-- active 备注（14 天窗口，双视角过滤 A2/D9）
+- 历史结论（跨粒度最近 N 条 judgement；报告生成引用仍走 latest_memory / B2/D5）
+- active 备注（对话上下文取全部 active，仍按视角过滤；备注面板仍为 14 天窗口）
+- 近窗关键指标摘要（已缓存报告，不重新计分）
 - 滚动基线 coach_extra.rolling_baseline
 
 输出：skeleton（结构化结论骨架 + 全部数值）、sources（溯源列表）、
@@ -23,7 +24,7 @@ import re
 from typing import Callable
 
 from app.config import get_config
-from app.memory.notes import list_notes_for_view
+from app.memory.notes import list_notes_for_ask
 from app.reports.generator import generate_report
 from app.reports.window import WindowKey
 from app.store.database import Database
@@ -31,6 +32,10 @@ from app.store.database import Database
 logger = logging.getLogger("engine.rag.context")
 
 GRANULARITIES = ("daily", "weekly", "monthly", "quarterly", "yearly")
+
+# 对话骨架规模：llama-server -c 4096，保持紧凑
+HISTORY_JUDGEMENT_LIMIT = 10
+RECENT_WINDOW_LIMIT = 6
 
 _NOTE_KEYWORDS = ("伤", "疼", "痛", "目标", "建议", "注意", "调整", "恢复", "改进")
 
@@ -68,11 +73,12 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         report = generate_report(db, athlete_id, _granularity, _window_key,
                                  session_id=session_id, view=view, force=True)
 
-    notes = list_notes_for_view(db, athlete_id, view)
-    history = db.latest_memory(athlete_id, _granularity)
+    notes = list_notes_for_ask(db, athlete_id, view)
+    history = db.list_recent_judgements(athlete_id, HISTORY_JUDGEMENT_LIMIT)
+    recent_windows = _recent_window_summaries(db, athlete_id, RECENT_WINDOW_LIMIT)
 
-    skeleton_text = _skeleton_text(report, notes, history)
-    sources = _sources(report, notes, history)
+    skeleton_text = _skeleton_text(report, notes, history, profile, recent_windows)
+    sources = _sources(report, notes, history, recent_windows)
     numbers = extract_numbers(skeleton_text)
     version = hashlib.sha1(skeleton_text.encode("utf-8")).hexdigest()[:12]
 
@@ -83,7 +89,7 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         "window_key": _window_key,
         "report_id": report.get("report_id"),
         "skeleton": skeleton_text,
-        "skeleton_json": _skeleton_json(report, notes, history),
+        "skeleton_json": _skeleton_json(report, notes, history, profile, recent_windows),
         "numbers": numbers,
         "sources": sources,
         "version": version,
@@ -91,27 +97,118 @@ def assemble_context(db: Database, athlete_id: str, question: str,
     }
 
 
-def _skeleton_text(report: dict, notes: list[dict], history) -> str:
+def _profile_bits(profile) -> dict:
+    if profile is None:
+        return {}
+    bits = {}
+    for key in ("name", "bow_type", "hand", "level", "age"):
+        val = profile[key] if key in profile.keys() else None
+        if val is not None and val != "":
+            bits[key] = val
+    return bits
+
+
+def _history_rows(history) -> list[dict]:
+    if not history:
+        return []
+    if isinstance(history, list):
+        return [dict(h) for h in history]
+    return [dict(history)]
+
+
+def _history_line(h: dict) -> str:
+    g = h.get("granularity") or ""
+    wk = h.get("window_key") or ""
+    key = h.get("conclusion_key") or ""
+    prefix = " ".join(p for p in (g, wk, key) if p)
+    return f"{prefix} {h.get('conclusion') or ''}".strip()
+
+
+def _recent_window_summaries(db: Database, athlete_id: str, limit: int) -> list[dict]:
+    """从已缓存报告抽取紧凑摘要，不重新计分。"""
+    out: list[dict] = []
+    for row in db.cached_reports_of_athlete(athlete_id)[:limit]:
+        item = {
+            "granularity": row["granularity"],
+            "window_key": row["window_key"],
+            "generated_at_utc": row["generated_at_utc"],
+        }
+        raw = row["report_json"] if "report_json" in row.keys() else None
+        if raw:
+            try:
+                body = json.loads(raw)
+            except (TypeError, json.JSONDecodeError, ValueError):
+                body = None
+            if isinstance(body, dict):
+                metrics = body.get("metrics") or {}
+                if "n_shots" in metrics:
+                    item["n_shots"] = metrics.get("n_shots")
+                if "avg_score" in metrics:
+                    item["avg_score"] = metrics.get("avg_score")
+                verdicts = (body.get("conclusions") or {}).get("verdicts") or {}
+                line = _compact_verdict_line(verdicts)
+                if line:
+                    item["verdict"] = line
+        out.append(item)
+    return out
+
+
+def _compact_verdict_line(verdicts: dict) -> str | None:
+    if not isinstance(verdicts, dict):
+        return None
+    parts = []
+    for metric, entry in verdicts.items():
+        if not isinstance(entry, dict):
+            continue
+        verdict = entry.get("verdict")
+        if not verdict:
+            continue
+        parts.append(f"{metric}:{verdict}")
+        if len(parts) >= 3:
+            break
+    return "，".join(parts) if parts else None
+
+
+def _window_line(w: dict) -> str:
+    bits = [f"{w.get('granularity')}:{w.get('window_key')}"]
+    if w.get("n_shots") is not None:
+        bits.append(f"n={w['n_shots']}")
+    if w.get("avg_score") is not None:
+        bits.append(f"平均环={w['avg_score']}")
+    if w.get("verdict"):
+        bits.append(str(w["verdict"]))
+    return " ".join(str(b) for b in bits)
+
+
+def _skeleton_text(report: dict, notes: list[dict], history, profile=None,
+                   recent_windows: list[dict] | None = None) -> str:
     lines: list[str] = []
+    bits = _profile_bits(profile)
+    if bits:
+        lines.append("[档案] " + " ".join(f"{k}={v}" for k, v in bits.items()))
     for sec in report["sections"]:
         lines.append(f"[{sec['title']}] " + "；".join(str(c) for c in sec["content"]))
     rb = report.get("coach_extra", {}).get("rolling_baseline")
     if rb:
         lines.append(f"[滚动基线] n={rb['n_shots']} 平均环={rb.get('avg_score')}")
+    for w in recent_windows or []:
+        lines.append(f"[近窗] {_window_line(w)}")
     for n in notes:
         lines.append(f"[备注] {n['content']}（类型={n['note_type']}，记录人={'教练' if n['author_role']=='coach' else '运动员'}）")
-    if history:
-        lines.append(f"[历史结论] {history['conclusion']}")
+    for h in _history_rows(history):
+        lines.append(f"[历史结论] {_history_line(h)}")
     return "\n".join(lines)
 
 
-def _skeleton_json(report: dict, notes: list[dict], history) -> str:
+def _skeleton_json(report: dict, notes: list[dict], history, profile=None,
+                   recent_windows: list[dict] | None = None) -> str:
     """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源；evidence 明细按 ADR-0005 仅 coach 视图注入。"""
     evidence_by_key = report.get("coach_extra", {}).get("evidence", {})
     payload = {
         "granularity": report["granularity"],
         "window_key": report["window_key"],
         "athlete": report["athlete"],
+        "profile": _profile_bits(profile),
         "sections": [
             {"title": s["title"], "content": s["content"],
              "evidence": s.get("evidence") or evidence_by_key.get(s["key"], [])}
@@ -119,13 +216,23 @@ def _skeleton_json(report: dict, notes: list[dict], history) -> str:
         ],
         "notes": [{"note_type": n["note_type"], "content": n["content"],
                    "author_role": n["author_role"]} for n in notes],
+        "history_conclusions": [
+            {"id": h.get("id"), "granularity": h.get("granularity"),
+             "window_key": h.get("window_key"), "conclusion_key": h.get("conclusion_key"),
+             "conclusion": h.get("conclusion")}
+            for h in _history_rows(history)
+        ],
+        "recent_windows": recent_windows or [],
     }
-    if history:
-        payload["history_conclusion"] = history["conclusion"]
+    # 兼容旧字段：保留最近一条，避免只认 history_conclusion 的读取方落空
+    rows = payload["history_conclusions"]
+    if rows:
+        payload["history_conclusion"] = rows[0].get("conclusion")
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _sources(report: dict, notes: list[dict], history) -> list[dict]:
+def _sources(report: dict, notes: list[dict], history,
+             recent_windows: list[dict] | None = None) -> list[dict]:
     """溯源列表：每段引用 type/ref/title/摘要，供前端折叠展示。"""
     sources: list[dict] = []
     for sec in report["sections"]:
@@ -137,12 +244,19 @@ def _sources(report: dict, notes: list[dict], history) -> list[dict]:
     if rb:
         sources.append({"type": "baseline", "ref": "rolling",
                         "title": "滚动基线", "summary": f"n={rb['n_shots']} 平均环={rb.get('avg_score')}"})
+    for w in recent_windows or []:
+        sources.append({
+            "type": "recent_window",
+            "ref": f"{w.get('granularity')}:{w.get('window_key')}",
+            "title": "近窗摘要",
+            "summary": _window_line(w),
+        })
     for n in notes:
         sources.append({"type": "note", "ref": f"note:{n['id']}", "title": f"备注·{n['note_type']}",
                         "summary": n["content"]})
-    if history:
-        sources.append({"type": "memory", "ref": f"memory:{history['id']}",
-                        "title": "历史结论", "summary": history["conclusion"]})
+    for h in _history_rows(history):
+        sources.append({"type": "memory", "ref": f"memory:{h.get('id')}",
+                        "title": "历史结论", "summary": _history_line(h)})
     return sources
 
 

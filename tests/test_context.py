@@ -131,3 +131,68 @@ class TestExtractNumbers:
 
     def test_date_normalized(self):
         assert extract_numbers("锚点 2026-06-29 采集") == [20260629.0]
+
+
+class TestRicherAskContext:
+    def test_old_active_note_in_ask_context(self, mock_db):
+        generate_report(mock_db, ATHLETE, "weekly", "2026-W32", view="coach", force=True)
+        mock_db.insert_note({
+            "athlete_id": ATHLETE,
+            "note_type": "injury",
+            "content": "二十天前右肩旧伤仍在观察",
+            "author_role": "athlete",
+            "actor_id": ATHLETE,
+            "created_at_utc": "2026-01-01T00:00:00.000Z",
+        })
+        from app.memory.notes import list_notes_for_view
+        panel = list_notes_for_view(mock_db, ATHLETE, "coach")
+        assert all("二十天前右肩" not in n["content"] for n in panel)
+        ctx = assemble_context(mock_db, ATHLETE, "伤病还在吗？", view="coach")
+        assert "二十天前右肩旧伤仍在观察" in ctx["skeleton"]
+        assert any("二十天前右肩" in (s.get("summary") or "") for s in ctx["sources"])
+
+    def test_multiple_historical_judgements(self, mock_db):
+        generate_report(mock_db, ATHLETE, "weekly", "2026-W32", view="coach", force=True)
+        for i, (gran, key, text) in enumerate((
+            ("weekly", "progress", "周报进步结论甲 1.11"),
+            ("monthly", "regression", "月报回退结论乙 2.22"),
+            ("daily", "plateau", "日报平台期结论丙 3.33"),
+        ), start=1):
+            mock_db.insert_report_memory({
+                "athlete_id": ATHLETE,
+                "report_id": f"R-MEM-{i}",
+                "granularity": gran,
+                "conclusion_type": "judgement",
+                "conclusion_key": key,
+                "conclusion": text,
+                "judge_basis": None,
+                "delta_value": 0.1 * i,
+                "evidence": None,
+                "generated_at_utc": f"2026-08-0{i}T00:00:00.000Z",
+            })
+        latest = mock_db.latest_memory(ATHLETE, "weekly")
+        # B2/D5：同粒度最近 1 条，不因对话检索变多
+        weeklys = mock_db.query(
+            "SELECT id FROM report_memories WHERE athlete_id=? AND granularity='weekly' "
+            "AND conclusion_type='judgement' ORDER BY generated_at_utc DESC",
+            (ATHLETE,))
+        assert latest["id"] == weeklys[0]["id"]
+
+        ctx = assemble_context(mock_db, ATHLETE, "历史表现如何？", view="coach")
+        mem_sources = [s for s in ctx["sources"] if s["type"] == "memory"]
+        summaries = " ".join(s["summary"] for s in mem_sources)
+        assert "周报进步结论甲 1.11" in summaries
+        assert "月报回退结论乙 2.22" in summaries
+        assert "日报平台期结论丙 3.33" in summaries
+        assert len(mem_sources) >= 3
+        assert "1.11" in ctx["skeleton"]
+        assert 1.11 in ctx["numbers"]
+        assert 2.22 in ctx["numbers"]
+
+    def test_recent_windows_in_skeleton(self, mock_db):
+        generate_report(mock_db, ATHLETE, "weekly", "2026-W32", view="coach", force=True)
+        generate_report(mock_db, ATHLETE, "weekly", "2026-W33", view="coach", force=True)
+        ctx = assemble_context(mock_db, ATHLETE, "近几周如何？", view="coach")
+        assert any(s["type"] == "recent_window" for s in ctx["sources"])
+        assert "[近窗]" in ctx["skeleton"]
+        assert "2026-W32" in ctx["skeleton"] or "2026-W33" in ctx["skeleton"]

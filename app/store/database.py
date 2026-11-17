@@ -407,8 +407,9 @@ class Database:
     def insert_note(self, note: dict) -> int:
         cur = self._execute(
             """INSERT INTO memory_notes
-                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc, closed_at_utc)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc, closed_at_utc,
+                  provenance, quote_text, confirmed_at_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 note["athlete_id"],
                 note["note_type"],
@@ -418,6 +419,9 @@ class Database:
                 "active",
                 note["created_at_utc"],
                 None,
+                note.get("provenance"),
+                note.get("quote_text"),
+                note.get("confirmed_at_utc"),
             ),
         )
         return cur.lastrowid
@@ -461,13 +465,24 @@ class Database:
         return cur.lastrowid
 
     def latest_memory(self, athlete_id: str, granularity: str) -> sqlite3.Row | None:
-        """历史结论引用（B2/D5）：同粒度、时间最近 1 条 judgement。"""
+        """历史结论引用（B2/D5）：同粒度、时间最近 1 条 judgement。报告生成引用规则保持不变。"""
         rows = self._query(
             """SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?
                  AND conclusion_type='judgement' ORDER BY generated_at_utc DESC LIMIT 1""",
             (athlete_id, granularity),
         )
         return rows[0] if rows else None
+
+    def list_recent_judgements(self, athlete_id: str, limit: int = 10) -> list[sqlite3.Row]:
+        """对话上下文用：跨粒度、时间最近 N 条 judgement（不改变 latest_memory / B2/D5）。"""
+        return self._query(
+            """SELECT m.*, c.window_key AS window_key
+                 FROM report_memories m
+                 LEFT JOIN report_cache c ON c.report_id = m.report_id
+                WHERE m.athlete_id=? AND m.conclusion_type='judgement'
+                ORDER BY m.generated_at_utc DESC LIMIT ?""",
+            (athlete_id, limit),
+        )
 
     def list_memories(self, athlete_id: str) -> list[sqlite3.Row]:
         # window_key 取自报告缓存（report_memories 本身不存窗口键），供前端标注结论属于哪个窗口
@@ -586,6 +601,65 @@ class Database:
         self._execute(
             "DELETE FROM report_cache WHERE athlete_id=? AND granularity='daily' AND window_key=?",
             (athlete_id, f"daily:{session_id}"),
+        )
+
+
+    # ---- 多轮对话 ----
+
+    def get_conversation(self, athlete_id: str, view: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM conversations WHERE athlete_id=? AND view=?",
+            (athlete_id, view),
+        )
+        return rows[0] if rows else None
+
+    def get_or_create_conversation(self, athlete_id: str, view: str) -> sqlite3.Row:
+        """每位运动员每个视角一条活动线程。"""
+        now = _iso_now()
+        self._execute(
+            """INSERT INTO conversations (athlete_id, view, created_at_utc, updated_at_utc)
+               VALUES (?,?,?,?)
+               ON CONFLICT(athlete_id, view) DO NOTHING""",
+            (athlete_id, view, now, now),
+        )
+        row = self.get_conversation(athlete_id, view)
+        if row is None:
+            raise RuntimeError(f"无法创建对话线程 athlete={athlete_id} view={view}")
+        return row
+
+    def append_conversation_message(self, conversation_id: int, role: str, content: str,
+                                    *, report_id: str | None = None, granularity: str | None = None,
+                                    window_key: str | None = None, degraded: bool | None = None,
+                                    context_version: str | None = None) -> int:
+        now = _iso_now()
+        cur = self._execute(
+            """INSERT INTO conversation_messages
+                 (conversation_id, role, content, created_at_utc,
+                  report_id, granularity, window_key, degraded, context_version)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (conversation_id, role, content, now, report_id, granularity, window_key,
+             None if degraded is None else (1 if degraded else 0), context_version),
+        )
+        self._execute(
+            "UPDATE conversations SET updated_at_utc=? WHERE id=?",
+            (now, conversation_id),
+        )
+        return cur.lastrowid
+
+    def list_conversation_messages(self, conversation_id: int, limit: int | None = None) -> list[sqlite3.Row]:
+        """按写入顺序返回；limit 取最近 N 条，仍按时间正序。"""
+        if limit is None:
+            return self._query(
+                """SELECT * FROM conversation_messages
+                   WHERE conversation_id=? ORDER BY id ASC""",
+                (conversation_id,),
+            )
+        return self._query(
+            """SELECT * FROM (
+                 SELECT * FROM conversation_messages
+                  WHERE conversation_id=? ORDER BY id DESC LIMIT ?
+               ) ORDER BY id ASC""",
+            (conversation_id, limit),
         )
 
 
