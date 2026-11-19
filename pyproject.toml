@@ -23,6 +23,9 @@ dev = [
     "pytest>=8.0",
     "httpx>=0.27",
 ]
+desktop = [
+    "pywebview>=6.2",
+]
 
 [tool.setuptools.packages.find]
 include = ["app*"]

@@ -91,6 +91,17 @@ app.mount("/swagger-static", StaticFiles(directory=_SWAGGER_STATIC), name="swagg
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "static")
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
 
+# V10 桌面端：静态壳与空态（desktop/，与引擎同源；写请求仍走 CrossSiteWriteGuard）
+_DESKTOP_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "desktop")
+
+
+@app.get("/desktop", include_in_schema=False)
+def desktop_root() -> RedirectResponse:
+    return RedirectResponse(url="/desktop/", status_code=307)
+
+
+app.mount("/desktop", StaticFiles(directory=_DESKTOP_DIR, html=True), name="desktop")
+
 
 @app.get("/portal", include_in_schema=False)
 def portal_root() -> RedirectResponse:

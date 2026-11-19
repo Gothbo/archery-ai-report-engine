@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>射箭训练报告</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<div class="app" role="application" aria-label="射箭训练报告">
+  <header class="titlebar">
+    <div class="tb-left">
+      <img class="app-logo" src="./assets/suooter-logo.png" alt="SUOOTER" width="132" height="22">
+      <span class="app-sep"></span>
+      <span class="app-doc">射箭训练报告</span>
+      <span class="app-ver">V10 正式</span>
+    </div>
+    <div class="tb-right">
+      <div class="seg" id="viewSeg" role="tablist" aria-label="视图">
+        <button type="button" class="on" data-view="coach" role="tab" aria-selected="true">教练</button>
+        <button type="button" data-view="athlete" role="tab" aria-selected="false">运动员</button>
+      </div>
+      <div class="win-btns">
+        <button type="button" class="wb" data-win="min" title="最小化" aria-label="最小化">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M1 5h8" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        </button>
+        <button type="button" class="wb" data-win="max" title="最大化" aria-label="最大化">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="1.2" y="1.2" width="7.6" height="7.6" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        </button>
+        <button type="button" class="wb close" data-win="close" title="关闭" aria-label="关闭">
+          <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M2 2l6 6M8 2L2 8" stroke="currentColor" stroke-width="1.2" fill="none"/></svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <div class="app-body">
+    <nav class="app-rail" aria-label="工作区">
+      <button type="button" class="on" data-rail="report" title="报告">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="1.5"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>
+        <span>报告</span>
+      </button>
+      <button type="button" data-rail="athletes" title="运动员">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="8" r="3.2"/><path d="M5.5 19c1.4-3.2 3.6-4.6 6.5-4.6S16.1 15.8 17.5 19"/></svg>
+        <span>运动员</span>
+      </button>
+      <button type="button" data-rail="sessions" title="场次">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="5" width="16" height="15" rx="1.5"/><path d="M8 3v4M16 3v4M4 10h16"/></svg>
+        <span>场次</span>
+      </button>
+      <span class="spacer"></span>
+      <button type="button" data-rail="settings" title="设置">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6.2 6.2l1.6 1.6M16.2 16.2l1.6 1.6M17.8 6.2l-1.6 1.6M7.8 16.2l-1.6 1.6"/></svg>
+        <span>设置</span>
+      </button>
+    </nav>
+
+    <div class="stage-col">
+      <div class="ctrl" role="toolbar" aria-label="报告控制">
+        <div class="ctrl-source" aria-label="训练对象">
+          <div class="cell">
+            <span class="k">运动员</span>
+            <select id="athleteSelect" aria-label="运动员" disabled>
+              <option>正在载入…</option>
+            </select>
+          </div>
+          <div class="cell">
+            <span class="k">弓种</span>
+            <span class="val" id="bowValue">—</span>
+          </div>
+          <div class="cell grow">
+            <span class="k">场次</span>
+            <select id="sessionSelect" aria-label="场次" disabled>
+              <option value="">尚未选择</option>
+            </select>
+          </div>
+        </div>
+        <div class="ctrl-action" aria-label="生成报告">
+          <div class="cell">
+            <span class="k">报告类型</span>
+            <div class="gran" id="typeGroup" role="group" aria-label="报告类型">
+              <button type="button" data-type="daily">日报</button>
+              <button type="button" data-type="weekly" class="on">周报</button>
+              <button type="button" data-type="monthly">月报</button>
+              <button type="button" data-type="yearly">年报</button>
+            </div>
+          </div>
+          <div class="cell">
+            <span class="k">生成窗口</span>
+            <select id="windowSelect" aria-label="生成窗口" disabled>
+              <option>选择场次后可选</option>
+            </select>
+          </div>
+          <button type="button" class="btn-gen" id="generateBtn" disabled>生成报告</button>
+        </div>
+      </div>
+
+      <div class="work">
+        <article class="report" id="reportArea" aria-label="训练报告">
+          <div class="offline-strip" id="offlineStrip" hidden>
+            <div><b>报告引擎未连接</b><span>请确认引擎已在本机启动（127.0.0.1:8000），然后重试。</span></div>
+            <button type="button" id="offlineRetry">重试</button>
+          </div>
+
+          <div id="idleStage">
+            <div class="idle-stage">
+              <div class="idle">
+                <div class="ready">仪器就绪</div>
+                <h1 id="idleTitle">选择场次，点亮本周记分板</h1>
+                <p class="lead" id="idleLead">报告引擎将按本周汇总均环、水平对比、风档与建议。运动员与弓种已就位，还差一场有效射击数据。</p>
+              </div>
+              <div class="score-slot" aria-hidden="true">
+                <div class="ghost">00.00</div>
+                <div class="slot-stack">
+                  <div class="slot-label">均环槽位</div>
+                  <div class="slot-hint">生成后点亮</div>
+                </div>
+              </div>
+              <div class="idle">
+                <ol class="steps">
+                  <li class="done" id="stepAthlete"><span class="n">01</span><span>运动员，—</span></li>
+                  <li class="done" id="stepBow"><span class="n">02</span><span>弓种，—</span></li>
+                  <li id="stepType"><span class="n">03</span><span>确认要出的是周报，或改选日报、月报、年报</span></li>
+                  <li id="stepGenerate"><span class="n">04</span><span>生成报告</span></li>
+                </ol>
+                <button type="button" class="idle-cta" id="idleCta" disabled>等待场次</button>
+                <p class="hint" id="idleHint">也可在命令栏改选日报、周报、月报或年报后生成。</p>
+              </div>
+            </div>
+
+            <div class="rail" aria-hidden="true">
+              <div class="slot"><div class="lk" id="railAvgLabel">本周均环</div><div class="lv txt">待生成</div></div>
+              <div class="slot"><div class="lk">水平对比</div><div class="lv txt">待生成</div></div>
+              <div class="slot"><div class="lk">风档 / 建议</div><div class="lv txt">待生成</div></div>
+            </div>
+          </div>
+        </article>
+
+        <aside class="chat-dock" aria-label="提问">
+          <div class="chat-head">
+            <h2>提问</h2>
+            <div class="chat-toolbar">
+              <span>引用报告</span>
+              <select aria-label="引用报告" disabled>
+                <option selected>尚无报告可引用</option>
+              </select>
+            </div>
+          </div>
+          <div class="chat-box">
+            <p class="empty">还没有可引用的报告。选择场次并生成周报后，这里就可以提问，例如「这周为什么进步了？」。</p>
+          </div>
+          <div class="chat-foot">
+            <input disabled placeholder="生成报告后提问…" aria-label="提问输入">
+            <button type="button" disabled>发送</button>
+          </div>
+        </aside>
+      </div>
+
+      <footer class="statusbar" id="statusBar">
+        <span>等待场次</span><span class="dot"></span><span>尚未生成报告</span><span class="dot"></span><span>运动员与弓种已就位</span>
+      </footer>
+    </div>
+  </div>
+</div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
+<script src="./app.js"></script>
+</body>
+</html>
