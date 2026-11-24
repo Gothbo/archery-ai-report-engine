@@ -20,6 +20,28 @@ CREATE TABLE IF NOT EXISTS session_dim (
     site              TEXT
 );
 
+-- Session lifecycle is separate from ingest facts so a retry cannot silently restore exclusion.
+CREATE TABLE IF NOT EXISTS session_lifecycle (
+    athlete_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    excluded_at_utc TEXT,
+    excluded_by TEXT,
+    exclude_reason TEXT,
+    restored_at_utc TEXT,
+    restored_by TEXT,
+    restore_reason TEXT,
+    PRIMARY KEY (athlete_id, session_id)
+);
+CREATE TABLE IF NOT EXISTS session_lifecycle_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    athlete_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
+    action TEXT NOT NULL CHECK (action IN ('exclude', 'restore')),
+    actor_id TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    occurred_at_utc TEXT NOT NULL
+);
+
 -- 逐箭事实表（每箭一行；弹着 + 心率 + 风速 + 轨迹预留）
 CREATE TABLE IF NOT EXISTS shot_fact (
     fact_id         INTEGER PRIMARY KEY AUTOINCREMENT,

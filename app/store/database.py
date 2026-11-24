@@ -225,18 +225,79 @@ class Database:
 
     def shots_of_session(self, session_id: str) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT * FROM shot_fact WHERE session_id=? ORDER BY shot_seq", (session_id,)
+            "SELECT f.* FROM shot_fact f WHERE f.session_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL) ORDER BY f.shot_seq", (session_id,)
         )
 
     def shots_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT * FROM shot_fact WHERE athlete_id=? ORDER BY shot_time_utc", (athlete_id,)
+            "SELECT f.* FROM shot_fact f WHERE f.athlete_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL) ORDER BY f.shot_time_utc", (athlete_id,)
         )
 
     def sessions_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT * FROM session_dim WHERE athlete_id=? ORDER BY session_time_utc", (athlete_id,)
+            "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
+            "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
+            "WHERE s.athlete_id=? AND l.excluded_at_utc IS NULL ORDER BY s.session_time_utc", (athlete_id,)
         )
+
+    def sessions_of_athlete_all(self, athlete_id: str) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
+            "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
+            "WHERE s.athlete_id=? ORDER BY s.session_time_utc", (athlete_id,))
+
+    def session_lifecycle(self, athlete_id: str, session_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                           (athlete_id, session_id))
+        return rows[0] if rows else None
+
+    def set_session_excluded(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
+        """Set exclusion atomically; returns (already_excluded, timestamp)."""
+        now = _iso_now()
+        with self.lock:
+            row = self._conn.execute(
+                "SELECT excluded_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                (athlete_id, session_id)).fetchone()
+            if row and row[0] is not None:
+                self._conn.commit()
+                return True, row[0]
+            self._conn.execute(
+                "INSERT INTO session_lifecycle(athlete_id,session_id,excluded_at_utc,excluded_by,exclude_reason) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(athlete_id,session_id) DO UPDATE SET "
+                "excluded_at_utc=excluded.excluded_at_utc, excluded_by=excluded.excluded_by, "
+                "exclude_reason=excluded.exclude_reason, restored_at_utc=NULL, restored_by=NULL, restore_reason=NULL",
+                (athlete_id, session_id, now, actor_id, reason))
+            self._conn.execute(
+                "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
+                "VALUES(?,?,'exclude',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
+            self._conn.commit()
+        return False, now
+
+    def set_session_active(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
+        now = _iso_now()
+        with self.lock:
+            row = self._conn.execute(
+                "SELECT excluded_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                (athlete_id, session_id)).fetchone()
+            if not row or row[0] is None:
+                self._conn.commit()
+                return True, now
+            self._conn.execute(
+                "UPDATE session_lifecycle SET excluded_at_utc=NULL, restored_at_utc=?, restored_by=?, restore_reason=? "
+                "WHERE athlete_id=? AND session_id=?", (now, actor_id, reason, athlete_id, session_id))
+            self._conn.execute(
+                "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
+                "VALUES(?,?,'restore',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
+            self._conn.commit()
+        return False, now
+
+    def is_session_excluded(self, athlete_id: str, session_id: str) -> bool:
+        row = self.session_lifecycle(athlete_id, session_id)
+        return bool(row and row["excluded_at_utc"])
 
     # ---- M2b：记忆层 ----
 
@@ -244,8 +305,10 @@ class Database:
     def shots_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
         """窗口箭集：本地时间窗 [start, end) 内该运动员的全部箭。"""
         return self._query(
-            """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? ORDER BY shot_time_utc""",
+            """SELECT f.* FROM shot_fact f
+               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id
+                  AND l.excluded_at_utc IS NOT NULL) ORDER BY shot_time_utc""",
             (athlete_id, start_iso, end_iso),
         )
 
@@ -264,7 +327,9 @@ class Database:
         """最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线口径）。"""
         return self._query(
             """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=shot_fact.athlete_id
+                  AND l.session_id=shot_fact.session_id AND l.excluded_at_utc IS NOT NULL)
                ORDER BY shot_time_utc DESC LIMIT ?""",
             (athlete_id, bow_type, limit),
         )
@@ -274,7 +339,9 @@ class Database:
         """窗口起点前最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线按窗口时点截断）。"""
         return self._query(
             """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<?
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<? AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=shot_fact.athlete_id
+                  AND l.session_id=shot_fact.session_id AND l.excluded_at_utc IS NOT NULL)
                ORDER BY shot_time_utc DESC LIMIT ?""",
             (athlete_id, bow_type, before_iso, limit),
         )
@@ -283,14 +350,20 @@ class Database:
         """场次记分箭（shooting_mode=1）；指定 bow_type 时只取该弓种（锚点不混弓，ADR-0004）。"""
         if bow_type is None:
             return self._query(
-                "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
+                "SELECT f.* FROM shot_fact f WHERE session_id=? AND shooting_mode=1 AND NOT EXISTS "
+                "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+                "AND l.excluded_at_utc IS NOT NULL)", (session_id,))
         return self._query(
-            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1 AND bow_type=?",
+            "SELECT f.* FROM shot_fact f WHERE session_id=? AND shooting_mode=1 AND bow_type=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)",
             (session_id, bow_type))
 
     def bow_types_of_athlete(self, athlete_id: str) -> list[str]:
         rows = self._query(
-            "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,))
+            "SELECT DISTINCT f.bow_type FROM shot_fact f WHERE f.athlete_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)", (athlete_id,))
         return [r["bow_type"] for r in rows]
 
     def anchor_candidate_sessions(self, athlete_id: str, bow_type: str) -> list[sqlite3.Row]:
@@ -635,6 +708,29 @@ class Database:
             "DELETE FROM report_cache WHERE athlete_id=? AND granularity='daily' AND window_key=?",
             (athlete_id, f"daily:{session_id}"),
         )
+
+    def invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
+        """Invalidate daily cache for the session and calendar windows containing it."""
+        rows = self._query("SELECT session_time_utc FROM session_dim WHERE athlete_id=? AND session_id=?",
+                           (athlete_id, session_id))
+        if not rows:
+            return
+        from app.reports.window import WindowKey
+        from datetime import datetime
+        dt = datetime.fromisoformat(rows[0]["session_time_utc"].replace("Z", "+00:00"))
+        keys = [("daily", f"daily:{session_id}")]
+        for granularity in ("weekly", "monthly", "quarterly", "yearly"):
+            keys.append((granularity, WindowKey.for_datetime(granularity, dt).text))
+        with self.lock:
+            for granularity, window_key in keys:
+                ids = [r[0] for r in self._conn.execute(
+                    "SELECT report_id FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?",
+                    (athlete_id, granularity, window_key)).fetchall()]
+                for report_id in ids:
+                    self._conn.execute("DELETE FROM report_memories WHERE report_id=?", (report_id,))
+                self._conn.execute("DELETE FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?",
+                                   (athlete_id, granularity, window_key))
+            self._conn.commit()
 
 
 def get_database(cfg: EngineConfig | None = None) -> Database:
