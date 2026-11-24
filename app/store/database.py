@@ -237,7 +237,9 @@ class Database:
             "AND l.excluded_at_utc IS NOT NULL) ORDER BY f.shot_time_utc", (athlete_id,)
         )
 
-    def sessions_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
+    def sessions_of_athlete(self, athlete_id: str, include_excluded: bool = False) -> list[sqlite3.Row]:
+        if include_excluded:
+            return self.sessions_of_athlete_all(athlete_id)
         return self._query(
             "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
             "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
@@ -317,7 +319,9 @@ class Database:
             return []
         marks = ",".join("?" * len(session_ids))
         return self._query(
-            f"SELECT * FROM session_dim WHERE session_id IN ({marks})", tuple(session_ids))
+            f"SELECT s.* FROM session_dim s WHERE s.session_id IN ({marks}) AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)", tuple(session_ids))
 
     def session_of(self, session_id: str) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM session_dim WHERE session_id=?", (session_id,))
@@ -376,13 +380,19 @@ class Database:
         return self._query(
             """SELECT s.session_id, s.session_time_utc, s.distance_m, s.mode_composition,
                       (SELECT COUNT(*) FROM shot_fact f
-                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=? AND NOT EXISTS
+                         (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id
+                          AND l.session_id=f.session_id AND l.excluded_at_utc IS NOT NULL))
                       AS scoring_shots
                FROM session_dim s
                WHERE s.athlete_id=? AND s.distance_m IS NOT NULL AND s.distance_m > 0
+                 AND NOT EXISTS (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=s.athlete_id
+                                 AND l.session_id=s.session_id AND l.excluded_at_utc IS NOT NULL)
                  AND s.mode_composition IS NOT NULL AND s.mode_composition != ''
                  AND EXISTS (SELECT 1 FROM shot_fact f
-                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=? AND NOT EXISTS
+                               (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id
+                                AND l.session_id=f.session_id AND l.excluded_at_utc IS NOT NULL))
                ORDER BY s.session_time_utc""",
             (bow_type, athlete_id, bow_type),
         )
@@ -716,11 +726,12 @@ class Database:
         if not rows:
             return
         from app.reports.window import WindowKey
-        from datetime import datetime
-        dt = datetime.fromisoformat(rows[0]["session_time_utc"].replace("Z", "+00:00"))
+        from app.config import get_config
         keys = [("daily", f"daily:{session_id}")]
         for granularity in ("weekly", "monthly", "quarterly", "yearly"):
-            keys.append((granularity, WindowKey.for_datetime(granularity, dt).text))
+            window = WindowKey.of_shot(get_config(), rows[0]["session_time_utc"], granularity)
+            if window is not None:
+                keys.append((granularity, window.text))
         with self.lock:
             for granularity, window_key in keys:
                 ids = [r[0] for r in self._conn.execute(
