@@ -35,7 +35,7 @@ from app.reports import conclusions as C
 from app.reports import rule_guidance as RG
 from app.reports import quality as Q
 from app.reports import rules as R
-from app.reports.window import window_bounds
+from app.reports.window import WindowKey, window_bounds
 from app.store.database import Database
 from app.timeutil import iso_now_utc
 
@@ -110,10 +110,35 @@ def load_stored_report(db: Database, report_id: str) -> dict | None:
     return json.loads(raw) if raw else None
 
 
+def read_calendar_report(db: Database, athlete_id: str, window_key: str,
+                         view: str, report_id: str | None = None) -> dict:
+    """Read the requested report snapshot, or the saved report for legacy window-based callers."""
+    with db.lock:
+        row = (db.cached_report_by_id(report_id) if report_id else db.get_cached_report_row(
+            athlete_id, "daily", window_key, _report_cache_version(get_config())))
+        if (not row or row["athlete_id"] != athlete_id or row["granularity"] != "daily"
+                or row["window_key"] != window_key or not row["report_json"]):
+            raise ValueError("日报不存在或已更新，请在报告页重新生成")
+        return render_for_view(db, json.loads(row["report_json"]), view, cached=True)
+
+
 
 def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key: str,
-                     session_id: str | None = None) -> list[dict]:
+                     session_id: str | None = None,
+                     desktop_session_ids: list[str] | None = None) -> list[dict]:
     """取窗口箭集：daily 用 session_id；其余用本地时间窗 [start, end) 过滤。"""
+    if desktop_session_ids is not None:
+        start, end = window_bounds(get_config(), granularity, window_key)
+        shots = []
+        for sid in dict.fromkeys(desktop_session_ids):
+            session = db.session_of(sid)
+            if not session or session["athlete_id"] != athlete_id or session["site"] != "desktop":
+                raise SessionNotFound("所选场次不存在或不属于当前运动员")
+            rows = [dict(r) for r in db.shots_of_session(sid) if r["shooting_mode"] == 1]
+            if not rows or not start <= rows[0]["shot_time_utc"] < end:
+                raise SessionNotFound("所选场次没有当日的首支计分箭")
+            shots.extend(rows)
+        return sorted(shots, key=lambda shot: shot["shot_time_utc"])
     if granularity == "daily":
         if not session_id:
             raise ValueError("daily 报告必须指定 session_id")
@@ -143,7 +168,7 @@ def _primary_bow(shots: list[dict]) -> tuple[str | None, list[tuple[str, int]]]:
 def _window_range(db: Database, granularity: str, window_key: str,
                   session_id: str | None) -> tuple[str | None, str | None]:
     """窗口时间范围（UTC ISO）：daily 取场次时间（窗口退化为该时刻，start == end）；其余取窗口 [start, end) 边界（T5/D8）。"""
-    if granularity == "daily":
+    if granularity == "daily" and not WindowKey.parse(granularity, window_key).is_calendar_day:
         row = db.session_of(session_id) if session_id else None
         t = row["session_time_utc"] if row else None
         return t, t
@@ -290,7 +315,8 @@ def _body_for_storage(report: dict) -> dict:
     return body
 
 def generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
-                    session_id: str | None = None, view: str = "athlete", force: bool = False) -> dict:
+                    session_id: str | None = None, view: str = "athlete", force: bool = False,
+                    desktop_session_ids: list[str] | None = None) -> dict:
     """生成（或读缓存）一份报告：缓存查找 → 清理旧窗口 → 组装 → 持久化。
 
     force=True 跳过缓存强制重生成（B10 支持 ?refresh=1）。
@@ -298,9 +324,19 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     """
     cfg = get_config()
     R.validate_rules(cfg)
+    calendar_day = WindowKey.parse(granularity, window_key).is_calendar_day
+    cache_version = _report_cache_version(cfg)
+    if calendar_day:
+        if not desktop_session_ids:
+            raise ValueError("请通过桌面端重新生成日报")
+        with db.lock:
+            draft = build_report(db, athlete_id, granularity, window_key, view="coach",
+                                 desktop_session_ids=desktop_session_ids)
+            db.purge_report_window(athlete_id, granularity, window_key, cache_version)
+            persist_report(db, draft)
+            return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
     if granularity == "daily":
         _check_session(db, athlete_id, session_id)
-    cache_version = _report_cache_version(cfg)
 
     cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cache_version)
@@ -344,7 +380,8 @@ class ReportDraft:
 
 def build_report(db: Database, athlete_id: str, granularity: str, window_key: str,
                  session_id: str | None = None, view: str = "athlete",
-                 report_id: str | None = None) -> ReportDraft:
+                 report_id: str | None = None,
+                 desktop_session_ids: list[str] | None = None) -> ReportDraft:
     """组装一份报告（纯读 + 计算）：读记忆/事实 → 指标 → 规则结论 → 结构化 JSON。
 
     不写库；结论与缓存由 persist_report 落库。
@@ -352,7 +389,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     cfg = get_config()
     R.validate_rules(cfg)
 
-    shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id)
+    shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id, desktop_session_ids)
     # 主弓种聚合（ADR-0004）：指标只算主弓种箭，其余弓种在 data_integrity 标注不计入
     primary_bow, other_bows = _primary_bow(shots)
     if primary_bow is not None:
@@ -402,7 +439,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
             f"命中率 {m['hit_rate']:.1f}%（n={m['n_shots']}）"
         ]
     by_key["window_score"] = {
-        "key": "window_score", "title": _SCORE_TITLES.get(granularity, "成绩"),
+        "key": "window_score",
+        "title": "当日成绩" if desktop_session_ids is not None else _SCORE_TITLES.get(granularity, "成绩"),
         "content": score_content,
         "evidence": [{"type": "calc", "ref": "window_score", "value": {"n": m["n_shots"]}}],
     }

@@ -12,7 +12,7 @@ from __future__ import annotations
 import calendar
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from app.config import EngineConfig
@@ -58,6 +58,14 @@ class WindowKey:
         return cls("daily", session_id)
 
     @classmethod
+    def calendar_day(cls, day: date) -> "WindowKey":
+        return cls("daily", f"day:{day.isoformat()}")
+
+    @property
+    def is_calendar_day(self) -> bool:
+        return self.granularity == "daily" and self.value.startswith("day:")
+
+    @classmethod
     def parse(cls, granularity: str, key: str) -> "WindowKey":
         """从存储键解析（daily 兼容 'daily:<sid>' 前缀，其余为裸键）。"""
         if granularity == "daily":
@@ -90,12 +98,16 @@ class WindowKey:
     @property
     def session_id(self) -> str | None:
         """daily 的场次 id；其余粒度 None。"""
-        return self.value if self.granularity == "daily" else None
+        return self.value if self.granularity == "daily" and not self.is_calendar_day else None
 
     def bounds(self, cfg: EngineConfig) -> tuple[str, str]:
         """返回 (start_utc_iso, end_utc_iso) 左闭右开。"""
-        tz = local_tz(cfg)
-        if self.granularity == "weekly":
+        # The WPF desktop day protocol uses its existing Shanghai report calendar.
+        tz = ZoneInfo("Asia/Shanghai") if self.is_calendar_day else local_tz(cfg)
+        if self.is_calendar_day:
+            start = datetime.combine(date.fromisoformat(self.value[4:]), datetime.min.time(), tz)
+            end = start + timedelta(days=1)
+        elif self.granularity == "weekly":
             year, week = self._match(_WEEKLY_RE, "weekly 窗口键格式应为 YYYY-Www（如 2026-W32）")
             start = _iso_week_start(year, week, tz)
             end = start + timedelta(weeks=1)

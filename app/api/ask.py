@@ -32,6 +32,7 @@ class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=200)
     granularity: str | None = None
     window_key: str | None = None
+    report_id: str | None = None
     view: str = Field(default="athlete", pattern="^(athlete|coach)$")
 
 
@@ -41,7 +42,8 @@ def ask(athlete_id: str, body: AskRequest):
     db = get_database()
     try:
         ctx = assemble_context(db, athlete_id, body.question,
-                               body.granularity, body.window_key, view=body.view)
+                               body.granularity, body.window_key, view=body.view,
+                               report_id=body.report_id)
     except SessionNotFound as exc:
         from app.api.reports import session_not_found
         return session_not_found(exc)

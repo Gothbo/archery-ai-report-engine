@@ -6,8 +6,11 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic.alias_generators import to_camel
 
 from app.ingest import ingest_source
+from app.ingest.desktop import ingest_desktop_session
 from app.ingest.mock_source import MockSource
 from app.ingest.sqlite_source import SQLiteSource
 from app.ingest.v12 import ingest_messages
@@ -46,6 +49,68 @@ def ingest_sqlite(db_path: str | None = None) -> dict:
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok", "stats": stats, "athlete_profiles": len(profiles)}
+
+
+class _CamelModel(BaseModel):
+    """桌面端 JSON 用 camelCase（C# System.Text.Json 默认策略），同时兼容 snake_case。"""
+
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True)
+
+
+class DesktopAthlete(_CamelModel):
+    key: str = Field(min_length=1, description="桌面本地人员 ID（GUID），不是身份证号")
+    name: str | None = None
+    bow_type: str | None = Field(default=None, description="recurve / compound / 反曲弓 / 复合弓")
+
+
+class DesktopSession(_CamelModel):
+    key: str = Field(min_length=1, description="桌面场次 ID（TrainingSession.Id）")
+    started_at: str
+    ended_at: str | None = None
+    distance_m: int | None = None
+    subject: str | None = None
+    project: str | None = None
+
+
+class DesktopShot(_CamelModel):
+    seq: int
+    x_mm: float | None = None
+    y_mm: float | None = None
+    score: float = 0
+    is_x: bool = False
+    is_miss: bool = False
+    is_trial: bool = False
+    ts: str
+    heart_rate: float | None = None
+    wind_speed: float | None = None
+    wind_dir_deg: float | None = None
+    mcr_t: float | None = Field(default=None, description="撒放用时（秒）")
+
+
+class DesktopSnapshot(_CamelModel):
+    athlete: DesktopAthlete
+    session: DesktopSession
+    shots: list[DesktopShot]
+
+
+@router.post("/desktop")
+def ingest_desktop(body: DesktopSnapshot) -> dict:
+    """桌面端整场快照（Archery WPF）。
+
+    - 按 session.key 直接落场次，保留桌面场次边界；重复上传整场替换（幂等）
+    - 返回 HMAC 后的 athleteId 与引擎 sessionId，可直接调用
+      `POST /api/v1/athletes/{athleteId}/reports/daily?session_id={sessionId}`
+    """
+    try:
+        result = ingest_desktop_session(
+            get_database(),
+            body.athlete.model_dump(),
+            body.session.model_dump(),
+            [shot.model_dump() for shot in body.shots],
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"status": "ok", **result}
 
 
 V12_MAX_BATCH = 500

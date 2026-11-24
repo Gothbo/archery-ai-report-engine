@@ -24,7 +24,7 @@ from typing import Callable
 
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
-from app.reports.generator import generate_report
+from app.reports.generator import generate_report, read_calendar_report
 from app.reports.window import WindowKey
 from app.store.database import Database
 
@@ -40,7 +40,7 @@ _retrieve_semantic: Callable[..., list[dict]] | None = None
 
 def assemble_context(db: Database, athlete_id: str, question: str,
                      granularity: str | None = None, window_key: str | None = None,
-                     view: str = "athlete") -> dict:
+                     view: str = "athlete", report_id: str | None = None) -> dict:
     """组装问询上下文。窗口缺失时取最近一份已生成报告（report_cache 最新一条）。"""
     cfg = get_config()
     profile = db.get_profile(athlete_id)
@@ -61,12 +61,15 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         _granularity, _window_key = latest["granularity"], latest["window_key"]
 
     # PR #4：有已存正文就直接用；旧行无正文 → generate_report 补存（report_id 与历史结论不变）
-    session_id = WindowKey.parse(_granularity, _window_key).session_id
-    report = generate_report(db, athlete_id, _granularity, _window_key,
-                             session_id=session_id, view=view, force=False)
-    if "sections" not in report:
+    key = WindowKey.parse(_granularity, _window_key)
+    if key.is_calendar_day:
+        report = read_calendar_report(db, athlete_id, _window_key, view, report_id)
+    else:
         report = generate_report(db, athlete_id, _granularity, _window_key,
-                                 session_id=session_id, view=view, force=True)
+                                 session_id=key.session_id, view=view, force=False)
+        if "sections" not in report:
+            report = generate_report(db, athlete_id, _granularity, _window_key,
+                                     session_id=key.session_id, view=view, force=True)
 
     notes = list_notes_for_view(db, athlete_id, view)
     history = db.latest_memory(athlete_id, _granularity)
@@ -113,7 +116,7 @@ def _skeleton_json(report: dict, notes: list[dict], history) -> str:
         "window_key": report["window_key"],
         "athlete": report["athlete"],
         "sections": [
-            {"title": s["title"], "content": s["content"],
+            {"key": s["key"], "title": s["title"], "content": s["content"],
              "evidence": s.get("evidence") or evidence_by_key.get(s["key"], [])}
             for s in report["sections"]
         ],

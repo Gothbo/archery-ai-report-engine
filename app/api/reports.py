@@ -2,8 +2,11 @@
 """API · 五档报告（D3 按钮触发：POST 生成 + GET 读取；?refresh=1 强制重生成）。"""
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
 
 from app.reports.generator import (SessionNotFound, generate_report, load_stored_report, public_view,
                                    render_for_view)
@@ -15,20 +18,31 @@ router = APIRouter(prefix="/api/v1", tags=["reports"])
 GRANULARITIES = ("daily", "weekly", "monthly", "quarterly", "yearly")
 
 
+class DesktopDayRequest(BaseModel):
+    day: date
+    session_ids: list[str] = Field(min_length=1)
+
+
 @router.post("/athletes/{athlete_id}/reports/{granularity}")
 def generate(athlete_id: str, granularity: str,
              session_id: str | None = None,
              week: str | None = None, month: str | None = None,
              quarter: str | None = None, year: str | None = None,
              view: str = Query(default="athlete", pattern="^(athlete|coach)$"),
-             refresh: bool = False):
+             refresh: bool = False, desktop_day: DesktopDayRequest | None = None):
     if granularity not in GRANULARITIES:
         raise HTTPException(status_code=400, detail=f"granularity 必须为 {GRANULARITIES}")
     try:
-        window_key = _window_key(granularity, session_id, week, month, quarter, year)
+        if desktop_day is not None:
+            if granularity != "daily" or session_id is not None:
+                raise ValueError("按日汇总只能用于日报，不能同时指定单场")
+            window_key = WindowKey.calendar_day(desktop_day.day).text
+        else:
+            window_key = _window_key(granularity, session_id, week, month, quarter, year)
         report = generate_report(get_database(), athlete_id, granularity, window_key,
                                  session_id=session_id if granularity == "daily" else None,
-                                 view=view, force=refresh)
+                                 view=view, force=refresh,
+                                 desktop_session_ids=desktop_day.session_ids if desktop_day else None)
     except SessionNotFound as exc:
         return session_not_found(exc)
     except ValueError as exc:
