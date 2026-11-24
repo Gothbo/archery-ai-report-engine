@@ -2,7 +2,7 @@
 """API · 运动员档案 / 基线 / 训练列表（D3 + 记忆方案 §3.4）。"""
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.memory.baseline import create_anchor_snapshot
@@ -93,10 +93,15 @@ def update_profile(athlete_id: str, body: ProfileUpdate) -> dict:
 
 
 @router.get("/{athlete_id}/sessions")
-def list_sessions(athlete_id: str) -> dict:
+def list_sessions(athlete_id: str, include_excluded: bool = Query(default=False)) -> dict:
     db = get_database()
-    rows = db.sessions_of_athlete(athlete_id)
-    return {"athlete_id": athlete_id, "sessions": [dict(r) for r in rows]}
+    rows = db.sessions_of_athlete(athlete_id, include_excluded=include_excluded)
+    sessions = []
+    for row in rows:
+        item = dict(row)
+        item["excluded"] = bool(item["excluded"])
+        sessions.append(item)
+    return {"athlete_id": athlete_id, "sessions": sessions}
 
 
 @router.get("/{athlete_id}/baseline")

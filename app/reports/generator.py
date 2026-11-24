@@ -65,12 +65,18 @@ class SessionNotFound(ValueError):
     """日报场次不存在或不属于该运动员（PR #4：返回 404，不再生成 0 箭空报告写进缓存）。"""
 
 
+class SessionExcluded(ValueError):
+    """日报明确引用了已排除场次。"""
+
+
 def _check_session(db: Database, athlete_id: str, session_id: str | None) -> None:
     if not session_id:
         return
     rows = db.query("SELECT athlete_id FROM session_dim WHERE session_id=?", (session_id,))
     if not rows or rows[0]["athlete_id"] != athlete_id:
         raise SessionNotFound(f"场次 {session_id} 不存在或不属于该运动员（尚未导入或已重建）")
+    if db.is_session_excluded(athlete_id, session_id):
+        raise SessionExcluded(f"场次 {session_id} 已排除")
 
 
 def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:

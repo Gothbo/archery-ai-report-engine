@@ -8,7 +8,7 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from app.reports.generator import (SessionNotFound, generate_report, load_stored_report, public_view,
+from app.reports.generator import (SessionExcluded, SessionNotFound, generate_report, load_stored_report, public_view,
                                    render_for_view)
 from app.reports.window import WindowKey
 from app.store.database import get_database
@@ -45,6 +45,8 @@ def generate(athlete_id: str, granularity: str,
                                  desktop_session_ids=desktop_day.session_ids if desktop_day else None)
     except SessionNotFound as exc:
         return session_not_found(exc)
+    except SessionExcluded as exc:
+        return JSONResponse(status_code=409, content={"code": "session_excluded", "detail": str(exc)})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return public_view(report, view)

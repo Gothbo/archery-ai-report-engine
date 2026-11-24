@@ -22,7 +22,7 @@ from app.api.guidance import router as guidance_router
 from app.api.ingest import router as ingest_router
 from app.api.llm import router as llm_router
 from app.api.reports import router as reports_router
-from app.api.sessions import notes_router, sessions_router
+from app.api.sessions import notes_router, sessions_router, session_lifecycle_router
 from app.config import get_config
 from app.logging_setup import setup_logging
 from app.portal import PortalApp
@@ -80,6 +80,7 @@ app.include_router(ingest_router)
 app.include_router(reports_router)
 app.include_router(athletes_router)
 app.include_router(sessions_router)
+app.include_router(session_lifecycle_router)
 app.include_router(notes_router)
 app.include_router(ask_router)
 app.include_router(guidance_router)

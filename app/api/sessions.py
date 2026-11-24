@@ -18,21 +18,71 @@ from app.memory.selective import extract_memories
 from app.store.database import get_database
 
 sessions_router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
+session_lifecycle_router = APIRouter(prefix="/api/v1/athletes/{athlete_id}/sessions", tags=["sessions"])
 notes_router = APIRouter(prefix="/api/v1/athletes/{athlete_id}", tags=["notes"])
 
 
 @sessions_router.get("/{session_id}")
 def session_detail(session_id: str) -> dict:
     db = get_database()
-    rows = db.shots_of_session(session_id)
-    if not rows:
-        raise HTTPException(status_code=404, detail="场次不存在（尚未导入）")
     dim = db.session_of(session_id)
+    if not dim:
+        raise HTTPException(status_code=404, detail="场次不存在（尚未导入）")
+    lifecycle = db.session_lifecycle(dim["athlete_id"], session_id)
+    excluded = bool(lifecycle and lifecycle["excluded_at_utc"])
+    rows = db.shots_of_session(session_id)
     return {
         "session_id": session_id,
         "dim": dict(dim) if dim else None,
         "shots": [dict(r) for r in rows],
+        "excluded": excluded,
+        "excluded_at_utc": lifecycle["excluded_at_utc"] if excluded else None,
     }
+
+
+class SessionLifecycleRequest(BaseModel):
+    actor_id: str | None = None
+    reason: str | None = None
+
+
+def _session_lifecycle(athlete_id: str, session_id: str, body: SessionLifecycleRequest, action: str) -> dict:
+    db = get_database()
+    dim = db.session_of(session_id)
+    if dim is None:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "场次不存在"})
+    if dim["athlete_id"] != athlete_id:
+        raise HTTPException(status_code=404, detail={"code": "session_not_owned", "message": "场次不属于该运动员"})
+    actor = body.actor_id or "unknown"
+    reason = body.reason or "unspecified"
+    if action == "exclude":
+        already, timestamp = db.set_session_excluded(athlete_id, session_id, actor, reason)
+        db.invalidate_session_reports(athlete_id, session_id)
+        return {"status": "excluded", "athlete_id": athlete_id, "session_id": session_id,
+                "excluded_at_utc": timestamp, "already_excluded": already}
+    already, timestamp = db.set_session_active(athlete_id, session_id, actor, reason)
+    db.invalidate_session_reports(athlete_id, session_id)
+    return {"status": "active", "athlete_id": athlete_id, "session_id": session_id,
+            "restored_at_utc": timestamp, "already_active": already}
+
+
+@session_lifecycle_router.post("/by-key/{session_key}/exclude")
+def exclude_session_by_key(athlete_id: str, session_key: str, body: SessionLifecycleRequest = SessionLifecycleRequest()) -> dict:
+    from app.ingest.desktop import session_id_for
+    try:
+        session_id = session_id_for(athlete_id, session_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": str(exc)}) from exc
+    return _session_lifecycle(athlete_id, session_id, body, "exclude")
+
+
+@session_lifecycle_router.post("/{session_id}/exclude")
+def exclude_session(athlete_id: str, session_id: str, body: SessionLifecycleRequest) -> dict:
+    return _session_lifecycle(athlete_id, session_id, body, "exclude")
+
+
+@session_lifecycle_router.post("/{session_id}/restore")
+def restore_session(athlete_id: str, session_id: str, body: SessionLifecycleRequest) -> dict:
+    return _session_lifecycle(athlete_id, session_id, body, "restore")
 
 
 class NoteCreate(BaseModel):
