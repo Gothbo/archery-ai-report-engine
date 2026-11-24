@@ -1,11 +1,20 @@
 # -*- coding: utf-8 -*-
-"""API · 训练详情（逐箭）与备注/记忆（记忆方案 §3.4）。"""
+"""API · 训练详情（逐箭）与备注/记忆（记忆方案 §3.4 + 08 选择性记忆）。"""
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from app.memory.notes import add_note, close_note, list_notes_for_view
+from app.config import get_config
+from app.memory.notes import (
+    add_note,
+    close_note,
+    confirm_note,
+    list_candidates,
+    list_notes_for_view,
+    update_note,
+)
+from app.memory.selective import extract_memories
 from app.store.database import get_database
 
 sessions_router = APIRouter(prefix="/api/v1/sessions", tags=["sessions"])
@@ -36,8 +45,80 @@ class NoteCreate(BaseModel):
 @notes_router.get("/notes")
 def list_notes(athlete_id: str, view: str = Query(default="athlete", pattern="^(athlete|coach)$")) -> dict:
     db = get_database()
-    notes = list_notes_for_view(db, athlete_id, view)
+    days = get_config().memory.notes_display_days
+    notes = list_notes_for_view(db, athlete_id, view, days=days)
     return {"athlete_id": athlete_id, "view": view, "notes": notes}
+
+
+@notes_router.get("/memory-notes")
+def list_memory_notes(
+    athlete_id: str, view: str = Query(default="athlete", pattern="^(athlete|coach)$")) -> dict:
+    """档案级记忆查询（不带展示窗口）：供运动员查看/编辑/删除。候选不在其中。"""
+    db = get_database()
+    return {"athlete_id": athlete_id, "view": view,
+            "notes": list_notes_for_view(db, athlete_id, view)}
+
+
+@notes_router.get("/memory-candidates")
+def list_memory_candidates(athlete_id: str) -> dict:
+    db = get_database()
+    return {"athlete_id": athlete_id, "candidates": list_candidates(db, athlete_id)}
+
+
+class MemoryExtract(BaseModel):
+    text: str = Field(min_length=1, max_length=2000)
+    actor_id: str
+
+
+@notes_router.post("/memories/extract")
+def extract_memory(athlete_id: str, body: MemoryExtract) -> dict:
+    """从一次发言中提炼记忆：普通信息直接保存，伤病等敏感信息停在候选。
+
+    只返回提炼后的短句，不保存聊天全文。
+    """
+    db = get_database()
+    return extract_memories(db, athlete_id, body.text, body.actor_id)
+
+
+@notes_router.post("/memory-candidates/{note_id}/confirm")
+def confirm_memory(athlete_id: str, note_id: int) -> dict:
+    db = get_database()
+    if not confirm_note(db, athlete_id, note_id):
+        raise HTTPException(status_code=404, detail="候选记忆不存在、已确认或不属于该运动员")
+    row = db.get_note(note_id, athlete_id)
+    return {"status": "ok", "note": dict(row) if row else None}
+
+
+@notes_router.delete("/memory-candidates/{note_id}")
+def reject_memory(athlete_id: str, note_id: int) -> dict:
+    db = get_database()
+    if not close_note(db, athlete_id, note_id):
+        raise HTTPException(status_code=404, detail="候选记忆不存在、已关闭或不属于该运动员")
+    return {"status": "ok", "note_id": note_id}
+
+
+class NoteUpdate(BaseModel):
+    content: str = Field(min_length=1, max_length=500)
+
+
+@notes_router.patch("/memory-notes/{note_id}")
+def update_memory(athlete_id: str, note_id: int, body: NoteUpdate) -> dict:
+    db = get_database()
+    try:
+        note = update_note(db, athlete_id, note_id, body.content)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if note is None:
+        raise HTTPException(status_code=404, detail="记忆不存在、已关闭或不属于该运动员")
+    return note
+
+
+@notes_router.delete("/memory-notes/{note_id}")
+def delete_memory(athlete_id: str, note_id: int) -> dict:
+    db = get_database()
+    if not close_note(db, athlete_id, note_id):
+        raise HTTPException(status_code=404, detail="记忆不存在、已关闭或不属于该运动员")
+    return {"status": "ok", "note_id": note_id}
 
 
 @notes_router.post("/notes")

@@ -44,6 +44,7 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_DDL)
         self._migrate_columns()
+        self._migrate_memory_closure()
         self._migrate_portal_p0()
         self._conn.commit()
 
@@ -94,6 +95,17 @@ class Database:
             for name, ddl in cols:
                 if name not in existing:
                     self._execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def _migrate_memory_closure(self) -> None:
+        """08 记忆闭环：旧数据视为已确认手工备注，避免升级后从列表/召回里消失。
+
+        约定 confirmed_at_utc IS NULL 只用于 conversation 来源的候选（待确认）。
+        """
+        cur = self._execute(
+            "UPDATE memory_notes SET confirmed_at_utc = created_at_utc "
+            "WHERE confirmed_at_utc IS NULL AND COALESCE(provenance, '') <> 'conversation'")
+        if cur.rowcount:
+            logger.info("迁移：%d 条旧备注标记为已确认", cur.rowcount)
 
     def _migrate_portal_p0(self) -> None:
         """PR #4 数据迁移（幂等，每次启动执行）：
@@ -407,8 +419,9 @@ class Database:
     def insert_note(self, note: dict) -> int:
         cur = self._execute(
             """INSERT INTO memory_notes
-                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc, closed_at_utc)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc,
+                  closed_at_utc, provenance, quote_text, confirmed_at_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 note["athlete_id"],
                 note["note_type"],
@@ -418,9 +431,39 @@ class Database:
                 "active",
                 note["created_at_utc"],
                 None,
+                note.get("provenance", "manual"),
+                note.get("quote_text"),
+                note.get("confirmed_at_utc"),
             ),
         )
         return cur.lastrowid
+
+    def get_note(self, note_id: int, athlete_id: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM memory_notes WHERE id=? AND athlete_id=?", (note_id, athlete_id))
+        return rows[0] if rows else None
+
+    def find_active_note(self, athlete_id: str, content: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM memory_notes WHERE athlete_id=? AND status='active' AND content=? "
+            "ORDER BY id DESC LIMIT 1", (athlete_id, content))
+        return rows[0] if rows else None
+
+    def confirm_note(self, note_id: int, athlete_id: str) -> bool:
+        """候选 → 正式记忆；只允许未确认的 active 备注。"""
+        cur = self._execute(
+            "UPDATE memory_notes SET confirmed_at_utc=? "
+            "WHERE id=? AND athlete_id=? AND status='active' AND confirmed_at_utc IS NULL",
+            (_iso_now(), note_id, athlete_id),
+        )
+        return cur.rowcount > 0
+
+    def update_note_content(self, note_id: int, athlete_id: str, content: str) -> bool:
+        cur = self._execute(
+            "UPDATE memory_notes SET content=? WHERE id=? AND athlete_id=? AND status='active'",
+            (content, note_id, athlete_id),
+        )
+        return cur.rowcount > 0
 
     def close_note(self, note_id: int, athlete_id: str) -> bool:
         """软删（B1）：DELETE → status='closed'，保留审计；归属校验 WHERE athlete_id=?。"""
@@ -430,9 +473,14 @@ class Database:
         )
         return cur.rowcount > 0
 
-    def list_notes(self, athlete_id: str, status: str = "active", days: int | None = None) -> list[sqlite3.Row]:
+    def list_notes(self, athlete_id: str, status: str = "active", days: int | None = None,
+                   confirmed: bool | None = None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM memory_notes WHERE athlete_id=? AND status=?"
         params: list = [athlete_id, status]
+        if confirmed is True:
+            sql += " AND confirmed_at_utc IS NOT NULL"
+        elif confirmed is False:
+            sql += " AND confirmed_at_utc IS NULL"
         if days is not None:
             sql += " AND created_at_utc >= datetime('now','-' || ? || ' days')"
             params.append(str(days))

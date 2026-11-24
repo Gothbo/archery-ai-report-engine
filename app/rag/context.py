@@ -24,6 +24,7 @@ from typing import Callable
 
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
+from app.memory.selective import select_notes_for_context
 from app.reports.generator import generate_report, read_calendar_report
 from app.reports.window import WindowKey
 from app.store.database import Database
@@ -72,7 +73,12 @@ def assemble_context(db: Database, athlete_id: str, question: str,
                                      session_id=key.session_id, view=view, force=True)
 
     notes = list_notes_for_view(db, athlete_id, view)
+    notes = select_notes_for_context(notes, question)
     history = db.latest_memory(athlete_id, _granularity)
+
+    # 报告正文自带「近期备注 / 辅助信息」备注行（生成时未看问题），会绕过相关性召回；
+    # 这里先剥掉，再由选中的 notes 统一注入，保证无关旧事不被带进对话。
+    report = _without_notes(report)
 
     skeleton_text = _skeleton_text(report, notes, history)
     sources = _sources(report, notes, history)
@@ -142,7 +148,9 @@ def _sources(report: dict, notes: list[dict], history) -> list[dict]:
                         "title": "滚动基线", "summary": f"n={rb['n_shots']} 平均环={rb.get('avg_score')}"})
     for n in notes:
         sources.append({"type": "note", "ref": f"note:{n['id']}", "title": f"备注·{n['note_type']}",
-                        "summary": n["content"]})
+                        "summary": n["content"],
+                        "provenance": n.get("provenance") or "manual",
+                        "created_at_utc": n.get("created_at_utc")})
     if history:
         sources.append({"type": "memory", "ref": f"memory:{history['id']}",
                         "title": "历史结论", "summary": history["conclusion"]})
@@ -163,6 +171,21 @@ def _suggested_note(question: str, notes: list[dict]) -> dict | None:
 
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+# 报告生成/读取时会把备注渲染成「[goal] 内容（记录人：运动员）」，需在相关性召回前剥掉。
+_NOTE_LINE_RE = re.compile(r"^\[(?:injury|goal|coach_note|other)\] .*（记录人：")
+
+
+def _without_notes(report: dict) -> dict:
+    sections = []
+    for sec in report.get("sections", []):
+        if sec.get("key") == "notes":
+            continue
+        content = [c for c in sec.get("content", []) if not _NOTE_LINE_RE.match(str(c))]
+        if sec.get("key") == "auxiliary" and not content:
+            content = ["本窗口暂无辅助信息"]
+        sections.append({**sec, "content": content})
+    return {**report, "sections": sections}
 
 # 行首列表序号（1. / 1、 / 1) / （1） / ①）不是数据。不剔除会被 G2 误判为骨架外数字，
 # 导致「1. 技术改进」这类正常编号列表被整体降级（1.5B 实测：报 G2 出现骨架外数字 1.0）。

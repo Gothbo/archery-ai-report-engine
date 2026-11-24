@@ -82,7 +82,8 @@ def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
     out = dict(body)
     sections = [s for s in body.get("sections", []) if s.get("key") != "notes"]
     from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, body["athlete"]["id"], view)
+    notes = list_notes_for_view(db, body["athlete"]["id"], view,
+                                days=get_config().memory.notes_display_days)
     if notes:
         note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
                       for n in notes[:5]]
@@ -659,7 +660,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 备注注入（双视角，A2/D9）：组装时按 view 写入 auxiliary，便于 build_report 测试 seam；
     # 落库正文会剥掉备注（persist / generate 路径），由 render_for_view 按视角现取。
     from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, athlete_id, view)
+    notes = list_notes_for_view(db, athlete_id, view,
+                                days=get_config().memory.notes_display_days)
     if notes:
         note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
                       for n in notes[:5]]
