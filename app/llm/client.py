@@ -142,7 +142,8 @@ class HTTPLLMClient(LLMClient):
                             yield piece
                         if done:
                             return
-        except httpx.ConnectError as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # 连接阶段失败（拒绝或超时）都视为模型服务不可达，前端走 COACH-OFFLINE 降级。
             raise LLMOfflineError(f"连不上模型服务 {cfg.endpoint}：{exc}") from exc
         except httpx.HTTPError as exc:
             raise LLMError(f"模型服务流式读取失败：{type(exc).__name__} {exc}") from exc
