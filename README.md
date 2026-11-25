@@ -73,6 +73,7 @@ start.bat
 | POST | `/api/v1/athletes/{athlete_id}/sessions/{session_id}/exclude` | 确认逻辑排除训练场次（幂等） |
 | POST | `/api/v1/athletes/{athlete_id}/sessions/by-key/{session_key}/exclude` | 按桌面稳定 session key 确认排除 |
 | POST | `/api/v1/athletes/{athlete_id}/sessions/{session_id}/restore` | 恢复已排除训练场次（幂等） |
+| POST | `/api/v1/athletes/{athlete_id}/sessions/by-key/{session_key}/restore` | 按桌面稳定 session key 恢复 |
 | GET | `/api/v1/athletes/{athlete_id}/sessions?include_excluded=true` | 查看场次生命周期字段（默认隐藏已排除） |
 | POST | `/api/v1/ingest/v12` | 接收 v1.2 上行消息（单条对象或数组批量，逐条返回 accepted/duplicate/invalid/unsupported） |
 | POST | `/api/v1/athletes/{id}/ask` | 对话问答（非流式）；引擎忙时 409 `COACH-BUSY` |

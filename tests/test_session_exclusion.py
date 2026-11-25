@@ -65,6 +65,86 @@ def test_reingest_same_key_does_not_restore_excluded_session(engine_env):
     assert detail["excluded"] is True and detail["shots"] == []
 
 
+def test_calendar_report_and_ask_are_invalidated_on_exclude_and_restore(engine_env):
+    from tests.test_desktop_ingest import URL, _client, _shot, _snapshot
+
+    client = _client(engine_env)
+    # 首箭是上海时间前一天的试射，日报按首支计分箭归日。
+    first = client.post(URL, json=_snapshot("late-ack", shots=[
+        _shot(1, ts="2026-11-19T15:59:00Z", trial=True),
+        _shot(2, ts="2026-11-19T16:01:00Z", score=10),
+    ])).json()
+    second = client.post(URL, json=_snapshot("other-session", shots=[
+        _shot(1, ts="2026-11-20T09:00:00", score=8),
+    ])).json()
+    unrelated = client.post(URL, json=_snapshot()).json()
+    athlete = f"/api/v1/athletes/{first['athleteId']}"
+    ids = [first["sessionId"], second["sessionId"]]
+
+    def generate(day, session_ids):
+        response = client.post(f"{athlete}/reports/daily", json={"day": day, "session_ids": session_ids})
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    def assert_unavailable(report):
+        report_id = report["report_id"]
+        assert client.get(f"/api/v1/reports/{report_id}/content?view=coach").status_code == 404
+        listing = client.get(f"{athlete}/reports").json()["reports"]
+        assert report_id not in {row["report_id"] for row in listing}
+        assert client.post(f"{athlete}/ask", json={
+            "question": "本期均环是多少？", "granularity": "daily",
+            "window_key": report["window_key"], "report_id": report_id,
+        }).status_code == 400
+
+    unaffected = generate("2026-11-19", [unrelated["sessionId"]])
+    original = generate("2026-11-20", ids)
+    assert original["session_ids"] == sorted(ids)
+    assert original["metrics"]["avg_score"] == 9
+    alias = f"{athlete}/sessions/by-key/late-ack"
+    assert client.post(f"{alias}/exclude", json={}).status_code == 200
+    assert_unavailable(original)
+    assert client.get(f"/api/v1/reports/{unaffected['report_id']}/content").status_code == 200
+    stale = client.post(f"{athlete}/reports/daily", json={"day": "2026-11-20", "session_ids": ids})
+    assert stale.status_code == 409 and stale.json()["code"] == "session_excluded"
+
+    reduced = generate("2026-11-20", [second["sessionId"]])
+    assert reduced["metrics"]["avg_score"] == 8
+    restored = client.post(f"{alias}/restore", json={})
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["session_id"] == first["sessionId"]
+    assert restored.json()["already_active"] is False
+    assert_unavailable(reduced)
+    regenerated = generate("2026-11-20", ids)
+    repeated = client.post(f"{alias}/restore", json={})
+    assert repeated.json()["already_active"] is True
+    assert repeated.json()["restored_at_utc"] == restored.json()["restored_at_utc"]
+    assert client.get(f"/api/v1/reports/{regenerated['report_id']}/content").status_code == 200
+    assert regenerated["metrics"]["avg_score"] == 9
+    unknown = client.post(f"{athlete}/sessions/by-key/unknown/restore", json={})
+    assert unknown.status_code == 404
+    assert unknown.json()["detail"]["code"] == "session_not_found"
+
+
+def test_upgrade_removes_pre_transition_calendar_cache(engine_env):
+    from app.store.database import Database, get_database
+    from tests.test_desktop_ingest import URL, _client, _snapshot
+
+    client = _client(engine_env)
+    imported = client.post(URL, json=_snapshot()).json()
+    athlete_id, session_id = imported["athleteId"], imported["sessionId"]
+    assert client.post(f"/api/v1/athletes/{athlete_id}/sessions/{session_id}/exclude", json={}).status_code == 200
+    db = get_database()
+    db.put_cached_report("old-calendar", athlete_id, "daily", "daily:day:2026-11-19", None, "{}")
+    with db.lock, db.conn:
+        db.conn.execute("UPDATE report_cache SET generated_at_utc='2000-01-01T00:00:00.000Z'")
+
+    reopened = Database(db.db_path)
+    try:
+        assert reopened.get_report_row("old-calendar") is None
+    finally:
+        reopened.close()
+
+
 def test_exclusion_invalidates_window_cache_and_weekly_report_omits_session(engine_env):
     from app.main import app
     from app.store.database import get_database

@@ -6,6 +6,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from app.config import get_config
+from app.ingest.desktop import session_id_for
 from app.memory.notes import (
     add_note,
     close_note,
@@ -56,23 +57,28 @@ def _session_lifecycle(athlete_id: str, session_id: str, body: SessionLifecycleR
     reason = body.reason or "unspecified"
     if action == "exclude":
         already, timestamp = db.set_session_excluded(athlete_id, session_id, actor, reason)
-        db.invalidate_session_reports(athlete_id, session_id)
         return {"status": "excluded", "athlete_id": athlete_id, "session_id": session_id,
                 "excluded_at_utc": timestamp, "already_excluded": already}
     already, timestamp = db.set_session_active(athlete_id, session_id, actor, reason)
-    db.invalidate_session_reports(athlete_id, session_id)
     return {"status": "active", "athlete_id": athlete_id, "session_id": session_id,
             "restored_at_utc": timestamp, "already_active": already}
 
 
-@session_lifecycle_router.post("/by-key/{session_key}/exclude")
-def exclude_session_by_key(athlete_id: str, session_key: str, body: SessionLifecycleRequest = SessionLifecycleRequest()) -> dict:
-    from app.ingest.desktop import session_id_for
+def _desktop_session_id(athlete_id: str, session_key: str) -> str:
     try:
-        session_id = session_id_for(athlete_id, session_key)
+        return session_id_for(athlete_id, session_key)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": str(exc)}) from exc
-    return _session_lifecycle(athlete_id, session_id, body, "exclude")
+
+
+@session_lifecycle_router.post("/by-key/{session_key}/exclude")
+def exclude_session_by_key(athlete_id: str, session_key: str, body: SessionLifecycleRequest = SessionLifecycleRequest()) -> dict:
+    return _session_lifecycle(athlete_id, _desktop_session_id(athlete_id, session_key), body, "exclude")
+
+
+@session_lifecycle_router.post("/by-key/{session_key}/restore")
+def restore_session_by_key(athlete_id: str, session_key: str, body: SessionLifecycleRequest = SessionLifecycleRequest()) -> dict:
+    return _session_lifecycle(athlete_id, _desktop_session_id(athlete_id, session_key), body, "restore")
 
 
 @session_lifecycle_router.post("/{session_id}/exclude")
@@ -187,7 +193,9 @@ def delete_note(athlete_id: str, note_id: int) -> dict:
     db = get_database()
     ok = close_note(db, athlete_id, note_id)
     if not ok:
-        raise HTTPException(status_code=404, detail="备注不存在、已关闭或不属于该运动员")
+        row = db.get_note(note_id, athlete_id)
+        if row is None or row["status"] != "closed":
+            raise HTTPException(status_code=404, detail="备注不存在或不属于该运动员")
     return {"status": "ok", "note_id": note_id}
 
 

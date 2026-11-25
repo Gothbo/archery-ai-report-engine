@@ -25,7 +25,7 @@ from typing import Callable
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
 from app.memory.selective import select_notes_for_context
-from app.reports.generator import generate_report, read_calendar_report
+from app.reports.generator import generate_report, read_calendar_report, read_report_snapshot
 from app.reports.window import WindowKey
 from app.store.database import Database
 
@@ -63,8 +63,10 @@ def assemble_context(db: Database, athlete_id: str, question: str,
 
     # PR #4：有已存正文就直接用；旧行无正文 → generate_report 补存（report_id 与历史结论不变）
     key = WindowKey.parse(_granularity, _window_key)
-    if key.is_calendar_day:
-        report = read_calendar_report(db, athlete_id, _window_key, view, report_id)
+    if report_id:
+        report = read_report_snapshot(db, athlete_id, _granularity, _window_key, view, report_id)
+    elif key.is_calendar_day:
+        report = read_calendar_report(db, athlete_id, _window_key, view)
     else:
         report = generate_report(db, athlete_id, _granularity, _window_key,
                                  session_id=key.session_id, view=view, force=False)

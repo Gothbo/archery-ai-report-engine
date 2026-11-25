@@ -46,6 +46,7 @@ class Database:
         self._migrate_columns()
         self._migrate_memory_closure()
         self._migrate_portal_p0()
+        self._purge_legacy_calendar_reports()
         self._conn.commit()
 
     # ---- 连接管理 ----
@@ -259,14 +260,13 @@ class Database:
 
     def set_session_excluded(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
         """Set exclusion atomically; returns (already_excluded, timestamp)."""
-        now = _iso_now()
-        with self.lock:
+        with self.lock, self._conn:
             row = self._conn.execute(
                 "SELECT excluded_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
                 (athlete_id, session_id)).fetchone()
             if row and row[0] is not None:
-                self._conn.commit()
                 return True, row[0]
+            now = _iso_now()
             self._conn.execute(
                 "INSERT INTO session_lifecycle(athlete_id,session_id,excluded_at_utc,excluded_by,exclude_reason) "
                 "VALUES(?,?,?,?,?) ON CONFLICT(athlete_id,session_id) DO UPDATE SET "
@@ -276,25 +276,24 @@ class Database:
             self._conn.execute(
                 "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
                 "VALUES(?,?,'exclude',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
-            self._conn.commit()
+            self._invalidate_session_reports(athlete_id, session_id)
         return False, now
 
     def set_session_active(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
-        now = _iso_now()
-        with self.lock:
+        with self.lock, self._conn:
             row = self._conn.execute(
-                "SELECT excluded_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                "SELECT excluded_at_utc, restored_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
                 (athlete_id, session_id)).fetchone()
             if not row or row[0] is None:
-                self._conn.commit()
-                return True, now
+                return True, (row[1] if row else None) or _iso_now()
+            now = _iso_now()
             self._conn.execute(
                 "UPDATE session_lifecycle SET excluded_at_utc=NULL, restored_at_utc=?, restored_by=?, restore_reason=? "
                 "WHERE athlete_id=? AND session_id=?", (now, actor_id, reason, athlete_id, session_id))
             self._conn.execute(
                 "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
                 "VALUES(?,?,'restore',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
-            self._conn.commit()
+            self._invalidate_session_reports(athlete_id, session_id)
         return False, now
 
     def is_session_excluded(self, athlete_id: str, session_id: str) -> bool:
@@ -719,29 +718,64 @@ class Database:
             (athlete_id, f"daily:{session_id}"),
         )
 
-    def invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
-        """Invalidate daily cache for the session and calendar windows containing it."""
-        rows = self._query("SELECT session_time_utc FROM session_dim WHERE athlete_id=? AND session_id=?",
-                           (athlete_id, session_id))
-        if not rows:
-            return
+    def _first_scoring_time(self, athlete_id: str, session_id: str) -> str:
+        row = self._conn.execute(
+            """SELECT shot_time_utc FROM shot_fact
+               WHERE athlete_id=? AND session_id=? AND shooting_mode=1 ORDER BY shot_seq LIMIT 1""",
+            (athlete_id, session_id)).fetchone()
+        return row["shot_time_utc"] if row else ""
+
+    def _invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
+        """Called inside the lifecycle transaction, with db.lock held."""
         from app.reports.window import WindowKey
-        from app.config import get_config
-        keys = [("daily", f"daily:{session_id}")]
-        for granularity in ("weekly", "monthly", "quarterly", "yearly"):
-            window = WindowKey.of_shot(get_config(), rows[0]["session_time_utc"], granularity)
-            if window is not None:
-                keys.append((granularity, window.text))
-        with self.lock:
-            for granularity, window_key in keys:
-                ids = [r[0] for r in self._conn.execute(
-                    "SELECT report_id FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?",
-                    (athlete_id, granularity, window_key)).fetchall()]
-                for report_id in ids:
-                    self._conn.execute("DELETE FROM report_memories WHERE report_id=?", (report_id,))
-                self._conn.execute("DELETE FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?",
-                                   (athlete_id, granularity, window_key))
-            self._conn.commit()
+        from app.timeutil import parse_iso_utc
+
+        row = self._conn.execute(
+            "SELECT session_time_utc, site FROM session_dim WHERE athlete_id=? AND session_id=?",
+            (athlete_id, session_id)).fetchone()
+        keys = {WindowKey.daily(session_id)}
+        if row and row["site"] == "desktop":
+            day = WindowKey.desktop_day_of_shot(self._first_scoring_time(athlete_id, session_id))
+            if day:
+                keys.add(day)
+        if row and parse_iso_utc(row["session_time_utc"]):
+            cfg = get_config()
+            for granularity in ("weekly", "monthly", "quarterly", "yearly"):
+                window = WindowKey.of_shot(cfg, row["session_time_utc"], granularity)
+                if window:
+                    keys.add(window)
+        for key in keys:
+            self._delete_report_cache(athlete_id, key.granularity, key.text)
+
+    def _delete_report_cache(self, athlete_id: str, granularity: str, key: str,
+                             generated_through: str | None = None) -> None:
+        where = "athlete_id=? AND granularity=? AND window_key=?"
+        args = (athlete_id, granularity, key)
+        if generated_through is not None:
+            where += " AND generated_at_utc<=?"
+            args += (generated_through,)
+        self._conn.execute(
+            f"DELETE FROM report_memories WHERE report_id IN (SELECT report_id FROM report_cache WHERE {where})",
+            args)
+        self._conn.execute(f"DELETE FROM report_cache WHERE {where}", args)
+
+    def _purge_legacy_calendar_reports(self) -> None:
+        """Remove saved daily reports that predate a lifecycle change on upgraded databases."""
+        from app.reports.window import WindowKey
+
+        with self.lock, self._conn:
+            rows = self._conn.execute(
+                """SELECT s.athlete_id, s.session_id, MAX(a.occurred_at_utc) AS changed_at
+                   FROM session_lifecycle_audit a JOIN session_dim s USING (athlete_id, session_id)
+                   WHERE s.site='desktop' AND EXISTS (
+                       SELECT 1 FROM report_cache c WHERE c.athlete_id=s.athlete_id
+                           AND c.granularity='daily' AND c.window_key LIKE 'daily:day:%')
+                   GROUP BY s.athlete_id, s.session_id""").fetchall()
+            for row in rows:
+                athlete_id = row["athlete_id"]
+                day = WindowKey.desktop_day_of_shot(self._first_scoring_time(athlete_id, row["session_id"]))
+                if day:
+                    self._delete_report_cache(athlete_id, "daily", day.text, row["changed_at"])
 
 
 def get_database(cfg: EngineConfig | None = None) -> Database:

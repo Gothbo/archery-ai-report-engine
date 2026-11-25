@@ -120,12 +120,23 @@ def load_stored_report(db: Database, report_id: str) -> dict | None:
 def read_calendar_report(db: Database, athlete_id: str, window_key: str,
                          view: str, report_id: str | None = None) -> dict:
     """Read the requested report snapshot, or the saved report for legacy window-based callers."""
+    if report_id:
+        return read_report_snapshot(db, athlete_id, "daily", window_key, view, report_id)
     with db.lock:
-        row = (db.cached_report_by_id(report_id) if report_id else db.get_cached_report_row(
-            athlete_id, "daily", window_key, _report_cache_version(get_config())))
-        if (not row or row["athlete_id"] != athlete_id or row["granularity"] != "daily"
-                or row["window_key"] != window_key or not row["report_json"]):
+        row = db.get_cached_report_row(athlete_id, "daily", window_key, _report_cache_version(get_config()))
+        if not row or not row["report_json"]:
             raise ValueError("日报不存在或已更新，请在报告页重新生成")
+        return render_for_view(db, json.loads(row["report_json"]), view, cached=True)
+
+
+def read_report_snapshot(db: Database, athlete_id: str, granularity: str, window_key: str,
+                         view: str, report_id: str) -> dict:
+    """An explicit citation may only use the requested, still valid report."""
+    with db.lock:
+        row = db.cached_report_by_id(report_id)
+        if (not row or row["athlete_id"] != athlete_id or row["granularity"] != granularity
+                or row["window_key"] != window_key or not row["report_json"]):
+            raise ValueError("报告不存在或已更新，请在报告页重新打开")
         return render_for_view(db, json.loads(row["report_json"]), view, cached=True)
 
 
@@ -141,6 +152,8 @@ def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key
             session = db.session_of(sid)
             if not session or session["athlete_id"] != athlete_id or session["site"] != "desktop":
                 raise SessionNotFound("所选场次不存在或不属于当前运动员")
+            if db.is_session_excluded(athlete_id, sid):
+                raise SessionExcluded("所选场次已排除")
             rows = [dict(r) for r in db.shots_of_session(sid) if r["shooting_mode"] == 1]
             if not rows or not start <= rows[0]["shot_time_utc"] < end:
                 raise SessionNotFound("所选场次没有当日的首支计分箭")
@@ -339,6 +352,7 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
         with db.lock:
             draft = build_report(db, athlete_id, granularity, window_key, view="coach",
                                  desktop_session_ids=desktop_session_ids)
+            draft.report["session_ids"] = sorted(set(desktop_session_ids))
             db.purge_report_window(athlete_id, granularity, window_key, cache_version)
             persist_report(db, draft)
             return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
