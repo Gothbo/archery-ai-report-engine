@@ -22,9 +22,11 @@ start.bat
 
 | 档位 | mdc_source | 报告 | 对话 |
 | --- | --- | --- | --- |
-| `config.llamacpp.local.json`（默认） | demo-thresholds-20260928 | 出 MDC 判定 | 接本地模型 `:8090` |
+| `config.llamacpp.local.json`（默认） | v1-trial-20261010 | 出 MDC 试行判定 | 接本地模型 `:8090` |
 | `config.demo.json` | demo-thresholds-20260928 | 出 MDC 判定 | 关闭 |
-| `config.json`（正式 SSOT） | null | 只描述不判定 | 关闭 |
+| `config.json` | v1-trial-20261010 | 出 MDC 试行判定 | 关闭 |
+
+数据库默认规则包、草稿发布、签署和报告字段见 [规则包接口契约](docs/rule-pack-api.md)。
 
 已有外部模型服务（llama.cpp Vulkan 版 / Ollama）时保持 `LLM_PORT` 被占用即可，脚本会直接复用。
 
@@ -145,7 +147,7 @@ start.bat
 - 《射箭AI训练报告引擎-记忆系统实施方案.md》：§3.1 记忆表、§3.2 基线、§七 里程碑
 - 《窗口口径与样本门槛决策记录-v2》：拍板依据与复算附录
 
-`config.json` 中 `timezone/sample_threshold/wind_bands/mdc` 均为文档口径的工程落点；`mdc_source=null` 表示 M4.5 专家共识落地前，报告走降级模板（只描述不判定）。
+`config.json` 提供时区和默认口径。数据库中的生效规则包提供判定参数。若尚未发布规则包且显式配置 `mdc_source=null`，报告只描述、不判定。
 
 ## 里程碑状态
 

@@ -76,7 +76,8 @@ def assemble_context(db: Database, athlete_id: str, question: str,
 
     notes = list_notes_for_view(db, athlete_id, view)
     notes = select_notes_for_context(notes, question)
-    history = db.latest_memory(athlete_id, _granularity)
+    rule_pack = report.get("rule_pack")
+    history = db.latest_memory(athlete_id, _granularity, rule_pack_version=rule_pack["version"] if rule_pack else None)
 
     # 报告正文自带「近期备注 / 辅助信息」备注行（生成时未看问题），会绕过相关性召回；
     # 这里先剥掉，再由选中的 notes 统一注入，保证无关旧事不被带进对话。
@@ -93,6 +94,7 @@ def assemble_context(db: Database, athlete_id: str, question: str,
         "granularity": _granularity,
         "window_key": _window_key,
         "report_id": report.get("report_id"),
+        "rule_pack": rule_pack,
         "skeleton": skeleton_text,
         "skeleton_json": _skeleton_json(report, notes, history),
         "numbers": numbers,

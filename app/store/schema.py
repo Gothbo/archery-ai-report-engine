@@ -142,6 +142,28 @@ CREATE TABLE IF NOT EXISTS report_memories (
 );
 CREATE INDEX IF NOT EXISTS idx_memories_lookup ON report_memories(athlete_id, granularity, generated_at_utc);
 
+CREATE TABLE IF NOT EXISTS rule_packs (
+    version           TEXT PRIMARY KEY,
+    status            TEXT NOT NULL CHECK (status IN ('draft', 'trial', 'signed')),
+    rules_json        TEXT NOT NULL,
+    sources_json      TEXT NOT NULL,
+    review_date       TEXT NOT NULL,
+    updated_by        TEXT NOT NULL,
+    updated_at_utc    TEXT NOT NULL,
+    effective_at_utc  TEXT,
+    signed_by         TEXT,
+    signed_at_utc     TEXT
+);
+
+CREATE TABLE IF NOT EXISTS rule_pack_audit (
+    id              INTEGER PRIMARY KEY,
+    version         TEXT NOT NULL REFERENCES rule_packs(version),
+    action          TEXT NOT NULL CHECK (action IN ('publish', 'sign')),
+    actor_id        TEXT NOT NULL,
+    occurred_at_utc TEXT NOT NULL,
+    UNIQUE (version, action)
+);
+
 -- 报告缓存（按钮触发生成后落盘；B10 失效规则反查）
 CREATE TABLE IF NOT EXISTS report_cache (
     report_id        TEXT PRIMARY KEY,

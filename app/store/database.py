@@ -34,6 +34,8 @@ class Database:
     """
 
     def __init__(self, db_path: str):
+        from app.reports.rule_packs import seed_rule_pack
+
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
@@ -47,6 +49,7 @@ class Database:
         self._migrate_memory_closure()
         self._migrate_portal_p0()
         self._purge_legacy_calendar_reports()
+        seed_rule_pack(self._conn)
         self._conn.commit()
 
     # ---- 连接管理 ----
@@ -87,6 +90,7 @@ class Database:
         # PR #4：报告正文落库（不含「近期备注」一节；读取时按视角现取备注、运动员视角剔除 coach_extra）
         "report_cache": [
             ("report_json", "TEXT"),
+            ("rule_pack_version", "TEXT REFERENCES rule_packs(version)"),
         ],
     }
 
@@ -590,13 +594,10 @@ class Database:
         )
         return cur.lastrowid
 
-    def latest_memory(self, athlete_id: str, granularity: str) -> sqlite3.Row | None:
+    def latest_memory(self, athlete_id: str, granularity: str, *,
+                      rule_pack_version: str | None = None) -> sqlite3.Row | None:
         """历史结论引用（B2/D5）：同粒度、时间最近 1 条 judgement。"""
-        rows = self._query(
-            """SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?
-                 AND conclusion_type='judgement' ORDER BY generated_at_utc DESC LIMIT 1""",
-            (athlete_id, granularity),
-        )
+        rows = self.recent_judgements(athlete_id, granularity, 1, rule_pack_version=rule_pack_version)
         return rows[0] if rows else None
 
     def list_memories(self, athlete_id: str) -> list[sqlite3.Row]:
@@ -636,12 +637,14 @@ class Database:
         return rows[0] if rows else None
 
     def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str,
-                          mdc_version: str | None, report_json: str | None = None) -> None:
+                          mdc_version: str | None, report_json: str | None = None,
+                          *, rule_pack_version: str | None = None) -> None:
         self._execute(
             """INSERT OR REPLACE INTO report_cache
-                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json)
-               VALUES (?,?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json),
+                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json,
+                  rule_pack_version)
+               VALUES (?,?,?,?,?,?,?,?)""",
+            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json, rule_pack_version),
         )
 
     def fill_report_body(self, report_id: str, report_json: str, generated_at_utc: str) -> None:
@@ -680,18 +683,22 @@ class Database:
         return out
 
     def recent_judgements(self, athlete_id: str, granularity: str, limit: int,
-                          with_delta: bool = False) -> list[sqlite3.Row]:
+                          with_delta: bool = False, *, rule_pack_version: str | None = None) -> list[sqlite3.Row]:
         """最近 N 条同粒度 judgement（时间倒序）。
 
         with_delta=True 只取带 delta_value 的判定（锚点重建触发④要求「提升均超 MDC」，
         delta 为空的行不参与）。平台期识别与锚点重建共用此方法。
         """
-        sql = ("SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?"
+        sql = ("SELECT m.* FROM report_memories m WHERE athlete_id=? AND granularity=?"
                " AND conclusion_type='judgement'")
+        params: tuple = (athlete_id, granularity)
         if with_delta:
             sql += " AND delta_value IS NOT NULL"
+        if rule_pack_version is not None:
+            sql += " AND EXISTS (SELECT 1 FROM report_cache c WHERE c.report_id=m.report_id AND c.rule_pack_version=?)"
+            params += (rule_pack_version,)
         sql += " ORDER BY generated_at_utc DESC LIMIT ?"
-        return self._query(sql, (athlete_id, granularity, limit))
+        return self._query(sql, (*params, limit))
 
     def cached_report_by_id(self, report_id: str) -> sqlite3.Row | None:
         """按 report_id 读取缓存行（GET /reports/{id} 校验报告是否仍有效）。"""

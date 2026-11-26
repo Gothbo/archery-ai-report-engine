@@ -13,7 +13,7 @@ import os
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     JsonConfigSettingsSource,
@@ -198,6 +198,7 @@ class EngineConfig(BaseSettings):
     wind_bands: list[list[float]]
     mdc: dict[str, MDCSpec]
     mdc_source: str | None = None
+    _rule_pack_version: str | None = PrivateAttr(default=None)
     change_caliber_trial: bool = False
     report_caliber_version: str = "v1"
     data_quality: DataQuality
@@ -216,6 +217,10 @@ class EngineConfig(BaseSettings):
     security: SecurityConfig = SecurityConfig()
     conclusions: ConclusionsConfig = ConclusionsConfig()
     log_dir: str = "logs"
+
+    @property
+    def rule_pack_version(self) -> str | None:
+        return self._rule_pack_version
 
     @classmethod
     def settings_customise_sources(

@@ -129,6 +129,8 @@ async def guidance_stream(athlete_id: str, body: GuidanceRequest):
         ok, reason = check_guards(text, ctx, cfg.forbidden_phrases, max_len=max_len)
         common = {"sources": ctx["sources"], "context_version": ctx["version"],
                   "granularity": ctx["granularity"], "window_key": ctx["window_key"], "view": view}
+        if rule_pack := ctx.get("rule_pack"):
+            common["rule_pack"] = rule_pack
         if not ok:
             data = {"code": "COACH-GUARD", "message": DEGRADED_GUARD,
                     "rule": (reason or "")[:2] if (reason or "").startswith("G") else "G0",
