@@ -45,6 +45,17 @@ def g3_length(answer: str, max_len: int = 500) -> int | None:
     return len(answer) if len(answer) > max_len else None
 
 
+def number_guard(answer: str, context: dict) -> str | None:
+    strict = context.get("strict_expression", False)
+    text = normalize("NFKC", answer) if strict else answer
+    bad = g2_numbers(text, context["numbers"], tol=0 if strict else 1e-3)
+    if bad is not None:
+        return f"G2 出现骨架外数字：{bad}"
+    if strict and _UNVERIFIED_QUANTITY.search(text):
+        return "G2 出现无法核对的中文数量"
+    return None
+
+
 def check_guards(answer: str, context: dict, forbidden_phrases: list[str],
                  max_len: int = 500) -> tuple[bool, str | None]:
     """综合检查：返回 (是否通过, 失败原因)。max_len 默认 500（/ask）；训练指导传 llm.guidance_max_len。"""
@@ -55,15 +66,12 @@ def check_guards(answer: str, context: dict, forbidden_phrases: list[str],
     hit = g1_forbidden(text, forbidden_phrases)
     if hit:
         return False, f"G1 命中禁用词：{hit}"
-    bad = g2_numbers(text, context["numbers"], tol=0 if strict else 1e-3)
-    if bad is not None:
-        return False, f"G2 出现骨架外数字：{bad}"
+    if error := number_guard(answer, context):
+        return False, error
     too_long = g3_length(answer, max_len)
     if too_long is not None:
         return False, f"G3 答案超长（{too_long} 字）"
     if strict:
-        if _UNVERIFIED_QUANTITY.search(text):
-            return False, "G2 出现无法核对的中文数量"
         if _MEDICAL.search(text):
             return False, "G1 训练指导不得给出医疗建议"
         approved = {part.strip() for line in context["judgement_lines"]

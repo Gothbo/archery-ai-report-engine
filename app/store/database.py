@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 
 from app.config import EngineConfig, get_config
+from app.store.guidance_feedback import backfill_report_observations, record_report_observation
 from app.store.schema import SCHEMA_DDL
 
 logger = logging.getLogger("engine.store")
@@ -48,6 +49,7 @@ class Database:
         self._migrate_columns()
         self._migrate_memory_closure()
         self._migrate_portal_p0()
+        backfill_report_observations(self._conn)
         self._purge_legacy_calendar_reports()
         seed_rule_pack(self._conn)
         self._conn.commit()
@@ -639,19 +641,28 @@ class Database:
     def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str,
                           mdc_version: str | None, report_json: str | None = None,
                           *, rule_pack_version: str | None = None) -> None:
-        self._execute(
-            """INSERT OR REPLACE INTO report_cache
-                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json,
-                  rule_pack_version)
-               VALUES (?,?,?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json, rule_pack_version),
-        )
+        generated_at = _iso_now()
+        with self.lock, self._conn:
+            self._conn.execute(
+                """INSERT OR REPLACE INTO report_cache
+                     (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json,
+                      rule_pack_version)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (report_id, athlete_id, granularity, window_key, mdc_version, generated_at,
+                 report_json, rule_pack_version),
+            )
+            record_report_observation(self._conn, report_id, generated_at, rule_pack_version, report_json)
 
     def fill_report_body(self, report_id: str, report_json: str, generated_at_utc: str) -> None:
         """给 PR #4 之前的旧缓存行补存正文：写 report_json，生成时间与正文一致；report_id、历史结论不变。"""
-        self._execute(
-            "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
-            (report_json, generated_at_utc, report_id))
+        with self.lock, self._conn:
+            updated = self._conn.execute(
+                "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
+                (report_json, generated_at_utc, report_id))
+            if updated.rowcount:
+                row = self.get_report_row(report_id)
+                record_report_observation(self._conn, report_id, generated_at_utc,
+                                          row["rule_pack_version"], report_json)
 
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
                             mdc_version: str | None) -> None:

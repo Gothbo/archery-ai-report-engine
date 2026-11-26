@@ -175,6 +175,34 @@ CREATE TABLE IF NOT EXISTS report_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_cache_lookup ON report_cache(athlete_id, generated_at_utc);
 
+-- Rule hits and submitted feedback survive invalidation of the report cache.
+CREATE TABLE IF NOT EXISTS guidance_report_observations (
+    report_id         TEXT PRIMARY KEY,
+    generated_at_utc  TEXT NOT NULL,
+    rule_pack_version TEXT NOT NULL,
+    rules_json        TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_guidance_hits_date ON guidance_report_observations(generated_at_utc);
+
+CREATE TABLE IF NOT EXISTS guidance_feedback (
+    id                TEXT PRIMARY KEY,
+    report_id         TEXT NOT NULL REFERENCES guidance_report_observations(report_id),
+    athlete_id        TEXT NOT NULL,
+    granularity       TEXT NOT NULL,
+    window_key        TEXT NOT NULL,
+    view              TEXT NOT NULL CHECK (view IN ('athlete', 'coach')),
+    rule_pack_version TEXT NOT NULL,
+    source            TEXT NOT NULL CHECK (source IN ('rule', 'model')),
+    rating            INTEGER NOT NULL CHECK (rating BETWEEN 1 AND 5),
+    will_follow       INTEGER NOT NULL CHECK (will_follow IN (0, 1)),
+    reason            TEXT,
+    rules_json        TEXT NOT NULL,
+    actor_id          TEXT NOT NULL,
+    submitted_at_utc  TEXT NOT NULL,
+    UNIQUE (report_id, actor_id)
+);
+CREATE INDEX IF NOT EXISTS idx_guidance_feedback_date ON guidance_feedback(submitted_at_utc);
+
 -- ===== v1.2 上行接口接收适配层（app/ingest/v12）=====
 -- 已受理消息（按 messageId 精确去重，§4.3）；结构非法/本期不支持的消息不入此表（可修正后原 messageId 重发）
 CREATE TABLE IF NOT EXISTS ingest_messages (

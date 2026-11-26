@@ -95,16 +95,16 @@ def _assert_fallback(result, reason, report):
     assert result["text"].strip()
 
 
-@pytest.mark.parametrize("reply", [
-    "治疗方案：服用止痛药。",
-    "技术明显退步，必须立刻加练。",
-    "本期可提高三成。",
-    "本期平均环为 987.321 环。",
+@pytest.mark.parametrize(("reply", "reason"), [
+    ("治疗方案：服用止痛药。", "guardrail_failed"),
+    ("技术明显退步，必须立刻加练。", "guardrail_failed"),
+    ("本期可提高三成。", "quality_failed"),
+    ("本期平均环为 987.321 环。", "quality_failed"),
 ])
-def test_unapproved_claims_are_replaced_by_rule_guidance(report_case, monkeypatch, reply):
-    use_mock(monkeypatch, MockLLMClient(responses=[reply]))
+def test_unapproved_claims_are_replaced_by_rule_guidance(report_case, monkeypatch, reply, reason):
+    use_mock(monkeypatch, MockLLMClient(responses=[f"五、提升方案\n{reply}"]))
     result = _json(_interpret(report_case))
-    _assert_fallback(result, "guardrail_failed", report_case[2])
+    _assert_fallback(result, reason, report_case[2])
     assert reply not in result["text"]
 
 

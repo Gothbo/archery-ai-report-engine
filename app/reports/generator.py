@@ -99,13 +99,7 @@ def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
     out["sections"] = sections
     out["view"] = view
     out["cached"] = cached
-    guidance = body.get("rule_guidance") or RG.build_rule_guidance(
-        suggestions=body.get("suggestions"),
-        advice_evidence=body.get("coach_extra", {}).get("advice_evidence"),
-        metrics=body.get("metrics"),
-        conclusions=body.get("conclusions"),
-    )
-    out["rule_guidance"] = {**guidance, **RG.RULE_SOURCE}
+    out["rule_guidance"] = RG.guidance_for_report(body)
     if snapshot := body.get("rule_pack"):
         pack = RP.get_pack(db, snapshot["version"])
         metadata = {**snapshot, "current_status": pack["status"],

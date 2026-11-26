@@ -6,6 +6,7 @@ import json
 import re
 from unicodedata import normalize
 
+from app.privacy import CONTACT, MEDIA_PATH
 from app.rag.context import extract_numbers
 from app.reports.window import WindowKey
 
@@ -16,9 +17,6 @@ _METRICS = {
     "hr_volatility": ("hrVolatility", "心率波动"),
 }
 _METRIC_IDS = {metric for metric, _ in _METRICS.values()}
-_CONTACT = re.compile(
-    r"(?<!\d)(?:\d{17}[\dXx]|\d{15}|(?:\+?86[- ]?)?1[3-9](?:[- ]?\d){9})(?!\d)")
-_MEDIA = re.compile(r"[^\s，。；、\"'<>]+\.(?:mp4|mov|avi|mkv|webm|m4v)(?:\?[^\s，。；、\"'<>]*)?", re.I)
 _RULE_REF = re.compile(r"^[a-z][a-z0-9_:-]{0,63}$")
 _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _VERDICT_FIELDS = ("verdict", "reason", "tier", "value", "anchor", "delta", "mdc")
@@ -30,7 +28,7 @@ def expression_input(report: dict, notes: list[dict], history, profile_name: str
 
     def safe_text(text: str) -> str:
         value = normalize("NFKC", text)
-        value = _MEDIA.sub("〔媒体已隐藏〕", _CONTACT.sub("〔身份信息已隐藏〕", value))
+        value = MEDIA_PATH.sub("〔媒体已隐藏〕", CONTACT.sub("〔身份信息已隐藏〕", value))
         for identifier in identifiers:
             if identifier:
                 value = value.replace(normalize("NFKC", identifier), "〔身份信息已隐藏〕")

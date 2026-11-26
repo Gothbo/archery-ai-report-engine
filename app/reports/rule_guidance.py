@@ -23,6 +23,20 @@ _BLOCKED_MARK = "数据存疑"
 _CAVEAT_PREFIX = "样本不足"
 
 
+def guidance_for_report(report: dict) -> dict:
+    guidance = report.get("rule_guidance") or build_rule_guidance(
+        suggestions=report.get("suggestions"),
+        advice_evidence=(report.get("coach_extra") or {}).get("advice_evidence"),
+        metrics=report.get("metrics"),
+        conclusions=report.get("conclusions"),
+    )
+    return {**guidance, **RULE_SOURCE}
+
+
+def rule_sources(guidance: dict) -> list[str]:
+    return list(dict.fromkeys(bullet["source"] for bullet in guidance.get("bullets", []) if bullet.get("source")))
+
+
 def build_rule_guidance(
     *,
     suggestions: list[str] | None,

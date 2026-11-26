@@ -31,6 +31,7 @@
 | `context_version` | 本次模型输入的指纹。快照和可见引用保持一致时，重复调用保持一致 |
 | `model_version` | 模型成功时返回配置中的版本，规则兜底为 `null` |
 | `generated_at_utc` | 本次解读的 UTC 时间，精确到毫秒 |
+| `quality_gate` | 可选。对非空模型候选检查引用、下一步、数字一致性，返回 `{passed,missing}`。规则来源标签仍以 `source` 为准 |
 
 报告生成和报告正文读取均返回带来源标记的 `rule_guidance`。历史报告的标记可在读取时补齐，存储内容保持原样。
 
@@ -43,11 +44,14 @@
 | `disabled` | `llm.enabled=false` |
 | `busy` | 问答或指导已占用同一个模型任务位 |
 | `timeout` | 模型调用、首个片段、片段间等待或总生成时间超时 |
-| `guardrail_failed` | 输出命中禁语、超长、含输入外数字、含医疗建议，或加入报告没有支持的判定 |
+| `guardrail_failed` | 质量检查通过，但输出命中禁语、超长、含医疗建议，或加入报告没有支持的判定 |
+| `quality_failed` | 模型文本缺少有效引用、缺少「五、提升方案」正文，或含输入外数字。返回规则文案及检查失败项 |
 | `empty` | 上游未返回可显示文字 |
 | `error` | 其他模型异常，或生成过程中可见引用发生变化 |
 
 模型返回后，服务重新核对报告和可见引用。报告在模型生成期间失效时返回 404。引用发生变化时按当前可见范围返回规则指导。现有 `guidance/stream` 保留 SSE 事件和 503、409 行为。
+
+`quality_gate.missing` 可含 `references`、`next_step`、`numbers`。上游关闭、忙、超时或空响应等尚无可评估候选的情况省略该字段。[反馈与复审契约](guidance_feedback_contract.md)
 
 ## 引用与模型输入
 
