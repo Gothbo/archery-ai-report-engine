@@ -32,8 +32,9 @@ from app.metrics.vector import metric_vector
 
 from app.reports import advice as ADV
 from app.reports import conclusions as C
-from app.reports import rule_guidance as RG
 from app.reports import quality as Q
+from app.reports import rule_guidance as RG
+from app.reports import rule_packs as RP
 from app.reports import rules as R
 from app.reports.window import WindowKey, window_bounds
 from app.store.database import Database
@@ -65,12 +66,18 @@ class SessionNotFound(ValueError):
     """日报场次不存在或不属于该运动员（PR #4：返回 404，不再生成 0 箭空报告写进缓存）。"""
 
 
+class SessionExcluded(ValueError):
+    """日报明确引用了已排除场次。"""
+
+
 def _check_session(db: Database, athlete_id: str, session_id: str | None) -> None:
     if not session_id:
         return
     rows = db.query("SELECT athlete_id FROM session_dim WHERE session_id=?", (session_id,))
     if not rows or rows[0]["athlete_id"] != athlete_id:
         raise SessionNotFound(f"场次 {session_id} 不存在或不属于该运动员（尚未导入或已重建）")
+    if db.is_session_excluded(athlete_id, session_id):
+        raise SessionExcluded(f"场次 {session_id} 已排除")
 
 
 def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
@@ -82,7 +89,8 @@ def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
     out = dict(body)
     sections = [s for s in body.get("sections", []) if s.get("key") != "notes"]
     from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, body["athlete"]["id"], view)
+    notes = list_notes_for_view(db, body["athlete"]["id"], view,
+                                days=get_config().memory.notes_display_days)
     if notes:
         note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
                       for n in notes[:5]]
@@ -91,6 +99,13 @@ def render_for_view(db: Database, body: dict, view: str, cached: bool) -> dict:
     out["sections"] = sections
     out["view"] = view
     out["cached"] = cached
+    out["rule_guidance"] = RG.guidance_for_report(body)
+    if snapshot := body.get("rule_pack"):
+        pack = RP.get_pack(db, snapshot["version"])
+        metadata = {**snapshot, "current_status": pack["status"],
+                    "signed_by": pack["signed_by"], "signed_at_utc": pack["signed_at_utc"]}
+        out["rule_pack"] = metadata
+        out["rule_guidance"]["rule_pack"] = metadata
     return out
 
 
@@ -113,12 +128,30 @@ def load_stored_report(db: Database, report_id: str) -> dict | None:
 def read_calendar_report(db: Database, athlete_id: str, window_key: str,
                          view: str, report_id: str | None = None) -> dict:
     """Read the requested report snapshot, or the saved report for legacy window-based callers."""
+    if report_id:
+        return read_report_snapshot(db, athlete_id, "daily", window_key, view, report_id)
     with db.lock:
-        row = (db.cached_report_by_id(report_id) if report_id else db.get_cached_report_row(
-            athlete_id, "daily", window_key, _report_cache_version(get_config())))
-        if (not row or row["athlete_id"] != athlete_id or row["granularity"] != "daily"
-                or row["window_key"] != window_key or not row["report_json"]):
+        cfg, pack = _resolve_report_rules(db)
+        row = db.get_cached_report_row(athlete_id, "daily", window_key, _report_cache_version(cfg))
+        if pack and (not row or not row["report_json"]):
+            reports = db.query(
+                """SELECT report_json FROM report_cache WHERE athlete_id=? AND granularity='daily'
+                   AND window_key=? AND report_json IS NOT NULL ORDER BY generated_at_utc DESC, rowid DESC LIMIT 1""",
+                (athlete_id, window_key))
+            row = reports[0] if reports else None
+        if not row or not row["report_json"]:
             raise ValueError("日报不存在或已更新，请在报告页重新生成")
+        return render_for_view(db, json.loads(row["report_json"]), view, cached=True)
+
+
+def read_report_snapshot(db: Database, athlete_id: str, granularity: str, window_key: str,
+                         view: str, report_id: str) -> dict:
+    """An explicit citation may only use the requested, still valid report."""
+    with db.lock:
+        row = db.cached_report_by_id(report_id)
+        if (not row or row["athlete_id"] != athlete_id or row["granularity"] != granularity
+                or row["window_key"] != window_key or not row["report_json"]):
+            raise ValueError("报告不存在或已更新，请在报告页重新打开")
         return render_for_view(db, json.loads(row["report_json"]), view, cached=True)
 
 
@@ -134,6 +167,8 @@ def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key
             session = db.session_of(sid)
             if not session or session["athlete_id"] != athlete_id or session["site"] != "desktop":
                 raise SessionNotFound("所选场次不存在或不属于当前运动员")
+            if db.is_session_excluded(athlete_id, sid):
+                raise SessionExcluded("所选场次已排除")
             rows = [dict(r) for r in db.shots_of_session(sid) if r["shooting_mode"] == 1]
             if not rows or not start <= rows[0]["shot_time_utc"] < end:
                 raise SessionNotFound("所选场次没有当日的首支计分箭")
@@ -281,11 +316,17 @@ def _comparability(db: Database, shots: list[dict], ref: dict) -> bool:
 
 
 def _report_cache_version(cfg: EngineConfig) -> str:
-    """报告缓存口径键（B10/B12）：MDC 阈值来源 + 报告口径版本，任一变更即作废旧缓存。
+    """分隔报告口径与规则包版本的缓存，旧报告仍可通过 ID 读取。"""
+    base = f"mdc={cfg.mdc_source or 'empty'};caliber={cfg.report_caliber_version}"
+    return f"{base};rule_pack={cfg.rule_pack_version}" if cfg.rule_pack_version else base
 
-    与 mdc_source 解耦：口径升级只递增 report_caliber_version，不改变 mdc_source（降级期）。
-    """
-    return f"mdc={cfg.mdc_source or 'empty'};caliber={cfg.report_caliber_version}"
+
+def _resolve_report_rules(db: Database) -> tuple[EngineConfig, dict | None]:
+    cfg = get_config()
+    pack = RP.active_pack(db, cfg)
+    if pack:
+        cfg = RP.PackRules.model_validate(pack["rules"]).apply(cfg, pack["version"], pack["status"])
+    return cfg, pack
 
 
 
@@ -322,19 +363,28 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     force=True 跳过缓存强制重生成（B10 支持 ?refresh=1）。
     命中且有已存正文 → 返回正文（按本次视角现取备注）；PR #4 之前旧行无正文则补存。
     """
-    cfg = get_config()
+    with db.write_transaction():
+        return _generate_report(db, athlete_id, granularity, window_key, session_id,
+                                view, force, desktop_session_ids)
+
+
+def _generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
+                     session_id: str | None, view: str, force: bool,
+                     desktop_session_ids: list[str] | None) -> dict:
+    policy = _resolve_report_rules(db)
+    cfg, _ = policy
     R.validate_rules(cfg)
     calendar_day = WindowKey.parse(granularity, window_key).is_calendar_day
     cache_version = _report_cache_version(cfg)
     if calendar_day:
         if not desktop_session_ids:
             raise ValueError("请通过桌面端重新生成日报")
-        with db.lock:
-            draft = build_report(db, athlete_id, granularity, window_key, view="coach",
-                                 desktop_session_ids=desktop_session_ids)
-            db.purge_report_window(athlete_id, granularity, window_key, cache_version)
-            persist_report(db, draft)
-            return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
+        draft = build_report(db, athlete_id, granularity, window_key, view="coach",
+                             desktop_session_ids=desktop_session_ids, _policy=policy)
+        draft.report["session_ids"] = sorted(set(desktop_session_ids))
+        db.purge_report_window(athlete_id, granularity, window_key, cache_version)
+        persist_report(db, draft)
+        return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
     if granularity == "daily":
         _check_session(db, athlete_id, session_id)
 
@@ -351,7 +401,7 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
 
     # 落库正文固定 coach 视角（含完整 coach_extra）；对外再按请求 view 现取备注并剔除运维字段
     draft = build_report(db, athlete_id, granularity, window_key, session_id, view="coach",
-                         report_id=backfill_id)
+                         report_id=backfill_id, _policy=policy)
     body = _body_for_storage(draft.report)
     if backfill_id is not None:
         db.fill_report_body(backfill_id, json.dumps(body, ensure_ascii=False),
@@ -376,18 +426,21 @@ class ReportDraft:
 
     report: dict
     conclusions: list[dict]
+    cache_version: str
 
 
 def build_report(db: Database, athlete_id: str, granularity: str, window_key: str,
                  session_id: str | None = None, view: str = "athlete",
                  report_id: str | None = None,
-                 desktop_session_ids: list[str] | None = None) -> ReportDraft:
+                 desktop_session_ids: list[str] | None = None, *,
+                 _policy: tuple[EngineConfig, dict | None] | None = None) -> ReportDraft:
     """组装一份报告（纯读 + 计算）：读记忆/事实 → 指标 → 规则结论 → 结构化 JSON。
 
     不写库；结论与缓存由 persist_report 落库。
     """
-    cfg = get_config()
+    cfg, pack = _policy if _policy is not None else _resolve_report_rules(db)
     R.validate_rules(cfg)
+    is_signed = pack is not None and pack["status"] == "signed"
 
     shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id, desktop_session_ids)
     # 主弓种聚合（ADR-0004）：指标只算主弓种箭，其余弓种在 data_integrity 标注不计入
@@ -536,6 +589,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 if cfg.change_caliber_trial:
                     # 试行期：无锚点也按滚动基线出方向提示（试行口径、参考），不出强断言判定词（ADR-0006 修订）
                     line, ev, baseline_direction = _baseline_hint(cfg, m["avg_score"], rolling_dict)
+                    if is_signed:
+                        line = line.replace("试行口径，参考", "参考")
                 else:
                     # 非试行期：保持只描述不判定（方向提示随试行口径解锁）
                     line, ev = _rolling_level_line(rolling_dict, m["avg_score"])
@@ -543,7 +598,7 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                 level_evidence.append(ev)
             if not level_lines:
                 level_lines = ["本窗口暂无可判定的水平对比（指标缺测或样本不足）"]
-    elif cfg.change_caliber_trial:
+    elif cfg.change_caliber_trial and not is_signed:
         # 试行口径（B13）：判定已解锁但为草案值，末行标注口径版本与「试行中」
         level_lines.append(TRIAL_HINT.format(src=cfg.mdc_source))
     by_key["level"] = {"key": "level", "title": "水平对比",
@@ -659,7 +714,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     # 备注注入（双视角，A2/D9）：组装时按 view 写入 auxiliary，便于 build_report 测试 seam；
     # 落库正文会剥掉备注（persist / generate 路径），由 render_for_view 按视角现取。
     from app.memory.notes import list_notes_for_view
-    notes = list_notes_for_view(db, athlete_id, view)
+    notes = list_notes_for_view(db, athlete_id, view,
+                                days=get_config().memory.notes_display_days)
     if notes:
         note_lines = [f"[{n['note_type']}] {n['content']}（记录人：{'教练' if n['author_role'] == 'coach' else '运动员'}）"
                       for n in notes[:5]]
@@ -672,10 +728,16 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
 
     # 建议层（P0）：由判断信号（成绩结构/风况/趋势）产出确定性训练建议，
     # 填充 report.suggestions（前端已消费该字段）；每条建议带 evidence 溯源（仅教练附注区）
+    templates = pack["rules"]["advice_templates"] if pack else None
+    if is_signed and templates is not None:
+        templates = {**templates, **{
+            key: templates[key].replace("试行口径，参考", "参考")
+            for key in ("baseline_progress", "baseline_regression")
+        }}
     adv = ADV.build_advice(
         m, conclusion_keys=[c["conclusion_key"] for c in conclusions],
         wind_band_avg=band_avg, wind_band_counts=band_counts, dq=dq, gate_ok=gate_ok,
-        baseline_direction=baseline_direction, cfg=cfg)
+        baseline_direction=baseline_direction, cfg=cfg, templates=templates)
 
     # 正文与运维分离（ADR-0005）：sections 只含 key/title/content，两视图内容一致
     # （备注按视图过滤是既定例外）；运维字段（evidence 明细、anchor_rebuild_hint）仅 coach 返回。
@@ -699,10 +761,10 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     if view == "coach":
         coach_extra["evidence"] = evidence_by_key
         coach_extra["advice_evidence"] = adv["evidence"]
-        coach_extra["anchor_rebuild_hint"] = _anchor_rebuild_hint(db, athlete_id)
+        coach_extra["anchor_rebuild_hint"] = _anchor_rebuild_hint(db, athlete_id, cfg)
         coach_extra["anchor_setup"] = _anchor_setup_hint(
             db, athlete_id, primary_bow, window_start, anchor_dict,
-            gate_ok=gate_ok, data_ok=data_ok)
+            gate_ok=gate_ok, data_ok=data_ok, cfg=cfg)
 
     metrics_out = {k: m[k] for k in (
         "n_shots", "avg_score", "effective_avg_score", "miss_rate",
@@ -743,7 +805,12 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "metrics": metrics_out,
         "conclusions": conclusions_out,
     }
-    return ReportDraft(report=report, conclusions=conclusions)
+    if pack:
+        metadata = {**RP.pack_metadata(pack), "current_status": pack["status"],
+                    "comparison_note": "不同规则包版本的判定不可直接比较。"}
+        report["rule_pack"] = metadata
+        rule_guidance["rule_pack"] = metadata
+    return ReportDraft(report=report, conclusions=conclusions, cache_version=_report_cache_version(cfg))
 
 
 def persist_report(db: Database, draft: ReportDraft) -> None:
@@ -760,13 +827,14 @@ def persist_report(db: Database, draft: ReportDraft) -> None:
             delta_value=c["delta_value"], evidence=c["evidence"])
     body = _body_for_storage(report)
     db.put_cached_report(report["report_id"], athlete_id, report["granularity"],
-                         report["window_key"], _report_cache_version(get_config()),
-                         report_json=json.dumps(body, ensure_ascii=False))
+                         report["window_key"], draft.cache_version,
+                         report_json=json.dumps(body, ensure_ascii=False),
+                         rule_pack_version=(report.get("rule_pack") or {}).get("version"))
 
 
 def _anchor_setup_hint(db: Database, athlete_id: str, primary_bow: str | None,
                        window_start: str | None, anchor_dict: dict | None,
-                       *, gate_ok: bool, data_ok: bool) -> dict:
+                       *, gate_ok: bool, data_ok: bool, cfg: EngineConfig) -> dict:
     """无锚点时的建立引导（仅教练附注区，ADR-0005）：给出可作锚点来源的候选场次。
 
     候选限定「早于当前窗口起点」——锚点是窗口前的参照系，用窗口内场次会让差值恒为 0；
@@ -784,7 +852,7 @@ def _anchor_setup_hint(db: Database, athlete_id: str, primary_bow: str | None,
     if anchor_dict:
         return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
                 "reason": "该弓种已有锚点"}
-    if get_config().mdc_source is None:
+    if cfg.mdc_source is None:
         return {"needs_anchor": False, "primary_bow": primary_bow, "candidates": [],
                 "reason": "降级期（MDC 阈值口径试行中），建立锚点暂不会解锁方向判定"}
     if not data_ok:
@@ -798,7 +866,7 @@ def _anchor_setup_hint(db: Database, athlete_id: str, primary_bow: str | None,
         r for r in rows
         if window_start is None or (r["session_time_utc"] or "") < window_start
     ]
-    min_shots = get_config().data_quality.min_shots_for_description
+    min_shots = cfg.data_quality.min_shots_for_description
     candidates = [
         {"session_id": r["session_id"], "session_time_utc": r["session_time_utc"],
          "distance_m": r["distance_m"], "mode_composition": r["mode_composition"],
@@ -817,13 +885,13 @@ def _anchor_setup_hint(db: Database, athlete_id: str, primary_bow: str | None,
             "candidates": candidates, "reason": reason}
 
 
-def _anchor_rebuild_hint(db: Database, athlete_id: str) -> dict:
+def _anchor_rebuild_hint(db: Database, athlete_id: str, cfg: EngineConfig) -> dict:
     """锚点重建触发④（连续 4 周提升均超 MDC）：周报生成时检查（B3：降级期跳过）。"""
-    cfg = get_config()
     if cfg.mdc_source is None:
         return {"hint": False, "reason": "mdc_source 为空（降级期），跳过触发④"}
     min_weeks = cfg.memory.anchor_rebuild_policy.four_week_min_weeks
-    rows = db.recent_judgements(athlete_id, "weekly", min_weeks, with_delta=True)
+    rows = db.recent_judgements(athlete_id, "weekly", min_weeks, with_delta=True,
+                                rule_pack_version=cfg.rule_pack_version)
     if len(rows) < min_weeks:
         return {"hint": False, "reason": f"周报判定不足 {min_weeks} 条"}
     metric_ok = all(r["conclusion_key"] in ("progress", "regression") for r in rows)

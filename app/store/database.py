@@ -6,13 +6,21 @@ M2：shot_fact/session_dim 读写；M2b：记忆表读写方法随后并入（pr
 """
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import threading
+from contextlib import contextmanager
+from datetime import timedelta
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from app.config import EngineConfig, get_config
+from app.store.guidance_feedback import backfill_report_observations, record_report_observation
 from app.store.schema import SCHEMA_DDL
+
+if TYPE_CHECKING:
+    from app.reports.window import WindowKey
 
 logger = logging.getLogger("engine.store")
 
@@ -34,9 +42,12 @@ class Database:
     """
 
     def __init__(self, db_path: str):
+        from app.reports.rule_packs import seed_rule_pack
+
         self.db_path = str(db_path)
         Path(self.db_path).parent.mkdir(parents=True, exist_ok=True)
         self.lock = threading.RLock()
+        self._writing = False
         self._conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -44,7 +55,13 @@ class Database:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_DDL)
         self._migrate_columns()
+        self._migrate_memory_closure()
         self._migrate_portal_p0()
+        with self.write_transaction():
+            backfill_report_observations(self._conn)
+        self._purge_legacy_calendar_reports()
+        self._purge_legacy_anchor_reports()
+        seed_rule_pack(self._conn)
         self._conn.commit()
 
     # ---- 连接管理 ----
@@ -85,6 +102,7 @@ class Database:
         # PR #4：报告正文落库（不含「近期备注」一节；读取时按视角现取备注、运动员视角剔除 coach_extra）
         "report_cache": [
             ("report_json", "TEXT"),
+            ("rule_pack_version", "TEXT REFERENCES rule_packs(version)"),
         ],
     }
 
@@ -94,6 +112,17 @@ class Database:
             for name, ddl in cols:
                 if name not in existing:
                     self._execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+
+    def _migrate_memory_closure(self) -> None:
+        """08 记忆闭环：旧数据视为已确认手工备注，避免升级后从列表/召回里消失。
+
+        约定 confirmed_at_utc IS NULL 只用于 conversation 来源的候选（待确认）。
+        """
+        cur = self._execute(
+            "UPDATE memory_notes SET confirmed_at_utc = created_at_utc "
+            "WHERE confirmed_at_utc IS NULL AND COALESCE(provenance, '') <> 'conversation'")
+        if cur.rowcount:
+            logger.info("迁移：%d 条旧备注标记为已确认", cur.rowcount)
 
     def _migrate_portal_p0(self) -> None:
         """PR #4 数据迁移（幂等，每次启动执行）：
@@ -122,13 +151,31 @@ class Database:
             start = self._query("SELECT COALESCE(MAX(display_no), 0) AS m FROM athlete_profile")[0]["m"]
             for i, r in enumerate(rows, 1):
                 self._conn.execute("UPDATE athlete_profile SET display_no=? WHERE rowid=?", (start + i, r["rid"]))
-            self._conn.commit()
+            if not self._writing:
+                self._conn.commit()
 
     def _execute(self, sql: str, params: tuple = ()) -> sqlite3.Cursor:
         with self.lock:
-            cur = self._conn.execute(sql, params)
-            self._conn.commit()
-            return cur
+            if self._writing:
+                return self._conn.execute(sql, params)
+            with self._conn:
+                return self._conn.execute(sql, params)
+
+    @contextmanager
+    def write_transaction(self):
+        """Group store writes under one lock and one SQLite commit."""
+        with self.lock:
+            if self._writing:
+                yield
+                return
+            self._writing = True
+            try:
+                with self._conn:
+                    if not self._conn.in_transaction:
+                        self._conn.execute("BEGIN IMMEDIATE")
+                    yield
+            finally:
+                self._writing = False
 
     def _query(self, sql: str, params: tuple = ()) -> list[sqlite3.Row]:
         with self.lock:
@@ -196,7 +243,7 @@ class Database:
             )
             for r in rows
         ]
-        with self.lock:
+        with self.write_transaction():
             cur = self._conn.executemany(
                 """INSERT OR IGNORE INTO shot_fact
                      (athlete_id, session_id, shot_seq, score, hit, x_mm, y_mm, mcr_t, hr,
@@ -205,26 +252,99 @@ class Database:
                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 data,
             )
-            self._conn.commit()
             return cur.rowcount
+
+    def replace_desktop_session(self, dim: dict, rows: list[dict]) -> None:
+        with self.write_transaction():
+            athlete_id, session_id = dim["athlete_id"], dim["session_id"]
+            active = not self.is_session_excluded(athlete_id, session_id)
+            if active and self.session_exists(session_id):
+                self._invalidate_session_reports(athlete_id, session_id)
+            self._conn.execute("DELETE FROM shot_fact WHERE session_id=?", (session_id,))
+            self.upsert_session(dim)
+            self.insert_shots(rows)
+            if active:
+                self._invalidate_session_reports(athlete_id, session_id)
 
     def session_exists(self, session_id: str) -> bool:
         return bool(self._query("SELECT 1 FROM session_dim WHERE session_id=?", (session_id,)))
 
     def shots_of_session(self, session_id: str) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT * FROM shot_fact WHERE session_id=? ORDER BY shot_seq", (session_id,)
+            "SELECT f.* FROM shot_fact f WHERE f.session_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL) ORDER BY f.shot_seq", (session_id,)
         )
 
     def shots_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
         return self._query(
-            "SELECT * FROM shot_fact WHERE athlete_id=? ORDER BY shot_time_utc", (athlete_id,)
+            "SELECT f.* FROM shot_fact f WHERE f.athlete_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL) ORDER BY f.shot_time_utc", (athlete_id,)
         )
 
-    def sessions_of_athlete(self, athlete_id: str) -> list[sqlite3.Row]:
+    def sessions_of_athlete(self, athlete_id: str, include_excluded: bool = False) -> list[sqlite3.Row]:
+        if include_excluded:
+            return self.sessions_of_athlete_all(athlete_id)
         return self._query(
-            "SELECT * FROM session_dim WHERE athlete_id=? ORDER BY session_time_utc", (athlete_id,)
+            "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
+            "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
+            "WHERE s.athlete_id=? AND l.excluded_at_utc IS NULL ORDER BY s.session_time_utc", (athlete_id,)
         )
+
+    def sessions_of_athlete_all(self, athlete_id: str) -> list[sqlite3.Row]:
+        return self._query(
+            "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
+            "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
+            "WHERE s.athlete_id=? ORDER BY s.session_time_utc", (athlete_id,))
+
+    def session_lifecycle(self, athlete_id: str, session_id: str) -> sqlite3.Row | None:
+        rows = self._query("SELECT * FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                           (athlete_id, session_id))
+        return rows[0] if rows else None
+
+    def set_session_excluded(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
+        """Set exclusion atomically; returns (already_excluded, timestamp)."""
+        with self.write_transaction():
+            row = self._conn.execute(
+                "SELECT excluded_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                (athlete_id, session_id)).fetchone()
+            if row and row[0] is not None:
+                return True, row[0]
+            # The session still participates in comparisons until its lifecycle changes.
+            self._invalidate_session_reports(athlete_id, session_id)
+            now = _iso_now()
+            self._conn.execute(
+                "INSERT INTO session_lifecycle(athlete_id,session_id,excluded_at_utc,excluded_by,exclude_reason) "
+                "VALUES(?,?,?,?,?) ON CONFLICT(athlete_id,session_id) DO UPDATE SET "
+                "excluded_at_utc=excluded.excluded_at_utc, excluded_by=excluded.excluded_by, "
+                "exclude_reason=excluded.exclude_reason, restored_at_utc=NULL, restored_by=NULL, restore_reason=NULL",
+                (athlete_id, session_id, now, actor_id, reason))
+            self._conn.execute(
+                "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
+                "VALUES(?,?,'exclude',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
+        return False, now
+
+    def set_session_active(self, athlete_id: str, session_id: str, actor_id: str, reason: str) -> tuple[bool, str]:
+        with self.write_transaction():
+            row = self._conn.execute(
+                "SELECT excluded_at_utc, restored_at_utc FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
+                (athlete_id, session_id)).fetchone()
+            if not row or row[0] is None:
+                return True, (row[1] if row else None) or _iso_now()
+            now = _iso_now()
+            self._conn.execute(
+                "UPDATE session_lifecycle SET excluded_at_utc=NULL, restored_at_utc=?, restored_by=?, restore_reason=? "
+                "WHERE athlete_id=? AND session_id=?", (now, actor_id, reason, athlete_id, session_id))
+            self._conn.execute(
+                "INSERT INTO session_lifecycle_audit(athlete_id,session_id,action,actor_id,reason,occurred_at_utc) "
+                "VALUES(?,?,'restore',?,?,?)", (athlete_id, session_id, actor_id, reason, now))
+            self._invalidate_session_reports(athlete_id, session_id)
+        return False, now
+
+    def is_session_excluded(self, athlete_id: str, session_id: str) -> bool:
+        row = self.session_lifecycle(athlete_id, session_id)
+        return bool(row and row["excluded_at_utc"])
 
     # ---- M2b：记忆层 ----
 
@@ -232,8 +352,10 @@ class Database:
     def shots_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
         """窗口箭集：本地时间窗 [start, end) 内该运动员的全部箭。"""
         return self._query(
-            """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? ORDER BY shot_time_utc""",
+            """SELECT f.* FROM shot_fact f
+               WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id
+                  AND l.excluded_at_utc IS NOT NULL) ORDER BY shot_time_utc""",
             (athlete_id, start_iso, end_iso),
         )
 
@@ -242,7 +364,9 @@ class Database:
             return []
         marks = ",".join("?" * len(session_ids))
         return self._query(
-            f"SELECT * FROM session_dim WHERE session_id IN ({marks})", tuple(session_ids))
+            f"SELECT s.* FROM session_dim s WHERE s.session_id IN ({marks}) AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)", tuple(session_ids))
 
     def session_of(self, session_id: str) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM session_dim WHERE session_id=?", (session_id,))
@@ -252,7 +376,9 @@ class Database:
         """最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线口径）。"""
         return self._query(
             """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=shot_fact.athlete_id
+                  AND l.session_id=shot_fact.session_id AND l.excluded_at_utc IS NOT NULL)
                ORDER BY shot_time_utc DESC LIMIT ?""",
             (athlete_id, bow_type, limit),
         )
@@ -262,7 +388,9 @@ class Database:
         """窗口起点前最近 N 支记分箭（shooting_mode=1），时间倒序（滚动基线按窗口时点截断）。"""
         return self._query(
             """SELECT * FROM shot_fact
-               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<?
+               WHERE athlete_id=? AND bow_type=? AND shooting_mode=1 AND shot_time_utc<? AND NOT EXISTS
+                 (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=shot_fact.athlete_id
+                  AND l.session_id=shot_fact.session_id AND l.excluded_at_utc IS NOT NULL)
                ORDER BY shot_time_utc DESC LIMIT ?""",
             (athlete_id, bow_type, before_iso, limit),
         )
@@ -271,14 +399,20 @@ class Database:
         """场次记分箭（shooting_mode=1）；指定 bow_type 时只取该弓种（锚点不混弓，ADR-0004）。"""
         if bow_type is None:
             return self._query(
-                "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1", (session_id,))
+                "SELECT f.* FROM shot_fact f WHERE session_id=? AND shooting_mode=1 AND NOT EXISTS "
+                "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+                "AND l.excluded_at_utc IS NOT NULL)", (session_id,))
         return self._query(
-            "SELECT * FROM shot_fact WHERE session_id=? AND shooting_mode=1 AND bow_type=?",
+            "SELECT f.* FROM shot_fact f WHERE session_id=? AND shooting_mode=1 AND bow_type=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)",
             (session_id, bow_type))
 
     def bow_types_of_athlete(self, athlete_id: str) -> list[str]:
         rows = self._query(
-            "SELECT DISTINCT bow_type FROM shot_fact WHERE athlete_id=?", (athlete_id,))
+            "SELECT DISTINCT f.bow_type FROM shot_fact f WHERE f.athlete_id=? AND NOT EXISTS "
+            "(SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id "
+            "AND l.excluded_at_utc IS NOT NULL)", (athlete_id,))
         return [r["bow_type"] for r in rows]
 
     def anchor_candidate_sessions(self, athlete_id: str, bow_type: str) -> list[sqlite3.Row]:
@@ -291,13 +425,19 @@ class Database:
         return self._query(
             """SELECT s.session_id, s.session_time_utc, s.distance_m, s.mode_composition,
                       (SELECT COUNT(*) FROM shot_fact f
-                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                       WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=? AND NOT EXISTS
+                         (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id
+                          AND l.session_id=f.session_id AND l.excluded_at_utc IS NOT NULL))
                       AS scoring_shots
                FROM session_dim s
                WHERE s.athlete_id=? AND s.distance_m IS NOT NULL AND s.distance_m > 0
+                 AND NOT EXISTS (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=s.athlete_id
+                                 AND l.session_id=s.session_id AND l.excluded_at_utc IS NOT NULL)
                  AND s.mode_composition IS NOT NULL AND s.mode_composition != ''
                  AND EXISTS (SELECT 1 FROM shot_fact f
-                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=?)
+                             WHERE f.session_id=s.session_id AND f.shooting_mode=1 AND f.bow_type=? AND NOT EXISTS
+                               (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id
+                                AND l.session_id=f.session_id AND l.excluded_at_utc IS NOT NULL))
                ORDER BY s.session_time_utc""",
             (bow_type, athlete_id, bow_type),
         )
@@ -375,7 +515,10 @@ class Database:
         return cur.lastrowid
 
     def latest_snapshot(self, athlete_id: str, snap_type: str, bow_type: str | None = None) -> sqlite3.Row | None:
-        sql = "SELECT * FROM baseline_snapshots WHERE athlete_id=? AND snap_type=?"
+        sql = """SELECT b.* FROM baseline_snapshots b WHERE athlete_id=? AND snap_type=?
+                 AND NOT EXISTS (SELECT 1 FROM session_lifecycle l
+                     WHERE l.athlete_id=b.athlete_id AND l.session_id=b.source_session_id
+                       AND l.excluded_at_utc IS NOT NULL)"""
         params: list = [athlete_id, snap_type]
         if bow_type:
             sql += " AND bow_type=?"
@@ -407,8 +550,9 @@ class Database:
     def insert_note(self, note: dict) -> int:
         cur = self._execute(
             """INSERT INTO memory_notes
-                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc, closed_at_utc)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                 (athlete_id, note_type, content, author_role, actor_id, status, created_at_utc,
+                  closed_at_utc, provenance, quote_text, confirmed_at_utc)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 note["athlete_id"],
                 note["note_type"],
@@ -418,9 +562,39 @@ class Database:
                 "active",
                 note["created_at_utc"],
                 None,
+                note.get("provenance", "manual"),
+                note.get("quote_text"),
+                note.get("confirmed_at_utc"),
             ),
         )
         return cur.lastrowid
+
+    def get_note(self, note_id: int, athlete_id: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM memory_notes WHERE id=? AND athlete_id=?", (note_id, athlete_id))
+        return rows[0] if rows else None
+
+    def find_active_note(self, athlete_id: str, content: str) -> sqlite3.Row | None:
+        rows = self._query(
+            "SELECT * FROM memory_notes WHERE athlete_id=? AND status='active' AND content=? "
+            "ORDER BY id DESC LIMIT 1", (athlete_id, content))
+        return rows[0] if rows else None
+
+    def confirm_note(self, note_id: int, athlete_id: str) -> bool:
+        """候选 → 正式记忆；只允许未确认的 active 备注。"""
+        cur = self._execute(
+            "UPDATE memory_notes SET confirmed_at_utc=? "
+            "WHERE id=? AND athlete_id=? AND status='active' AND confirmed_at_utc IS NULL",
+            (_iso_now(), note_id, athlete_id),
+        )
+        return cur.rowcount > 0
+
+    def update_note_content(self, note_id: int, athlete_id: str, content: str) -> bool:
+        cur = self._execute(
+            "UPDATE memory_notes SET content=? WHERE id=? AND athlete_id=? AND status='active'",
+            (content, note_id, athlete_id),
+        )
+        return cur.rowcount > 0
 
     def close_note(self, note_id: int, athlete_id: str) -> bool:
         """软删（B1）：DELETE → status='closed'，保留审计；归属校验 WHERE athlete_id=?。"""
@@ -430,9 +604,14 @@ class Database:
         )
         return cur.rowcount > 0
 
-    def list_notes(self, athlete_id: str, status: str = "active", days: int | None = None) -> list[sqlite3.Row]:
+    def list_notes(self, athlete_id: str, status: str = "active", days: int | None = None,
+                   confirmed: bool | None = None) -> list[sqlite3.Row]:
         sql = "SELECT * FROM memory_notes WHERE athlete_id=? AND status=?"
         params: list = [athlete_id, status]
+        if confirmed is True:
+            sql += " AND confirmed_at_utc IS NOT NULL"
+        elif confirmed is False:
+            sql += " AND confirmed_at_utc IS NULL"
         if days is not None:
             sql += " AND created_at_utc >= datetime('now','-' || ? || ' days')"
             params.append(str(days))
@@ -460,13 +639,10 @@ class Database:
         )
         return cur.lastrowid
 
-    def latest_memory(self, athlete_id: str, granularity: str) -> sqlite3.Row | None:
+    def latest_memory(self, athlete_id: str, granularity: str, *,
+                      rule_pack_version: str | None = None) -> sqlite3.Row | None:
         """历史结论引用（B2/D5）：同粒度、时间最近 1 条 judgement。"""
-        rows = self._query(
-            """SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?
-                 AND conclusion_type='judgement' ORDER BY generated_at_utc DESC LIMIT 1""",
-            (athlete_id, granularity),
-        )
+        rows = self.recent_judgements(athlete_id, granularity, 1, rule_pack_version=rule_pack_version)
         return rows[0] if rows else None
 
     def list_memories(self, athlete_id: str) -> list[sqlite3.Row]:
@@ -506,19 +682,30 @@ class Database:
         return rows[0] if rows else None
 
     def put_cached_report(self, report_id: str, athlete_id: str, granularity: str, window_key: str,
-                          mdc_version: str | None, report_json: str | None = None) -> None:
-        self._execute(
-            """INSERT OR REPLACE INTO report_cache
-                 (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json)
-               VALUES (?,?,?,?,?,?,?)""",
-            (report_id, athlete_id, granularity, window_key, mdc_version, _iso_now(), report_json),
-        )
+                          mdc_version: str | None, report_json: str | None = None,
+                          *, rule_pack_version: str | None = None) -> None:
+        generated_at = _iso_now()
+        with self.write_transaction():
+            self._conn.execute(
+                """INSERT OR REPLACE INTO report_cache
+                     (report_id, athlete_id, granularity, window_key, mdc_version, generated_at_utc, report_json,
+                      rule_pack_version)
+                   VALUES (?,?,?,?,?,?,?,?)""",
+                (report_id, athlete_id, granularity, window_key, mdc_version, generated_at,
+                 report_json, rule_pack_version),
+            )
+            record_report_observation(self._conn, report_id, generated_at, rule_pack_version, report_json)
 
     def fill_report_body(self, report_id: str, report_json: str, generated_at_utc: str) -> None:
         """给 PR #4 之前的旧缓存行补存正文：写 report_json，生成时间与正文一致；report_id、历史结论不变。"""
-        self._execute(
-            "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
-            (report_json, generated_at_utc, report_id))
+        with self.write_transaction():
+            updated = self._conn.execute(
+                "UPDATE report_cache SET report_json=?, generated_at_utc=? WHERE report_id=? AND report_json IS NULL",
+                (report_json, generated_at_utc, report_id))
+            if updated.rowcount:
+                row = self.get_report_row(report_id)
+                record_report_observation(self._conn, report_id, generated_at_utc,
+                                          row["rule_pack_version"], report_json)
 
     def purge_report_window(self, athlete_id: str, granularity: str, window_key: str,
                             mdc_version: str | None) -> None:
@@ -550,18 +737,22 @@ class Database:
         return out
 
     def recent_judgements(self, athlete_id: str, granularity: str, limit: int,
-                          with_delta: bool = False) -> list[sqlite3.Row]:
+                          with_delta: bool = False, *, rule_pack_version: str | None = None) -> list[sqlite3.Row]:
         """最近 N 条同粒度 judgement（时间倒序）。
 
         with_delta=True 只取带 delta_value 的判定（锚点重建触发④要求「提升均超 MDC」，
         delta 为空的行不参与）。平台期识别与锚点重建共用此方法。
         """
-        sql = ("SELECT * FROM report_memories WHERE athlete_id=? AND granularity=?"
+        sql = ("SELECT m.* FROM report_memories m WHERE athlete_id=? AND granularity=?"
                " AND conclusion_type='judgement'")
+        params: tuple = (athlete_id, granularity)
         if with_delta:
             sql += " AND delta_value IS NOT NULL"
+        if rule_pack_version is not None:
+            sql += " AND EXISTS (SELECT 1 FROM report_cache c WHERE c.report_id=m.report_id AND c.rule_pack_version=?)"
+            params += (rule_pack_version,)
         sql += " ORDER BY generated_at_utc DESC LIMIT ?"
-        return self._query(sql, (athlete_id, granularity, limit))
+        return self._query(sql, (*params, limit))
 
     def cached_report_by_id(self, report_id: str) -> sqlite3.Row | None:
         """按 report_id 读取缓存行（GET /reports/{id} 校验报告是否仍有效）。"""
@@ -577,8 +768,8 @@ class Database:
     def latest_report_window(self, athlete_id: str) -> sqlite3.Row | None:
         """最近一份已生成报告的 (granularity, window_key)（对话未指定窗口时的兜底）。"""
         rows = self._query(
-            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=?"
-            " ORDER BY generated_at_utc DESC LIMIT 1", (athlete_id,))
+            "SELECT granularity, window_key FROM report_cache WHERE athlete_id=? AND report_json IS NOT NULL"
+            " ORDER BY generated_at_utc DESC, rowid DESC LIMIT 1", (athlete_id,))
         return rows[0] if rows else None
 
     def invalidate_session_cache(self, athlete_id: str, session_id: str) -> None:
@@ -587,6 +778,191 @@ class Database:
             "DELETE FROM report_cache WHERE athlete_id=? AND granularity='daily' AND window_key=?",
             (athlete_id, f"daily:{session_id}"),
         )
+
+    def _first_scoring_time(self, athlete_id: str, session_id: str) -> str:
+        row = self._conn.execute(
+            """SELECT shot_time_utc FROM shot_fact
+               WHERE athlete_id=? AND session_id=? AND shooting_mode=1 ORDER BY shot_seq LIMIT 1""",
+            (athlete_id, session_id)).fetchone()
+        return row["shot_time_utc"] if row else ""
+
+    def _invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
+        """Called inside the lifecycle transaction, with db.lock held."""
+        from app.reports.window import WindowKey
+        from app.timeutil import parse_iso_utc
+
+        cached_windows = self._conn.execute(
+            "SELECT report_id, granularity, window_key, report_json FROM report_cache WHERE athlete_id=?",
+            (athlete_id,),
+        ).fetchall()
+        if not cached_windows:
+            return
+
+        # Legacy reports lack a complete index of anchor dependencies across windows.
+        if self._conn.execute(
+            "SELECT 1 FROM baseline_snapshots WHERE athlete_id=? AND source_session_id=? AND snap_type='anchor'",
+            (athlete_id, session_id),
+        ).fetchone():
+            self._delete_athlete_reports(athlete_id)
+            return
+
+        row = self._conn.execute(
+            "SELECT session_time_utc, site FROM session_dim WHERE athlete_id=? AND session_id=?",
+            (athlete_id, session_id)).fetchone()
+        keys = {WindowKey.daily(session_id)}
+        if row and row["site"] == "desktop":
+            day = WindowKey.desktop_day_of_shot(self._first_scoring_time(athlete_id, session_id))
+            if day:
+                keys.add(day)
+        period_granularities = {cached["granularity"] for cached in cached_windows} & {
+            "weekly", "monthly", "quarterly", "yearly",
+        }
+        if row:
+            cfg = get_config()
+            shot_times = self._conn.execute(
+                "SELECT DISTINCT shot_time_utc FROM shot_fact WHERE athlete_id=? AND session_id=?",
+                (athlete_id, session_id),
+            ).fetchall()
+            timestamps = [shot["shot_time_utc"] for shot in shot_times] or [row["session_time_utc"]]
+            for timestamp in timestamps:
+                if parse_iso_utc(timestamp):
+                    for granularity in period_granularities:
+                        window = WindowKey.of_shot(cfg, timestamp, granularity)
+                        if window:
+                            keys.add(window)
+            # Weekly requests can use legacy spellings for the same window.
+            starts = {key.bounds(cfg)[0] for key in keys if key.granularity == "weekly"}
+            for cached in cached_windows:
+                if starts and cached["granularity"] == "weekly":
+                    key = WindowKey.parse("weekly", cached["window_key"])
+                    try:
+                        if key.bounds(cfg)[0] in starts:
+                            keys.add(key)
+                    except (ValueError, OverflowError):
+                        continue
+            valid_times = [timestamp for timestamp in timestamps if parse_iso_utc(timestamp)]
+            if valid_times:
+                self._add_comparison_report_windows(
+                    cfg, athlete_id, session_id, row["session_time_utc"],
+                    min(valid_times), cached_windows, keys)
+        for key in keys:
+            self._delete_report_cache(athlete_id, key.granularity, key.text)
+
+    def _add_comparison_report_windows(
+        self, cfg: EngineConfig, athlete_id: str, session_id: str, session_time: str,
+        earliest_arrow: str, cached_windows: list[sqlite3.Row], keys: set[WindowKey],
+    ) -> None:
+        from app.reports.window import WindowKey
+        from app.timeutil import parse_iso_utc
+
+        direct_keys = set(keys)
+        documents = {}
+        for cached in cached_windows:
+            try:
+                body = json.loads(cached["report_json"] or "null")
+            except ValueError:
+                continue
+            if not isinstance(body, dict):
+                continue
+            key = WindowKey.parse(cached["granularity"], cached["window_key"])
+            documents[cached["report_id"]] = (key, body)
+            window_start = body.get("window_start")
+            start = parse_iso_utc(window_start) if isinstance(window_start, str) else None
+            if key in keys or start is None or not (body.get("metrics") or {}).get("n_shots"):
+                continue
+            if key.session_id and session_time < window_start:
+                prior = self._conn.execute(
+                    """SELECT session_id FROM session_dim s WHERE athlete_id=? AND session_time_utc<?
+                       AND NOT EXISTS (SELECT 1 FROM session_lifecycle l
+                         WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id AND l.excluded_at_utc IS NOT NULL)
+                       ORDER BY session_time_utc DESC LIMIT 1""",
+                    (athlete_id, window_start),
+                ).fetchone()
+                if prior and prior["session_id"] == session_id:
+                    keys.add(key)
+                    continue
+            if key.granularity != "daily":
+                previous = WindowKey.of_shot(
+                    cfg, (start - timedelta(milliseconds=1)).isoformat(), key.granularity)
+                if previous in direct_keys:
+                    keys.add(key)
+                    continue
+            bow = body.get("bow_type")
+            if bow and earliest_arrow < window_start and any(
+                shot["session_id"] == session_id for shot in self.recent_scoring_shots_before(
+                    athlete_id, bow, window_start, cfg.rolling_window_shots)
+            ):
+                keys.add(key)
+                continue
+            anchor_setup = (body.get("coach_extra") or {}).get("anchor_setup") or {}
+            if bow and anchor_setup.get("needs_anchor") and session_time < window_start:
+                candidates = [
+                    candidate for candidate in self.anchor_candidate_sessions(athlete_id, bow)
+                    if (candidate["session_time_utc"] or "") < window_start
+                    and candidate["scoring_shots"] >= cfg.data_quality.min_shots_for_description
+                ][:10]
+                if any(candidate["session_id"] == session_id for candidate in candidates):
+                    keys.add(key)
+
+        # Plateau sections cite earlier report IDs. Expire those snapshots as well.
+        report_keys = {cached["report_id"]: WindowKey.parse(cached["granularity"], cached["window_key"])
+                       for cached in cached_windows}
+        previous_size = -1
+        while len(keys) != previous_size:
+            previous_size = len(keys)
+            for key, body in documents.values():
+                if key in keys:
+                    continue
+                plateau = (body.get("conclusions") or {}).get("plateau") or {}
+                if any(report_keys.get(item.get("report_id")) in keys for item in plateau.get("recent", [])):
+                    keys.add(key)
+
+    def _delete_report_cache(self, athlete_id: str, granularity: str, key: str,
+                             generated_through: str | None = None) -> None:
+        where = "athlete_id=? AND granularity=? AND window_key=?"
+        args = (athlete_id, granularity, key)
+        if generated_through is not None:
+            where += " AND generated_at_utc<=?"
+            args += (generated_through,)
+        self._conn.execute(
+            f"DELETE FROM report_memories WHERE report_id IN (SELECT report_id FROM report_cache WHERE {where})",
+            args)
+        self._conn.execute(f"DELETE FROM report_cache WHERE {where}", args)
+
+    def _delete_athlete_reports(self, athlete_id: str) -> None:
+        self._conn.execute("DELETE FROM report_memories WHERE athlete_id=?", (athlete_id,))
+        self._conn.execute("DELETE FROM report_cache WHERE athlete_id=?", (athlete_id,))
+
+    def _purge_legacy_anchor_reports(self) -> None:
+        """Invalidate pre-upgrade reports for athletes whose anchor was excluded in the past."""
+        with self.write_transaction():
+            if self._conn.execute("PRAGMA user_version").fetchone()[0] >= 1:
+                return
+            rows = self._conn.execute(
+                """SELECT DISTINCT b.athlete_id FROM baseline_snapshots b
+                   JOIN session_lifecycle_audit a ON a.athlete_id=b.athlete_id AND a.session_id=b.source_session_id
+                   WHERE b.snap_type='anchor' AND a.action='exclude'""").fetchall()
+            for row in rows:
+                self._delete_athlete_reports(row["athlete_id"])
+            self._conn.execute("PRAGMA user_version=1")
+
+    def _purge_legacy_calendar_reports(self) -> None:
+        """Remove saved daily reports that predate a lifecycle change on upgraded databases."""
+        from app.reports.window import WindowKey
+
+        with self.write_transaction():
+            rows = self._conn.execute(
+                """SELECT s.athlete_id, s.session_id, MAX(a.occurred_at_utc) AS changed_at
+                   FROM session_lifecycle_audit a JOIN session_dim s USING (athlete_id, session_id)
+                   WHERE s.site='desktop' AND EXISTS (
+                       SELECT 1 FROM report_cache c WHERE c.athlete_id=s.athlete_id
+                           AND c.granularity='daily' AND c.window_key LIKE 'daily:day:%')
+                   GROUP BY s.athlete_id, s.session_id""").fetchall()
+            for row in rows:
+                athlete_id = row["athlete_id"]
+                day = WindowKey.desktop_day_of_shot(self._first_scoring_time(athlete_id, row["session_id"]))
+                if day:
+                    self._delete_report_cache(athlete_id, "daily", day.text, row["changed_at"])
 
 
 def get_database(cfg: EngineConfig | None = None) -> Database:

@@ -19,10 +19,12 @@ from fastapi.staticfiles import StaticFiles
 from app.api.ask import router as ask_router
 from app.api.athletes import router as athletes_router
 from app.api.guidance import router as guidance_router
+from app.api.guidance_feedback import router as guidance_feedback_router
 from app.api.ingest import router as ingest_router
 from app.api.llm import router as llm_router
 from app.api.reports import router as reports_router
-from app.api.sessions import notes_router, sessions_router
+from app.api.rule_packs import router as rule_packs_router
+from app.api.sessions import notes_router, sessions_router, session_lifecycle_router
 from app.config import get_config
 from app.logging_setup import setup_logging
 from app.portal import PortalApp
@@ -78,11 +80,14 @@ app.add_middleware(CrossSiteWriteGuard)
 
 app.include_router(ingest_router)
 app.include_router(reports_router)
+app.include_router(rule_packs_router)
 app.include_router(athletes_router)
 app.include_router(sessions_router)
+app.include_router(session_lifecycle_router)
 app.include_router(notes_router)
 app.include_router(ask_router)
 app.include_router(guidance_router)
+app.include_router(guidance_feedback_router)
 app.include_router(llm_router)
 
 _SWAGGER_STATIC = os.path.join(os.path.dirname(swagger_ui.__file__), "static")
@@ -129,4 +134,5 @@ def health() -> dict:
         "mdc_source": "empty" if cfg.mdc_source is None else cfg.mdc_source,
         "llm_enabled": cfg.llm.enabled,  # B1：对话增强开关状态（默认关闭，P1 报告链路零影响）
         "engine_version": ENGINE_VERSION,  # PR #4：取自 pyproject.toml；版本号规则待 PM 定
+        "desktop_report_contract": 2,  # v2 makes by-key exclusion durable even before ingest
     }

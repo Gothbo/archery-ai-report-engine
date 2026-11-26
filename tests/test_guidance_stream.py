@@ -144,12 +144,15 @@ class TestEventProtocol:
     def test_athlete_input_excludes_coach_note(self, client, monkeypatch):
         from app.memory.notes import add_note
         from app.store.database import get_database
-        add_note(get_database(), ATHLETE, "coach_note", "私密教练观察ZXQ", "coach", "c1")
+        note_id = add_note(get_database(), ATHLETE, "coach_note", "私密教练观察ZXQ", "coach", "c1")
         for view, expect in (("athlete", False), ("coach", True)):
             mock = use_mock(monkeypatch, fixed_mock("一、本次概述\n整体平稳。"))
-            parse_sse(post_guidance(client, view).text)
+            events = parse_sse(post_guidance(client, view).text)
             system = mock.calls[0][0]["content"]
-            assert ("私密教练观察ZXQ" in system) is expect, view
+            refs = json.loads(system.split("skeleton_json: ", 1)[1])["notes"]
+            assert any(note["ref"] == f"note:{note_id}" for note in refs) is expect, view
+            assert "私密教练观察ZXQ" not in system, view
+            assert any(source["ref"] == f"note:{note_id}" for source in events[-1][1]["sources"]) is expect
 
     def test_rolling_baseline_in_both_views(self, client, monkeypatch):
         """拍板：滚动基线两个视角都带（不改现状）。"""

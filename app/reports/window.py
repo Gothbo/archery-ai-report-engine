@@ -25,6 +25,7 @@ _WEEKLY_RE = re.compile(r"^(\d{4})-W?(\d{1,2})$")
 _MONTHLY_RE = re.compile(r"^(\d{4})-(\d{2})$")
 _QUARTERLY_RE = re.compile(r"^(\d{4})Q(\d)$")
 _YEARLY_RE = re.compile(r"^(\d{4})$")
+_DESKTOP_TZ = ZoneInfo("Asia/Shanghai")
 
 
 def local_tz(cfg: EngineConfig) -> ZoneInfo:
@@ -60,6 +61,11 @@ class WindowKey:
     @classmethod
     def calendar_day(cls, day: date) -> "WindowKey":
         return cls("daily", f"day:{day.isoformat()}")
+
+    @classmethod
+    def desktop_day_of_shot(cls, shot_time_utc: str) -> "WindowKey | None":
+        shot_time = parse_iso_utc(shot_time_utc)
+        return cls.calendar_day(shot_time.astimezone(_DESKTOP_TZ).date()) if shot_time else None
 
     @property
     def is_calendar_day(self) -> bool:
@@ -103,7 +109,7 @@ class WindowKey:
     def bounds(self, cfg: EngineConfig) -> tuple[str, str]:
         """返回 (start_utc_iso, end_utc_iso) 左闭右开。"""
         # The WPF desktop day protocol uses its existing Shanghai report calendar.
-        tz = ZoneInfo("Asia/Shanghai") if self.is_calendar_day else local_tz(cfg)
+        tz = _DESKTOP_TZ if self.is_calendar_day else local_tz(cfg)
         if self.is_calendar_day:
             start = datetime.combine(date.fromisoformat(self.value[4:]), datetime.min.time(), tz)
             end = start + timedelta(days=1)

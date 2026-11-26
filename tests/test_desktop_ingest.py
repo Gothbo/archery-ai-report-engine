@@ -71,6 +71,29 @@ def test_ingest_desktop_creates_session_and_report(engine_env):
     assert profile["bow_type"] == "反曲弓"
 
 
+def test_failed_reupload_rolls_back_session_shots_and_report_cache(engine_env):
+    import sqlite3
+    import pytest
+
+    client = _client(engine_env)
+    original = client.post(URL, json=_snapshot()).json()
+    athlete, session = original["athleteId"], original["sessionId"]
+    report = client.post(f"/api/v1/athletes/{athlete}/reports/daily",
+                         params={"session_id": session}).json()
+    db = _db()
+    with db.lock, db.conn:
+        db.conn.execute("""CREATE TRIGGER reject_new_shot BEFORE INSERT ON shot_fact
+                           WHEN NEW.score=10 BEGIN SELECT RAISE(ABORT, 'write failed'); END""")
+
+    with pytest.raises(sqlite3.IntegrityError, match="write failed"):
+        client.post(URL, json=_snapshot(shots=[_shot(1, ts="2026-11-20T10:01:00", score=10)]))
+
+    detail = client.get(f"/api/v1/sessions/{session}").json()
+    assert detail["dim"]["session_time_utc"] == original["sessionTimeUtc"]
+    assert [shot["score"] for shot in detail["shots"]] == [9] * 6
+    assert client.get(f"/api/v1/reports/{report['report_id']}/content").status_code == 200
+
+
 def test_reupload_replaces_session_and_keeps_boundary(engine_env):
     client = _client(engine_env)
     first = client.post(URL, json=_snapshot()).json()
@@ -93,6 +116,51 @@ def test_reupload_replaces_session_and_keeps_boundary(engine_env):
     shots = client.get(f"/api/v1/sessions/{first['sessionId']}").json()["shots"]
     assert len(shots) == 6
     assert all(s["score"] == 10.0 for s in shots)
+
+
+def test_first_upload_invalidates_existing_same_day_report_and_ask(engine_env):
+    client = _client(engine_env)
+    existing = client.post(URL, json=_snapshot()).json()
+    athlete = f"/api/v1/athletes/{existing['athleteId']}"
+    report = _calendar_report(client, athlete, "2026-11-19", existing["sessionId"])
+
+    added = client.post(URL, json=_snapshot("added")).json()
+
+    _assert_report_invalidated(client, athlete, report)
+    regenerated = _calendar_report(client, athlete, "2026-11-19", existing["sessionId"], added["sessionId"])
+    assert regenerated["metrics"]["n_shots"] == 12
+
+
+def test_reupload_to_another_day_invalidates_both_calendar_windows(engine_env):
+    client = _client(engine_env)
+    original = client.post(URL, json=_snapshot()).json()
+    other_day = client.post(URL, json=_snapshot("next-day", shots=[
+        _shot(1, ts="2026-11-20T10:00:00"),
+    ])).json()
+    athlete = f"/api/v1/athletes/{original['athleteId']}"
+    source = _calendar_report(client, athlete, "2026-11-19", original["sessionId"])
+    destination = _calendar_report(client, athlete, "2026-11-20", other_day["sessionId"])
+
+    moved = client.post(URL, json=_snapshot(shots=[_shot(1, ts="2026-11-20T11:00:00")]))
+    assert moved.status_code == 200
+
+    _assert_report_invalidated(client, athlete, source)
+    _assert_report_invalidated(client, athlete, destination)
+
+
+def _calendar_report(client, athlete, day, *session_ids):
+    response = client.post(f"{athlete}/reports/daily", json={"day": day, "session_ids": list(session_ids)})
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def _assert_report_invalidated(client, athlete, report):
+    report_id = report["report_id"]
+    assert client.get(f"/api/v1/reports/{report_id}/content?view=coach").status_code == 404
+    assert client.post(f"{athlete}/ask", json={
+        "question": "本期均环是多少？", "granularity": report["granularity"],
+        "window_key": report["window_key"], "report_id": report_id,
+    }).status_code == 400
 
 
 def test_miss_has_no_coordinates_and_zero_score(engine_env):

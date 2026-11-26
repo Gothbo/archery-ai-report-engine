@@ -160,16 +160,9 @@ def ingest_desktop_session(
     )
     dim, rows = align_session(raw)
 
-    with db.lock:
-        conn = db.conn
-        with conn:
-            conn.execute("DELETE FROM shot_fact WHERE session_id=?", (session_id,))
-            conn.execute("DELETE FROM session_dim WHERE session_id=?", (session_id,))
-        db.upsert_session(dim)
-        db.insert_shots(rows)
-        db.invalidate_session_cache(athlete_id, session_id)
-
-    _upsert_profile(db, athlete_id, athlete, bow_type)
+    with db.write_transaction():
+        db.replace_desktop_session(dim, rows)
+        _upsert_profile(db, athlete_id, athlete, bow_type)
     if on_imported is not None:
         try:
             on_imported(db, athlete_id, [session_id])

@@ -24,6 +24,25 @@ from app.config import EngineConfig
 from app.metrics.environment import band_label
 
 
+DEFAULT_TEMPLATES = {
+    "miss": "脱靶率 {miss}%，含脱靶均环 {avg} 较有效箭均环 {effective} {gap}"
+            "（脱靶造成的均环损失）；建议优先稳定撒放与命中",
+    "far": "非脱靶远弹占比 {far_non_miss}%（远弹率 {far}% 已含脱靶），着点离散偏大；"
+           "建议加强瞄准区控制与动作重复性",
+    "inner": "内十率 {inner}%，着点不够靠中心；建议微调瞄点/瞄区，提升中心命中",
+    "wind_high_worse": "风档 {low_band} 与 {high_band} 均环相差 {delta} 环"
+                       "（{high_band} 更低）；建议增加风感与瞄准补偿训练",
+    "wind_low_worse": "风档 {low_band} 与 {high_band} 均环相差 {delta} 环"
+                      "（{low_band} 更低）；与风况影响方向相反，建议核查该档样本",
+    "progress": "本窗口较锚点判定进步，建议保持当前训练安排并巩固",
+    "progress_reference": "本窗口较锚点有进步方向提示（参考，未达强断言门槛），建议持续观察",
+    "regression": "本窗口较锚点判定退步，建议关注近期训练负荷与状态",
+    "regression_reference": "本窗口较锚点有退步方向提示（参考，未达强断言门槛），建议持续观察",
+    "baseline_progress": "本窗口较滚动基线有进步方向提示（试行口径，参考），建议持续观察",
+    "baseline_regression": "本窗口较滚动基线有退步方向提示（试行口径，参考），建议持续观察",
+}
+
+
 def _band_label(cfg: EngineConfig, idx: int) -> str:
     """风档索引 → 可读区间标签（与展示层共用 band_label，保证两处一致）。"""
     lo, hi = cfg.wind_bands[idx]
@@ -45,7 +64,8 @@ def _trend(conclusion_keys: list[str]) -> tuple[str | None, bool]:
 
 def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int, float],
                  wind_band_counts: dict[int, int], dq: dict, gate_ok: bool,
-                 cfg: EngineConfig, baseline_direction: str | None = None) -> dict:
+                 cfg: EngineConfig, baseline_direction: str | None = None,
+                 templates: dict[str, str] | None = None) -> dict:
     """生成窗口建议与溯源证据。
 
     返回 {"suggestions": [...], "evidence": [...]}；无数据 / 数据存疑时给出显式空状态或拒绝语。
@@ -63,6 +83,7 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
                               "value": {"reasons": dq["reasons"]}}]}
 
     a = cfg.advice
+    text = DEFAULT_TEMPLATES if templates is None else templates
     suggestions: list[str] = []
     evidence: list[dict] = []
 
@@ -81,22 +102,18 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
         # 含脱靶均环必 ≤ 有效箭均环；差值即脱靶造成的均环损失（正数）
         gap = round(eff - avg, 2) if (avg is not None and eff is not None) else None
         gap_txt = f"低 {gap:.2f} 环" if gap is not None else "差距显著"
-        suggestions.append(
-            f"脱靶率 {miss:.1f}%，含脱靶均环 {avg:.2f} 较有效箭均环 {eff_txt} {gap_txt}"
-            "（脱靶造成的均环损失）；建议优先稳定撒放与命中")
+        suggestions.append(text["miss"].format(miss=f"{miss:.1f}", avg=f"{avg:.2f}",
+                                               effective=eff_txt, gap=gap_txt))
         evidence.append({"type": "calc", "ref": "advice_miss",
                          "value": {"miss_rate": miss, "avg_score": avg,
                                    "effective_avg_score": eff, "gap": gap}})
     if far_high:
-        suggestions.append(
-            f"非脱靶远弹占比 {far_non_miss:.1f}%（远弹率 {far:.1f}% 已含脱靶），着点离散偏大；"
-            "建议加强瞄准区控制与动作重复性")
+        suggestions.append(text["far"].format(far_non_miss=f"{far_non_miss:.1f}", far=f"{far:.1f}"))
         evidence.append({"type": "calc", "ref": "advice_far",
                          "value": {"far_miss_rate": far, "miss_rate": miss,
                                    "far_non_miss": far_non_miss}})
     if not miss_high and not far_high and inner <= a.inner10_low:
-        suggestions.append(
-            f"内十率 {inner:.1f}%，着点不够靠中心；建议微调瞄点/瞄区，提升中心命中")
+        suggestions.append(text["inner"].format(inner=f"{inner:.1f}"))
         evidence.append({"type": "calc", "ref": "advice_inner",
                          "value": {"inner10_rate": inner, "far_miss_rate": far}})
 
@@ -110,13 +127,9 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
         if abs(delta) >= a.wind_band_delta:
             # 措辞随方向变化：高风档更低 = 风况适应问题（风感训练可改善）；
             # 低风档反而更低与风况影响方向相反，若仍套用风感训练建议会自相矛盾，改为提示核查
-            if delta < 0:
-                worse, remedy = hi_b, "建议增加风感与瞄准补偿训练"
-            else:
-                worse, remedy = lo_b, "与风况影响方向相反，建议核查该档样本"
-            suggestions.append(
-                f"风档 {_band_label(cfg, lo_b)} 与 {_band_label(cfg, hi_b)} 均环相差 "
-                f"{abs(delta):.2f} 环（{_band_label(cfg, worse)} 更低）；{remedy}")
+            template = text["wind_high_worse" if delta < 0 else "wind_low_worse"]
+            suggestions.append(template.format(low_band=_band_label(cfg, lo_b),
+                                               high_band=_band_label(cfg, hi_b), delta=f"{abs(delta):.2f}"))
             evidence.append({"type": "fact", "ref": "advice_wind",
                              "value": {"band_avg": wind_band_avg,
                                        "band_counts": wind_band_counts, "delta": delta}})
@@ -124,21 +137,16 @@ def build_advice(m: dict, *, conclusion_keys: list[str], wind_band_avg: dict[int
     # ③ 趋势：基于 level 段方向判定；强断言与参考档分开表述，参考档不越界下结论
     direction, assertive = _trend(conclusion_keys)
     if direction == "progress":
-        text = ("本窗口较锚点判定进步，建议保持当前训练安排并巩固" if assertive
-                else "本窗口较锚点有进步方向提示（参考，未达强断言门槛），建议持续观察")
-        suggestions.append(text)
+        suggestions.append(text["progress" if assertive else "progress_reference"].format())
         evidence.append({"type": "fact", "ref": "advice_progress",
                          "value": {"keys": conclusion_keys, "assertive": assertive}})
     elif direction == "regression":
-        text = ("本窗口较锚点判定退步，建议关注近期训练负荷与状态" if assertive
-                else "本窗口较锚点有退步方向提示（参考，未达强断言门槛），建议持续观察")
-        suggestions.append(text)
+        suggestions.append(text["regression" if assertive else "regression_reference"].format())
         evidence.append({"type": "fact", "ref": "advice_regression",
                          "value": {"keys": conclusion_keys, "assertive": assertive}})
     elif baseline_direction in ("progress", "regression"):
         # 无锚点试行方向提示：与正文 level 段保持一致（参考档，不出强断言词）
-        word = "进步" if baseline_direction == "progress" else "退步"
-        suggestions.append(f"本窗口较滚动基线有{word}方向提示（试行口径，参考），建议持续观察")
+        suggestions.append(text[f"baseline_{baseline_direction}"].format())
         evidence.append({"type": "fact", "ref": f"advice_{baseline_direction}_baseline",
                          "value": {"baseline_direction": baseline_direction}})
 

@@ -3,7 +3,7 @@
 
 数据源与报告生成器同源，保证「对话里的数字能在报告里找到」（G2 承诺）：
 - 档案 athlete_profile
-- 目标窗口报告 sections（指定窗口则生成该窗口；未指定取最近一份已生成报告）
+- 目标窗口已保存的报告正文（未指定窗口时取最近一份）
 - 历史结论（同粒度最近 1 条 judgement，沿用记忆契约 B2/D5）
 - active 备注（14 天窗口，双视角过滤 A2/D9）
 - 滚动基线 coach_extra.rolling_baseline
@@ -16,21 +16,16 @@ suggested_note（可提炼建议，MVP 只展示不落库 D4）。
 """
 from __future__ import annotations
 
-import hashlib
-import json
-import logging
 import re
+from datetime import date
 from typing import Callable
 
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
-from app.reports.generator import generate_report, read_calendar_report
-from app.reports.window import WindowKey
+from app.memory.selective import select_notes_for_context
+from app.reports.generator import SessionNotFound, public_view, read_report_snapshot
+from app.reports.window import GRANULARITIES, WindowKey
 from app.store.database import Database
-
-logger = logging.getLogger("engine.rag.context")
-
-GRANULARITIES = ("daily", "weekly", "monthly", "quarterly", "yearly")
 
 _NOTE_KEYWORDS = ("伤", "疼", "痛", "目标", "建议", "注意", "调整", "恢复", "改进")
 
@@ -38,69 +33,121 @@ _NOTE_KEYWORDS = ("伤", "疼", "痛", "目标", "建议", "注意", "调整", "
 _retrieve_semantic: Callable[..., list[dict]] | None = None
 
 
-def assemble_context(db: Database, athlete_id: str, question: str,
-                     granularity: str | None = None, window_key: str | None = None,
-                     view: str = "athlete", report_id: str | None = None) -> dict:
-    """组装问询上下文。窗口缺失时取最近一份已生成报告（report_cache 最新一条）。"""
-    cfg = get_config()
-    profile = db.get_profile(athlete_id)
-    if profile is None:
-        raise ValueError(f"运动员 {athlete_id} 不存在")
+class ReportContextNotFound(ValueError):
+    """The athlete or requested saved report is unavailable."""
 
+
+class ReportSnapshotUnavailable(ReportContextNotFound):
+    """The selected report has no available saved body."""
+
+
+def _saved_report(db: Database, athlete_id: str, key: WindowKey, view: str, report_id: str | None) -> dict:
+    if key.granularity != "daily" or key.is_calendar_day:
+        key.bounds(get_config())
+    if key.granularity == "weekly":
+        year, week = key.value.split("-", 1)
+        date.fromisocalendar(int(year), int(week.removeprefix("W")), 1)
+
+    if report_id is None:
+        if key.session_id:
+            session = db.session_of(key.session_id)
+            if session is None or session["athlete_id"] != athlete_id:
+                raise SessionNotFound(f"运动员 {athlete_id} 没有场次 {key.session_id}")
+        rows = db.query(
+            """SELECT report_id FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?
+               AND report_json IS NOT NULL ORDER BY generated_at_utc DESC, rowid DESC LIMIT 1""",
+            (athlete_id, key.granularity, key.text),
+        )
+        if not rows:
+            raise ReportSnapshotUnavailable("报告不存在或已更新，请在报告页重新打开")
+        report_id = rows[0]["report_id"]
+    try:
+        return read_report_snapshot(db, athlete_id, key.granularity, key.text, view, report_id)
+    except ValueError as exc:
+        raise ReportSnapshotUnavailable(str(exc)) from exc
+
+
+def _report_key(db: Database, athlete_id: str, granularity: str | None,
+                window_key: str | None, report_id: str | None) -> WindowKey:
     if granularity is not None:
         if granularity not in GRANULARITIES:
             raise ValueError(f"granularity 必须为 {GRANULARITIES}")
         if window_key is None:
             raise ValueError("指定 granularity 时必须同时指定 window_key")
-        _granularity, _window_key = granularity, window_key
+        return WindowKey.parse(granularity, window_key)
+    if report_id:
+        latest = db.cached_report_by_id(report_id)
+        if not latest or latest["athlete_id"] != athlete_id:
+            raise ReportSnapshotUnavailable("报告不存在或已更新，请在报告页重新打开")
     else:
-        # 未指定 → 最近一份已生成报告（先到先得，未生成则报错引导先生成）
         latest = db.latest_report_window(athlete_id)
         if not latest:
             raise ValueError("运动员暂无已生成报告：请先在报告区生成一份，再发起对话")
-        _granularity, _window_key = latest["granularity"], latest["window_key"]
+    return WindowKey.parse(latest["granularity"], latest["window_key"])
 
-    # PR #4：有已存正文就直接用；旧行无正文 → generate_report 补存（report_id 与历史结论不变）
-    key = WindowKey.parse(_granularity, _window_key)
-    if key.is_calendar_day:
-        report = read_calendar_report(db, athlete_id, _window_key, view, report_id)
-    else:
-        report = generate_report(db, athlete_id, _granularity, _window_key,
-                                 session_id=key.session_id, view=view, force=False)
-        if "sections" not in report:
-            report = generate_report(db, athlete_id, _granularity, _window_key,
-                                     session_id=key.session_id, view=view, force=True)
 
-    notes = list_notes_for_view(db, athlete_id, view)
-    history = db.latest_memory(athlete_id, _granularity)
+def assemble_context(db: Database, athlete_id: str, question: str,
+                     granularity: str | None = None, window_key: str | None = None,
+                     view: str = "athlete", report_id: str | None = None, *,
+                     strict_expression: bool = False) -> dict:
+    """Build display and model context from one visible, already saved report."""
+    from app.rag.expression import expression_input
 
-    skeleton_text = _skeleton_text(report, notes, history)
-    sources = _sources(report, notes, history)
-    numbers = extract_numbers(skeleton_text)
-    version = hashlib.sha1(skeleton_text.encode("utf-8")).hexdigest()[:12]
+    with db.lock:
+        profile = db.get_profile(athlete_id)
+        if profile is None:
+            raise ReportContextNotFound(f"运动员 {athlete_id} 不存在")
+        key = _report_key(db, athlete_id, granularity, window_key, report_id)
+        report = _saved_report(db, athlete_id, key, view, report_id)
+        notes = select_notes_for_context(list_notes_for_view(db, athlete_id, view), question)
+        rule_pack = report.get("rule_pack")
+        history = db.latest_memory(
+            athlete_id, key.granularity, rule_pack_version=rule_pack["version"] if rule_pack else None)
 
+    # The legacy Q&A and SSE contracts share the two aggregate baseline values across views.
+    baseline = {}
+    if view == "coach" or not strict_expression:
+        baseline = {k: v for k, v in report.get("coach_extra", {}).get("rolling_baseline", {}).items()
+                    if k in ("n_shots", "avg_score") and type(v) in (int, float)}
+
+    # 报告正文自带「近期备注 / 辅助信息」备注行（生成时未看问题），会绕过相关性召回；
+    # 这里先剥掉，再由选中的 notes 统一注入，保证无关旧事不被带进对话。
+    report = _without_notes(public_view(report, view))
+    ctx = expression_input(report, notes, history, profile["name"], view, baseline=baseline, question=question)
+    ctx["strict_expression"] = strict_expression
+    if strict_expression:
+        return ctx
     return {
+        **ctx,
         "athlete_id": athlete_id,
         "question": question,
-        "granularity": _granularity,
-        "window_key": _window_key,
-        "report_id": report.get("report_id"),
-        "skeleton": skeleton_text,
-        "skeleton_json": _skeleton_json(report, notes, history),
-        "numbers": numbers,
-        "sources": sources,
-        "version": version,
+        "granularity": key.granularity,
+        "window_key": key.text,
+        "skeleton": _skeleton_text(report, notes, history, baseline),
+        "sources": _sources(report, notes, history, baseline),
         "suggested_note": _suggested_note(question, notes),
     }
 
 
-def _skeleton_text(report: dict, notes: list[dict], history) -> str:
+def check_context_is_current(db: Database, ctx: dict, view: str) -> None:
+    """Reject an answer if its report or a cited note changed while the model was running."""
+    with db.lock:
+        if not db.cached_report_by_id(ctx["report_id"]):
+            raise ReportSnapshotUnavailable("报告不存在或已更新，请在报告页重新打开")
+        cited_notes = {source["ref"]: source["summary"] for source in ctx["sources"] if source["type"] == "note"}
+        if cited_notes:
+            visible_notes = {f"note:{note['id']}": note["content"]
+                             for note in list_notes_for_view(db, ctx["athlete_id"], view)}
+            if any(visible_notes.get(ref) != text for ref, text in cited_notes.items()):
+                raise ReportContextNotFound("引用的备注已变更，请重新打开报告后重试")
+
+
+def _skeleton_text(report: dict, notes: list[dict], history, baseline: dict) -> str:
     lines: list[str] = []
     for sec in report["sections"]:
         lines.append(f"[{sec['title']}] " + "；".join(str(c) for c in sec["content"]))
-    rb = report.get("coach_extra", {}).get("rolling_baseline")
-    if rb:
-        lines.append(f"[滚动基线] n={rb['n_shots']} 平均环={rb.get('avg_score')}")
+    if baseline:
+        lines.append(f"[滚动基线] n={baseline['n_shots']} 平均环={baseline.get('avg_score')}")
     for n in notes:
         lines.append(f"[备注] {n['content']}（类型={n['note_type']}，记录人={'教练' if n['author_role']=='coach' else '运动员'}）")
     if history:
@@ -108,27 +155,7 @@ def _skeleton_text(report: dict, notes: list[dict], history) -> str:
     return "\n".join(lines)
 
 
-def _skeleton_json(report: dict, notes: list[dict], history) -> str:
-    """结构化骨架（供 LLM 读取与 mock 应答），与 sections 数值同源；evidence 明细按 ADR-0005 仅 coach 视图注入。"""
-    evidence_by_key = report.get("coach_extra", {}).get("evidence", {})
-    payload = {
-        "granularity": report["granularity"],
-        "window_key": report["window_key"],
-        "athlete": report["athlete"],
-        "sections": [
-            {"key": s["key"], "title": s["title"], "content": s["content"],
-             "evidence": s.get("evidence") or evidence_by_key.get(s["key"], [])}
-            for s in report["sections"]
-        ],
-        "notes": [{"note_type": n["note_type"], "content": n["content"],
-                   "author_role": n["author_role"]} for n in notes],
-    }
-    if history:
-        payload["history_conclusion"] = history["conclusion"]
-    return json.dumps(payload, ensure_ascii=False)
-
-
-def _sources(report: dict, notes: list[dict], history) -> list[dict]:
+def _sources(report: dict, notes: list[dict], history, baseline: dict) -> list[dict]:
     """溯源列表：每段引用 type/ref/title/摘要，供前端折叠展示。"""
     sources: list[dict] = []
     for sec in report["sections"]:
@@ -136,13 +163,14 @@ def _sources(report: dict, notes: list[dict], history) -> list[dict]:
             "type": "report", "ref": f"{report['granularity']}:{report['window_key']}",
             "title": sec["title"], "summary": "；".join(str(c) for c in sec["content"])[:200],
         })
-    rb = report.get("coach_extra", {}).get("rolling_baseline")
-    if rb:
+    if baseline:
         sources.append({"type": "baseline", "ref": "rolling",
-                        "title": "滚动基线", "summary": f"n={rb['n_shots']} 平均环={rb.get('avg_score')}"})
+                        "title": "滚动基线", "summary": f"n={baseline['n_shots']} 平均环={baseline.get('avg_score')}"})
     for n in notes:
         sources.append({"type": "note", "ref": f"note:{n['id']}", "title": f"备注·{n['note_type']}",
-                        "summary": n["content"]})
+                        "summary": n["content"],
+                        "provenance": n.get("provenance") or "manual",
+                        "created_at_utc": n.get("created_at_utc")})
     if history:
         sources.append({"type": "memory", "ref": f"memory:{history['id']}",
                         "title": "历史结论", "summary": history["conclusion"]})
@@ -163,6 +191,21 @@ def _suggested_note(question: str, notes: list[dict]) -> dict | None:
 
 
 _NUM_RE = re.compile(r"-?\d+(?:\.\d+)?")
+
+# 报告生成/读取时会把备注渲染成「[goal] 内容（记录人：运动员）」，需在相关性召回前剥掉。
+_NOTE_LINE_RE = re.compile(r"^\[(?:injury|goal|coach_note|other)\] .*（记录人：")
+
+
+def _without_notes(report: dict) -> dict:
+    sections = []
+    for sec in report.get("sections", []):
+        if sec.get("key") == "notes":
+            continue
+        content = [c for c in sec.get("content", []) if not _NOTE_LINE_RE.match(str(c))]
+        if sec.get("key") == "auxiliary" and not content:
+            content = ["本窗口暂无辅助信息"]
+        sections.append({**sec, "content": content})
+    return {**report, "sections": sections}
 
 # 行首列表序号（1. / 1、 / 1) / （1） / ①）不是数据。不剔除会被 G2 误判为骨架外数字，
 # 导致「1. 技术改进」这类正常编号列表被整体降级（1.5B 实测：报 G2 出现骨架外数字 1.0）。

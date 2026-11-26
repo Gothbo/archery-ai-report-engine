@@ -1,0 +1,32 @@
+{
+  "actor_id": "system:migration",
+  "effective_at_utc": "2026-10-10T00:00:00.000Z",
+  "review_date": "2027-01-10",
+  "sources": [
+    {"title": "现行试行阈值与自有训练数据测算说明", "reference": "config.json#mdc_note"},
+    {"title": "风档划分与最小风档样本口径", "reference": "config.json#wind_bands_note"},
+    {"title": "本队训练频率与各粒度最小样本的推导", "reference": "config.json#sample_threshold"}
+  ],
+  "rules": {
+    "mdc": {
+      "avgScore": {
+        "threshold": 0.3,
+        "te": 0.29,
+        "swc": 0.32,
+        "bands": [
+          {"max": 8.0, "te": 0.45, "swc": 0.6},
+          {"max": 9.5, "te": 0.2, "swc": 0.3},
+          {"max": 10.6, "te": 0.12, "swc": 0.15}
+        ]
+      },
+      "mcrT": {"threshold": 0.05},
+      "hrVolatility": {"threshold": null},
+      "dispersionMm": {"threshold": 2.0}
+    },
+    "wind_bands": [[0, 1.5], [1.5, 2.0], [2.0, 2.5], [2.5, 99]],
+    "min_wind_band_shots": 10,
+    "wind_gap_split_mps": 2.0,
+    "min_wind_gap_shots": 5,
+    "sample_threshold": {"daily": 20, "weekly": 20, "monthly": 87, "quarterly": 260, "yearly": 1040}
+  }
+}

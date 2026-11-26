@@ -22,9 +22,11 @@ start.bat
 
 | 档位 | mdc_source | 报告 | 对话 |
 | --- | --- | --- | --- |
-| `config.llamacpp.local.json`（默认） | demo-thresholds-20260928 | 出 MDC 判定 | 接本地模型 `:8090` |
+| `config.llamacpp.local.json`（默认） | v1-trial-20261010 | 出 MDC 试行判定 | 接本地模型 `:8090` |
 | `config.demo.json` | demo-thresholds-20260928 | 出 MDC 判定 | 关闭 |
-| `config.json`（正式 SSOT） | null | 只描述不判定 | 关闭 |
+| `config.json` | v1-trial-20261010 | 出 MDC 试行判定 | 关闭 |
+
+数据库默认规则包、草稿发布、签署和报告字段见 [规则包接口契约](docs/rule-pack-api.md)。
 
 已有外部模型服务（llama.cpp Vulkan 版 / Ollama）时保持 `LLM_PORT` 被占用即可，脚本会直接复用。
 
@@ -70,8 +72,16 @@ start.bat
 | GET/POST/DELETE | `/api/v1/athletes/{id}/notes` | 备注（软删 + 双视角过滤 + 归属校验） |
 | GET | `/api/v1/athletes/{id}/memories` | 历史结论沉淀 |
 | GET | `/api/v1/sessions/{session_id}` | 逐箭详情 |
+| POST | `/api/v1/athletes/{athlete_id}/sessions/{session_id}/exclude` | 确认逻辑排除训练场次（幂等） |
+| POST | `/api/v1/athletes/{athlete_id}/sessions/by-key/{session_key}/exclude` | 按桌面稳定 session key 确认排除 |
+| POST | `/api/v1/athletes/{athlete_id}/sessions/{session_id}/restore` | 恢复已排除训练场次（幂等） |
+| POST | `/api/v1/athletes/{athlete_id}/sessions/by-key/{session_key}/restore` | 按桌面稳定 session key 恢复 |
+| GET | `/api/v1/athletes/{athlete_id}/sessions?include_excluded=true` | 查看场次生命周期字段（默认隐藏已排除） |
 | POST | `/api/v1/ingest/v12` | 接收 v1.2 上行消息（单条对象或数组批量，逐条返回 accepted/duplicate/invalid/unsupported） |
 | POST | `/api/v1/athletes/{id}/ask` | 对话问答（非流式）；引擎忙时 409 `COACH-BUSY` |
+| POST | `/api/v1/athletes/{id}/guidance/interpret` | 读取已保存报告并生成非流式解读，模型失败时返回规则指导。[接口契约](docs/guidance_interpret_contract.md) |
+| POST | `/api/v1/athletes/{id}/guidance/feedback` | 为已保存报告的指导评分。[接口契约](docs/guidance_feedback_contract.md) |
+| GET | `/api/v1/guidance/feedback/summary` | 管理员读取评分统计与复审清单。默认含今天在内的最近 90 个 UTC 自然日 |
 | POST | `/api/v1/athletes/{id}/guidance/stream` | AI 训练指导（SSE 流式；绑定报告 + 视角；运动员视角不发草稿） |
 | GET | `/api/v1/llm/status` | LLM 任务忙闲（running / cancelling / idle），不含运动员身份 |
 | POST | `/api/v1/llm/tasks/{task_id}/cancel` | 取消任务（真正停止模型生成后才释放锁） |
@@ -140,7 +150,7 @@ start.bat
 - 《射箭AI训练报告引擎-记忆系统实施方案.md》：§3.1 记忆表、§3.2 基线、§七 里程碑
 - 《窗口口径与样本门槛决策记录-v2》：拍板依据与复算附录
 
-`config.json` 中 `timezone/sample_threshold/wind_bands/mdc` 均为文档口径的工程落点；`mdc_source=null` 表示 M4.5 专家共识落地前，报告走降级模板（只描述不判定）。
+`config.json` 提供时区和默认口径。数据库中的生效规则包提供判定参数。若尚未发布规则包且显式配置 `mdc_source=null`，报告只描述、不判定。
 
 ## 里程碑状态
 

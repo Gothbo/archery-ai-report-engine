@@ -198,11 +198,11 @@ class TestAskReusesStoredBody:
         v2 = client.post(f"{BASE}/ask", json=q).json()["context_version"]
         assert v1 == v2
 
-    def test_ask_without_cache_generates(self, client):
+    def test_ask_without_cache_does_not_generate(self, client):
         a = client.post(f"{BASE}/ask", json={"question": "怎么样", "granularity": "weekly",
                                              "window_key": "2026-W32", "view": "coach"})
-        assert a.status_code == 200
-        assert get_database().get_cached_report_row(ATHLETE, "weekly", "2026-W32", _report_cache_version(get_config()))
+        assert a.status_code == 404
+        assert client.get(f"{BASE}/reports").json()["reports"] == []
 
 
 class TestGuidanceReusesStoredBody:

@@ -112,7 +112,9 @@ def compute_self_compare(db: Database, cfg: EngineConfig, athlete_id: str, granu
         if cur:
             cur = dict(cur[0])
             prev = db.query(
-                """SELECT * FROM session_dim WHERE athlete_id=? AND session_time_utc<?
+                """SELECT * FROM session_dim s WHERE athlete_id=? AND session_time_utc<? AND NOT EXISTS
+                   (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id
+                    AND l.excluded_at_utc IS NOT NULL)
                    ORDER BY session_time_utc DESC LIMIT 1""", (athlete_id, cur["session_time_utc"]))
             if prev:
                 prev = dict(prev[0])
@@ -132,8 +134,10 @@ def compute_self_compare(db: Database, cfg: EngineConfig, athlete_id: str, granu
         if prev_key:
             start_iso, end_iso = window_bounds(cfg, granularity, prev_key)
             rows = db.query(
-                """SELECT score FROM shot_fact
-                   WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<?""",
+                """SELECT f.score FROM shot_fact f
+                   WHERE athlete_id=? AND shot_time_utc>=? AND shot_time_utc<? AND NOT EXISTS
+                     (SELECT 1 FROM session_lifecycle l WHERE l.athlete_id=f.athlete_id AND l.session_id=f.session_id
+                      AND l.excluded_at_utc IS NOT NULL)""",
                 (athlete_id, start_iso, end_iso))
             scores = [r["score"] for r in rows]
             if scores:
