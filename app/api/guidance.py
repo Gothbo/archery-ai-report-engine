@@ -17,9 +17,11 @@ import asyncio
 import json
 import logging
 import time
+from contextlib import aclosing
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import httpx
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
@@ -29,12 +31,14 @@ from starlette.concurrency import run_in_threadpool
 from app.api.ask import DEGRADED_GUARD
 from app.api.llm import busy_response
 from app.config import get_config
-from app.llm.client import get_llm_client
+from app.llm.client import LLMError, get_llm_client
 from app.llm.guardrails import check_guards
 from app.llm.tasks import LLMBusy, StreamOutcome, get_registry, run_stream_task
-from app.rag.context import assemble_context
+from app.rag.context import ReportContextNotFound, assemble_context
 from app.reports.generator import SessionNotFound
+from app.reports.window import GRANULARITIES
 from app.store.database import get_database
+from app.timeutil import iso_now_utc
 
 logger = logging.getLogger("engine.api.guidance")
 
@@ -53,6 +57,13 @@ class GuidanceRequest(BaseModel):
     view: str = Field(default="athlete", pattern="^(athlete|coach)$")
 
 
+class InterpretRequest(BaseModel):
+    granularity: str
+    window_key: str
+    view: str = "athlete"
+    report_id: str | None = None
+
+
 def _now_iso(tz: str) -> str:
     return datetime.now(ZoneInfo(tz)).isoformat(timespec="seconds")
 
@@ -65,6 +76,8 @@ def guidance_messages(ctx: dict, view: str) -> list[dict]:
     audience = ("面向教练：可以使用专业术语，侧重训练安排与重点观察项。" if view == "coach"
                 else "面向运动员本人：用「你」称呼，语气平实、鼓励，不写教练内部安排。")
     headings = "\n".join(GUIDANCE_HEADINGS)
+    references = ("仅有类型或引用的备注与历史结论代表原文未提供，不得推测其内容。\n"
+                  if ctx.get("strict_expression") else "")
     return [
         {"role": "system", "content": (
             f"你是射箭训练指导撰写助手{GUIDANCE_MARKER}。只能基于下面的结论骨架撰写本期训练指导，不得使用骨架以外的知识。\n"
@@ -79,10 +92,133 @@ def guidance_messages(ctx: dict, view: str) -> list[dict]:
             "4. 涉及伤病/训练调整只引用备注，不自行给出医疗建议；\n"
             "5. 中文，简洁，每个小标题下只写要点；\n"
             f"6. {audience}\n"
+            f"{references}"
             f"骨架（JSON）：\nskeleton_json: {ctx['skeleton_json']}"
         )},
         {"role": "user", "content": GUIDANCE_QUESTION},
     ]
+
+
+def _interpret_context(athlete_id: str, body: InterpretRequest, report_id: str | None) -> dict:
+    db = get_database()
+    try:
+        with db.lock:
+            return assemble_context(db, athlete_id, GUIDANCE_QUESTION, body.granularity,
+                                    body.window_key, view=body.view, report_id=report_id, saved_only=True)
+    except (ReportContextNotFound, SessionNotFound) as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+async def _interpret_tokens(client, messages):
+    try:
+        async with aclosing(client.astream_chat(messages)) as tokens:
+            async for token in tokens:
+                yield token
+    except LLMError as exc:
+        if isinstance(exc.__cause__, (httpx.TimeoutException, TimeoutError)):
+            raise TimeoutError from exc
+        raise
+
+
+async def _discard_event(_event: str, _data: dict) -> None:
+    pass
+
+
+def _split_sections(text: str) -> list[dict]:
+    sections: list[dict] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        heading = line.strip()
+        if heading in GUIDANCE_HEADINGS:
+            if sections:
+                sections[-1]["text"] = "\n".join(lines).strip()
+                lines.clear()
+            sections.append({"heading": heading, "text": ""})
+        elif sections:
+            lines.append(line)
+        elif heading:
+            return []
+    if sections:
+        sections[-1]["text"] = "\n".join(lines).strip()
+    if tuple(section["heading"] for section in sections) != GUIDANCE_HEADINGS:
+        return []
+    return sections if all(section["text"] for section in sections) else []
+
+
+def _interpret_response(ctx: dict, *, reason: str | None = None, text: str = "",
+                        model_version: str | None = None) -> dict:
+    guide = ctx["rule_guidance"]
+    if reason is not None:
+        parts = [guide["summary"], *(bullet["text"] for bullet in guide["bullets"])]
+        text = "\n".join(part for part in parts if part.strip()) or "本窗口暂无规则指导"
+    return {
+        "source": "rule" if reason is not None else "model",
+        "degraded_reason": reason,
+        "text": text,
+        "sections": [] if reason is not None else _split_sections(text),
+        "references": ctx["references"],
+        "rule_guidance": guide,
+        "rule_pack": ctx["rule_pack"],
+        "context_version": ctx["version"],
+        "model_version": model_version,
+        "generated_at_utc": iso_now_utc(),
+    }
+
+
+@router.post("/athletes/{athlete_id}/guidance/interpret")
+async def guidance_interpret(athlete_id: str, body: InterpretRequest):
+    if body.granularity not in GRANULARITIES:
+        raise HTTPException(400, "未知报告粒度")
+    if not body.window_key.strip() or len(body.window_key) > 128 or body.window_key != body.window_key.strip():
+        raise HTTPException(400, "报告窗口键无效")
+    if body.view not in ("athlete", "coach") or body.report_id == "":
+        raise HTTPException(400, "报告视角或报告 ID 无效")
+    ctx = await run_in_threadpool(_interpret_context, athlete_id, body, body.report_id)
+    cfg = get_config()
+    if not cfg.llm.enabled:
+        return _interpret_response(ctx, reason="disabled")
+
+    registry = get_registry()
+    try:
+        task = registry.try_acquire(kind="guidance", view=body.view,
+                                    deadline_sec=cfg.llm.total_timeout_sec, tz=cfg.timezone, cancellable=False)
+    except LLMBusy:
+        return _interpret_response(ctx, reason="busy")
+
+    def finish(raw: str) -> StreamOutcome:
+        text = raw.strip()
+        if not text:
+            return StreamOutcome("error", {"code": "COACH-EMPTY"})
+        ok, _ = check_guards(raw, ctx, cfg.forbidden_phrases, max_len=cfg.llm.guidance_max_len)
+        return StreamOutcome("final", {"text": text}) if ok else StreamOutcome("guardrail_failed", {})
+
+    try:
+        client = get_llm_client(cfg.llm)
+        messages = guidance_messages(ctx, body.view)
+        outcome = await run_stream_task(
+            registry=registry, task=task, stream_factory=lambda: _interpret_tokens(client, messages),
+            emit=_discard_event, finish=finish, send_deltas=False,
+            first_token_timeout=cfg.llm.first_token_timeout_sec, idle_timeout=cfg.llm.idle_timeout_sec,
+            total_timeout=cfg.llm.total_timeout_sec, max_len=cfg.llm.guidance_max_len,
+            wait_upstream_idle=getattr(client, "wait_idle", None),
+        )
+    except (httpx.TimeoutException, TimeoutError):
+        outcome = StreamOutcome("error", {"code": "COACH-TIMEOUT"})
+    except Exception:  # The user can still read the rule guidance when the provider fails.
+        logger.exception("task=%s 无法完成模型解读", task.task_id)
+        outcome = StreamOutcome("error", {})
+    finally:
+        registry.release(task)
+
+    current = await run_in_threadpool(_interpret_context, athlete_id, body, ctx["report_id"])
+    if outcome.kind == "final" and current["version"] == ctx["version"]:
+        return _interpret_response(current, text=outcome.data["text"], model_version=cfg.llm.model_version)
+    reason = "guardrail_failed" if outcome.kind == "guardrail_failed" else {
+        "COACH-TIMEOUT": "timeout", "COACH-EMPTY": "empty",
+    }.get(outcome.data.get("code"), "error")
+    return _interpret_response(current, reason=reason)
 
 
 @router.post("/athletes/{athlete_id}/guidance/stream")

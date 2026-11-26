@@ -20,18 +20,17 @@ import hashlib
 import json
 import logging
 import re
+from datetime import date
 from typing import Callable
 
 from app.config import get_config
 from app.memory.notes import list_notes_for_view
 from app.memory.selective import select_notes_for_context
-from app.reports.generator import generate_report, read_calendar_report, read_report_snapshot
-from app.reports.window import WindowKey
+from app.reports.generator import generate_report, public_view, read_calendar_report, read_report_snapshot
+from app.reports.window import GRANULARITIES, WindowKey
 from app.store.database import Database
 
 logger = logging.getLogger("engine.rag.context")
-
-GRANULARITIES = ("daily", "weekly", "monthly", "quarterly", "yearly")
 
 _NOTE_KEYWORDS = ("伤", "疼", "痛", "目标", "建议", "注意", "调整", "恢复", "改进")
 
@@ -39,14 +38,42 @@ _NOTE_KEYWORDS = ("伤", "疼", "痛", "目标", "建议", "注意", "调整", "
 _retrieve_semantic: Callable[..., list[dict]] | None = None
 
 
+class ReportContextNotFound(ValueError):
+    """The athlete or requested saved report is unavailable."""
+
+
+def _saved_report(db: Database, athlete_id: str, key: WindowKey, view: str, report_id: str | None) -> dict:
+    if key.granularity != "daily" or key.is_calendar_day:
+        key.bounds(get_config())
+    if key.granularity == "weekly":
+        year, week = key.value.split("-", 1)
+        date.fromisocalendar(int(year), int(week.removeprefix("W")), 1)
+
+    with db.lock:
+        if report_id is None:
+            rows = db.query(
+                """SELECT report_id FROM report_cache WHERE athlete_id=? AND granularity=? AND window_key=?
+                   AND report_json IS NOT NULL ORDER BY generated_at_utc DESC, rowid DESC LIMIT 1""",
+                (athlete_id, key.granularity, key.text),
+            )
+            if not rows:
+                raise ReportContextNotFound("报告不存在或已更新，请在报告页重新打开")
+            report_id = rows[0]["report_id"]
+        try:
+            return public_view(read_report_snapshot(db, athlete_id, key.granularity, key.text, view, report_id), view)
+        except ValueError as exc:
+            raise ReportContextNotFound(str(exc)) from exc
+
+
 def assemble_context(db: Database, athlete_id: str, question: str,
                      granularity: str | None = None, window_key: str | None = None,
-                     view: str = "athlete", report_id: str | None = None) -> dict:
+                     view: str = "athlete", report_id: str | None = None, *,
+                     saved_only: bool = False) -> dict:
     """组装问询上下文。窗口缺失时取最近一份已生成报告（report_cache 最新一条）。"""
     cfg = get_config()
     profile = db.get_profile(athlete_id)
     if profile is None:
-        raise ValueError(f"运动员 {athlete_id} 不存在")
+        raise ReportContextNotFound(f"运动员 {athlete_id} 不存在")
 
     if granularity is not None:
         if granularity not in GRANULARITIES:
@@ -63,7 +90,9 @@ def assemble_context(db: Database, athlete_id: str, question: str,
 
     # PR #4：有已存正文就直接用；旧行无正文 → generate_report 补存（report_id 与历史结论不变）
     key = WindowKey.parse(_granularity, _window_key)
-    if report_id:
+    if saved_only:
+        report = _saved_report(db, athlete_id, key, view, report_id)
+    elif report_id:
         report = read_report_snapshot(db, athlete_id, _granularity, _window_key, view, report_id)
     elif key.is_calendar_day:
         report = read_calendar_report(db, athlete_id, _window_key, view)
@@ -82,6 +111,10 @@ def assemble_context(db: Database, athlete_id: str, question: str,
     # 报告正文自带「近期备注 / 辅助信息」备注行（生成时未看问题），会绕过相关性召回；
     # 这里先剥掉，再由选中的 notes 统一注入，保证无关旧事不被带进对话。
     report = _without_notes(report)
+    if saved_only:
+        from app.rag.expression import expression_input
+
+        return expression_input(report, notes, history, profile["name"], view)
 
     skeleton_text = _skeleton_text(report, notes, history)
     sources = _sources(report, notes, history)

@@ -11,6 +11,7 @@ conclusions），组装面向 idle / 「只看规则建议」/ COACH-OFFLINE 的
 from __future__ import annotations
 
 TITLE = "规则引擎智能指导"
+RULE_SOURCE = {"source": "rule", "degraded_reason": None}
 
 # 与 generator 平台期正文同口径（结论已触发时复用，不另起阈值）
 _PLATEAU_TEXT = (
@@ -42,6 +43,7 @@ def build_rule_guidance(
 
     if n_shots == 0:
         return {
+            **RULE_SOURCE,
             "title": TITLE,
             "summary": "本窗口无箭，暂无规则指导",
             "bullets": [],
@@ -51,6 +53,7 @@ def build_rule_guidance(
     if sug and any(_BLOCKED_MARK in s for s in sug):
         bullets = _pair_bullets(sug, evidence)
         return {
+            **RULE_SOURCE,
             "title": TITLE,
             "summary": "本窗口数据存疑，暂不给出训练建议",
             "bullets": bullets,
@@ -62,6 +65,7 @@ def build_rule_guidance(
 
     if not bullets:
         return {
+            **RULE_SOURCE,
             "title": TITLE,
             "summary": _metrics_summary(m) + "本窗口指标未触发规则建议阈值，暂无额外指导",
             "bullets": [],
@@ -69,6 +73,7 @@ def build_rule_guidance(
         }
 
     return {
+        **RULE_SOURCE,
         "title": TITLE,
         "summary": _metrics_summary(m) + f"共 {len(bullets)} 条规则建议（可溯源）",
         "bullets": bullets,

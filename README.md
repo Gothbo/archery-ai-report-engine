@@ -79,6 +79,7 @@ start.bat
 | GET | `/api/v1/athletes/{athlete_id}/sessions?include_excluded=true` | 查看场次生命周期字段（默认隐藏已排除） |
 | POST | `/api/v1/ingest/v12` | 接收 v1.2 上行消息（单条对象或数组批量，逐条返回 accepted/duplicate/invalid/unsupported） |
 | POST | `/api/v1/athletes/{id}/ask` | 对话问答（非流式）；引擎忙时 409 `COACH-BUSY` |
+| POST | `/api/v1/athletes/{id}/guidance/interpret` | 读取已保存报告并生成非流式解读，模型失败时返回规则指导。[接口契约](docs/guidance_interpret_contract.md) |
 | POST | `/api/v1/athletes/{id}/guidance/stream` | AI 训练指导（SSE 流式；绑定报告 + 视角；运动员视角不发草稿） |
 | GET | `/api/v1/llm/status` | LLM 任务忙闲（running / cancelling / idle），不含运动员身份 |
 | POST | `/api/v1/llm/tasks/{task_id}/cancel` | 取消任务（真正停止模型生成后才释放锁） |
