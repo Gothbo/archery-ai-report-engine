@@ -1,6 +1,74 @@
 from fastapi.testclient import TestClient
 
-from tests.conftest import seed_session
+from tests.conftest import seed_anchor, seed_session
+from tests.test_desktop_ingest import URL, _client, _snapshot
+
+
+def test_pre_ingest_exclusion_survives_late_upload_without_a_second_request(engine_env):
+    client = _client(engine_env)
+    first = client.post(URL, json=_snapshot("establish-identity")).json()
+    athlete_id = first["athleteId"]
+    base = f"/api/v1/athletes/{athlete_id}"
+    alias = f"{base}/sessions/by-key/late-commit"
+
+    missing = client.post(f"{alias}/exclude", json={})
+    assert missing.status_code == 404
+    reserved = client.post(f"{alias}/exclude", json={"reserve_if_missing": True})
+    assert reserved.status_code == 200, reserved.text
+    marker = reserved.json()
+    assert marker["already_excluded"] is False
+    assert client.post(f"{alias}/exclude", json={"reserve_if_missing": True}).json()["already_excluded"]
+    assert client.get(f"/api/v1/sessions/{marker['session_id']}").status_code == 404
+
+    # Ingest commits after the exclusion response. No follow-up exclusion is sent.
+    late = client.post(URL, json=_snapshot("late-commit")).json()
+    assert late["sessionId"] == marker["session_id"]
+    assert client.get(f"/api/v1/sessions/{late['sessionId']}").json()["excluded"] is True
+    report = client.post(f"{base}/reports/daily", json={
+        "day": "2026-11-19", "session_ids": [first["sessionId"]],
+    }).json()
+    assert report["metrics"]["n_shots"] == 6
+    stale = client.post(f"{base}/reports/daily", params={"session_id": late["sessionId"]})
+    assert stale.status_code == 409
+    assert client.post(f"{alias}/restore", json={}).status_code == 200
+    assert client.get(f"/api/v1/sessions/{late['sessionId']}").json()["excluded"] is False
+
+
+def test_reserved_exclusion_can_be_restored_before_first_upload(engine_env):
+    client = _client(engine_env)
+    athlete_id = client.post(URL, json=_snapshot("first")).json()["athleteId"]
+    alias = f"/api/v1/athletes/{athlete_id}/sessions/by-key/restore-first"
+    assert client.post(f"{alias}/exclude", json={"reserve_if_missing": True}).status_code == 200
+    assert client.post(f"{alias}/restore", json={}).json()["already_active"] is False
+    late = client.post(URL, json=_snapshot("restore-first")).json()
+    assert client.get(f"/api/v1/sessions/{late['sessionId']}").json()["excluded"] is False
+
+
+def test_excluded_anchor_stops_affecting_other_report_windows(engine_env):
+    from app.main import app
+    from app.store.database import get_database
+
+    db = get_database()
+    athlete = "athlete-a"
+    seed_session(db, athlete, "anchor", "2026-11-10T01:00:00Z", [8] * 24)
+    seed_session(db, athlete, "report-session", "2026-11-24T01:00:00Z", [10] * 24)
+    anchor = seed_anchor(db, athlete, "anchor")
+    client = TestClient(app)
+    base = f"/api/v1/athletes/{athlete}"
+    report_url = f"{base}/reports/weekly?week=2026-W48&view=coach"
+    before = client.post(report_url).json()
+    assert db.latest_snapshot(athlete, "anchor")["id"] == anchor
+    assert before["conclusions"]["verdicts"]["avgScore"]["anchor"] == 8
+    assert client.post(f"{base}/sessions/anchor/exclude", json={}).status_code == 200
+    assert db.latest_snapshot(athlete, "anchor") is None
+    assert client.get(f"/api/v1/reports/{before['report_id']}/content").status_code == 404
+    assert not db.list_memories(athlete)
+    excluded_report = client.post(report_url).json()
+    assert excluded_report["conclusions"]["verdicts"]["avgScore"].get("anchor") is None
+    assert client.post(f"{base}/sessions/anchor/restore", json={}).status_code == 200
+    assert db.latest_snapshot(athlete, "anchor")["id"] == anchor
+    assert client.get(f"/api/v1/reports/{excluded_report['report_id']}/content").status_code == 404
+    assert client.post(report_url).json()["conclusions"]["verdicts"]["avgScore"]["anchor"] == 8
 
 
 def test_exclude_restore_idempotency_and_read_fields(engine_env):
@@ -163,6 +231,85 @@ def test_exclusion_invalidates_window_cache_and_weekly_report_omits_session(engi
     response = client.post("/api/v1/athletes/athlete-a/reports/weekly", params={"week": window, "refresh": "true"})
     assert response.status_code == 200
     assert response.json()["metrics"]["n_shots"] == 0
+
+
+def test_exclude_and_restore_invalidate_windows_containing_later_arrows(engine_env):
+    from tests.test_desktop_ingest import URL, _assert_report_invalidated, _client, _shot, _snapshot
+
+    client = _client(engine_env)
+    # Local midnight crosses the ISO week, calendar month, quarter and year.
+    result = client.post(URL, json=_snapshot("overnight", shots=[
+        _shot(1, ts="2023-12-31T23:55:00+08:00"),
+        _shot(2, ts="2024-01-01T00:05:00+08:00"),
+    ])).json()
+    athlete = f"/api/v1/athletes/{result['athleteId']}"
+    session = f"{athlete}/sessions/{result['sessionId']}"
+    windows = [
+        ("weekly", {"week": "2024-W01"}),
+        ("weekly", {"week": "2024-1"}),
+        ("monthly", {"month": "2024-01"}),
+        ("quarterly", {"quarter": "2024Q1"}),
+        ("yearly", {"year": "2024"}),
+    ]
+
+    def reports(shots):
+        bodies = []
+        for granularity, params in windows:
+            response = client.post(f"{athlete}/reports/{granularity}", params=params)
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert body["metrics"]["n_shots"] == shots
+            bodies.append(body)
+        return bodies
+
+    original = reports(1)
+    assert client.post(f"{session}/exclude", json={}).status_code == 200
+    for report in original:
+        _assert_report_invalidated(client, athlete, report)
+
+    reduced = reports(0)
+    assert client.post(f"{session}/restore", json={}).status_code == 200
+    for report in reduced:
+        _assert_report_invalidated(client, athlete, report)
+    reports(1)
+
+
+def test_exclude_and_restore_invalidate_later_reports_using_the_session_as_comparison(engine_env):
+    from tests.test_desktop_ingest import URL, _assert_report_invalidated, _client, _shot, _snapshot
+
+    client = _client(engine_env)
+    previous = client.post(URL, json=_snapshot("previous")).json()
+    current = client.post(URL, json=_snapshot("current", shots=[
+        _shot(1, ts="2026-11-26T10:00:00"),
+    ])).json()
+    athlete = f"/api/v1/athletes/{current['athleteId']}"
+    session = f"{athlete}/sessions/{previous['sessionId']}"
+    windows = [
+        ("daily", {"session_id": current["sessionId"]}),
+        ("weekly", {"week": "2026-W48"}),
+    ]
+
+    def reports(compared):
+        bodies = []
+        for granularity, params in windows:
+            response = client.post(f"{athlete}/reports/{granularity}", params={**params, "view": "coach"})
+            assert response.status_code == 200, response.text
+            body = response.json()
+            assert (body["conclusions"]["self_compare"]["previous"] is not None) is compared
+            assert ("rolling_baseline" in body["coach_extra"]) is compared
+            bodies.append(body)
+        return bodies
+
+    original = reports(True)
+    assert client.post(f"{session}/exclude", json={}).status_code == 200
+    for report in original:
+        _assert_report_invalidated(client, athlete, report)
+
+    reduced = reports(False)
+    assert client.post(f"{session}/restore", json={}).status_code == 200
+    for report in reduced:
+        _assert_report_invalidated(client, athlete, report)
+    reports(True)
 
 
 def test_ask_has_no_excluded_report_source(engine_env):

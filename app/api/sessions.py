@@ -44,24 +44,32 @@ def session_detail(session_id: str) -> dict:
 class SessionLifecycleRequest(BaseModel):
     actor_id: str | None = None
     reason: str | None = None
+    reserve_if_missing: bool = False
 
 
-def _session_lifecycle(athlete_id: str, session_id: str, body: SessionLifecycleRequest, action: str) -> dict:
+def _session_lifecycle(athlete_id: str, session_id: str, body: SessionLifecycleRequest,
+                       action: str, *, by_key: bool = False) -> dict:
     db = get_database()
-    dim = db.session_of(session_id)
-    if dim is None:
-        raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "场次不存在"})
-    if dim["athlete_id"] != athlete_id:
-        raise HTTPException(status_code=404, detail={"code": "session_not_owned", "message": "场次不属于该运动员"})
     actor = body.actor_id or "unknown"
     reason = body.reason or "unspecified"
-    if action == "exclude":
-        already, timestamp = db.set_session_excluded(athlete_id, session_id, actor, reason)
-        return {"status": "excluded", "athlete_id": athlete_id, "session_id": session_id,
-                "excluded_at_utc": timestamp, "already_excluded": already}
-    already, timestamp = db.set_session_active(athlete_id, session_id, actor, reason)
-    return {"status": "active", "athlete_id": athlete_id, "session_id": session_id,
-            "restored_at_utc": timestamp, "already_active": already}
+    # The lookup and lifecycle write share the lock used by desktop ingest. An absent
+    # session can be reserved only by its deterministic desktop key.
+    with db.lock:
+        dim = db.session_of(session_id)
+        if dim is None:
+            can_reserve = action == "exclude" and by_key and body.reserve_if_missing
+            can_restore = action == "restore" and db.session_lifecycle(athlete_id, session_id) is not None
+            if not can_reserve and not can_restore:
+                raise HTTPException(status_code=404, detail={"code": "session_not_found", "message": "场次不存在"})
+        elif dim["athlete_id"] != athlete_id:
+            raise HTTPException(status_code=404, detail={"code": "session_not_owned", "message": "场次不属于该运动员"})
+        if action == "exclude":
+            already, timestamp = db.set_session_excluded(athlete_id, session_id, actor, reason)
+            return {"status": "excluded", "athlete_id": athlete_id, "session_id": session_id,
+                    "excluded_at_utc": timestamp, "already_excluded": already}
+        already, timestamp = db.set_session_active(athlete_id, session_id, actor, reason)
+        return {"status": "active", "athlete_id": athlete_id, "session_id": session_id,
+                "restored_at_utc": timestamp, "already_active": already}
 
 
 def _desktop_session_id(athlete_id: str, session_key: str) -> str:
@@ -73,7 +81,7 @@ def _desktop_session_id(athlete_id: str, session_key: str) -> str:
 
 @session_lifecycle_router.post("/by-key/{session_key}/exclude")
 def exclude_session_by_key(athlete_id: str, session_key: str, body: SessionLifecycleRequest = SessionLifecycleRequest()) -> dict:
-    return _session_lifecycle(athlete_id, _desktop_session_id(athlete_id, session_key), body, "exclude")
+    return _session_lifecycle(athlete_id, _desktop_session_id(athlete_id, session_key), body, "exclude", by_key=True)
 
 
 @session_lifecycle_router.post("/by-key/{session_key}/restore")

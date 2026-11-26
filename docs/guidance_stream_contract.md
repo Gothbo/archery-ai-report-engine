@@ -29,6 +29,7 @@
 | `granularity` | 是 | `daily` / `weekly` / `monthly` / `quarterly` / `yearly` |
 | `window_key` | 是 | 与报告接口一致：`daily:{session_id}`、`2026-W40`、`2026-10`、`2026Q4`、`2026` |
 | `view` | 否 | `coach` / `athlete`，默认 `athlete` |
+| `report_id` | 否 | 绑定已打开的报告快照。省略时读取该窗口最新的已保存正文 |
 
 一次生成绑定「这份报告 + 这个视角」。换报告、切视角、关页面 = 取消这次生成并丢弃结果（见 §6）。
 
@@ -39,6 +40,7 @@
 | 409 | `COACH-BUSY` | 引擎已有任务在跑或正在停止 | 3 已不再等待 / 重新生成禁用至空闲 |
 | 503 | `COACH-OFFLINE` | `llm.enabled=false` | 7 AI 离线 → 规则版（文案来自报告 `rule_guidance`，与 `suggestions` 同源） |
 | 400 | — | 运动员不存在 / 窗口无数据等（`detail` 为说明） | 5 生成中断（COACH-4xx） |
+| 404 | — | 指定报告或窗口的已保存正文不可用 | 重新打开报告后再请求指导 |
 | 422 | — | 参数格式错误 | 5 生成中断（COACH-4xx） |
 
 409 响应：
@@ -83,7 +85,8 @@ Retry-After: 37
 
 - 服务端**从不发送 `delta`**，只发 `accepted → reading → writing → verifying → 终止事件`；不依赖前端开关。
 - `guardrail_failed` 在运动员视角不带 `reason`（原因里可能有未核对的文字或数字）。
-- 输入侧：运动员视角的骨架只含 `notes_visibility.athlete_visible_types`（默认伤病、目标）类备注，不含教练观察；滚动基线两个视角都带（浩然拍板，保持现状）。
+- 问答、流式指导和非流式解读共用模型输入过滤。备注和历史结论只传当前视角允许的类型和引用。运动员视角仅保留公开报告正文与指标，流式指导和问答仍可使用滚动基线的箭数与均环汇总。
+- 已授权的原文引用随响应返回。模型生成期间报告或引用的备注发生变化时，流式接口用 `COACH-CONTEXT-STALE` 结束，客户端撤下草稿。
 
 ### 2.5 正文格式
 

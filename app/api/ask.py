@@ -17,9 +17,9 @@ from app.config import get_config
 from app.llm.client import LLMError, get_llm_client
 from app.llm.guardrails import check_guards
 from app.llm.tasks import LLMBusy, get_registry
-from app.rag.context import assemble_context
+from app.rag.context import ReportContextNotFound, ReportSnapshotUnavailable, assemble_context, check_context_is_current
 from app.reports.generator import SessionNotFound
-from app.store.database import get_database
+from app.store.database import Database, get_database
 
 router = APIRouter(prefix="/api/v1", tags=["ask"])
 
@@ -47,11 +47,13 @@ def ask(athlete_id: str, body: AskRequest):
     except SessionNotFound as exc:
         from app.api.reports import session_not_found
         return session_not_found(exc)
+    except ReportSnapshotUnavailable as exc:
+        raise HTTPException(status_code=400 if body.report_id else 404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     if not cfg.llm.enabled:
-        return _answer(ctx, DEGRADED_OFF, degraded=True, reason="llm.enabled=false")
+        return _answer(db, ctx, body.view, DEGRADED_OFF, degraded=True, reason="llm.enabled=false")
 
     registry = get_registry()
     try:
@@ -64,14 +66,15 @@ def ask(athlete_id: str, body: AskRequest):
         client = get_llm_client(cfg.llm)
         raw = client.chat(_messages(ctx, cfg))
     except LLMError as exc:
-        return _answer(ctx, DEGRADED_LLM_FAIL, degraded=True, reason=str(exc))
+        return _answer(db, ctx, body.view, DEGRADED_LLM_FAIL, degraded=True, reason=str(exc))
     finally:
         registry.release(task)
 
     ok, reason = check_guards(raw, ctx, cfg.forbidden_phrases)
     if not ok:
-        return _answer(ctx, DEGRADED_GUARD, degraded=True, reason=reason, fallback=ctx["skeleton"])
-    return _answer(ctx, raw, degraded=False)
+        return _answer(db, ctx, body.view, DEGRADED_GUARD, degraded=True,
+                       reason=reason, fallback=ctx["skeleton"])
+    return _answer(db, ctx, body.view, raw, degraded=False)
 
 
 def _messages(ctx: dict, cfg) -> list[dict]:
@@ -87,14 +90,20 @@ def _messages(ctx: dict, cfg) -> list[dict]:
             "4. 中文，口语化但专业，尽量不超过 200 字；用连贯短句作答，不要使用编号列表或 Markdown 标记；\n"
             "5. 涉及伤病/训练调整只引用教练备注，不自行给出医疗建议；\n"
             "6. 骨架没有的信息，说明「报告中未包含该信息」。\n"
+            "7. 只有类型或引用的备注与历史结论没有原文，不得推测其内容。\n"
             f"骨架（JSON）：\nskeleton_json: {ctx['skeleton_json']}"
         )},
-        {"role": "user", "content": ctx["question"]},
+        {"role": "user", "content": ctx["model_question"]},
     ]
 
 
-def _answer(ctx: dict, answer: str, *, degraded: bool, reason: str | None = None,
+def _answer(db: Database, ctx: dict, view: str, answer: str, *, degraded: bool, reason: str | None = None,
             fallback: str | None = None) -> dict:
+    try:
+        check_context_is_current(db, ctx, view)
+    except ReportContextNotFound as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     resp = {
         "athlete_id": ctx["athlete_id"],
         "question": ctx["question"],

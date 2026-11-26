@@ -363,6 +363,14 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     force=True 跳过缓存强制重生成（B10 支持 ?refresh=1）。
     命中且有已存正文 → 返回正文（按本次视角现取备注）；PR #4 之前旧行无正文则补存。
     """
+    with db.write_transaction():
+        return _generate_report(db, athlete_id, granularity, window_key, session_id,
+                                view, force, desktop_session_ids)
+
+
+def _generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
+                     session_id: str | None, view: str, force: bool,
+                     desktop_session_ids: list[str] | None) -> dict:
     policy = _resolve_report_rules(db)
     cfg, _ = policy
     R.validate_rules(cfg)
@@ -371,13 +379,12 @@ def generate_report(db: Database, athlete_id: str, granularity: str, window_key:
     if calendar_day:
         if not desktop_session_ids:
             raise ValueError("请通过桌面端重新生成日报")
-        with db.lock:
-            draft = build_report(db, athlete_id, granularity, window_key, view="coach",
-                                 desktop_session_ids=desktop_session_ids, _policy=policy)
-            draft.report["session_ids"] = sorted(set(desktop_session_ids))
-            db.purge_report_window(athlete_id, granularity, window_key, cache_version)
-            persist_report(db, draft)
-            return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
+        draft = build_report(db, athlete_id, granularity, window_key, view="coach",
+                             desktop_session_ids=desktop_session_ids, _policy=policy)
+        draft.report["session_ids"] = sorted(set(desktop_session_ids))
+        db.purge_report_window(athlete_id, granularity, window_key, cache_version)
+        persist_report(db, draft)
+        return render_for_view(db, _body_for_storage(draft.report), view, cached=False)
     if granularity == "daily":
         _check_session(db, athlete_id, session_id)
 

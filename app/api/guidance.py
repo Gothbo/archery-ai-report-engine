@@ -35,7 +35,7 @@ from app.config import get_config
 from app.llm.client import LLMError, get_llm_client
 from app.llm.guardrails import check_guards, number_guard
 from app.llm.tasks import LLMBusy, StreamOutcome, get_registry, run_stream_task
-from app.rag.context import ReportContextNotFound, assemble_context
+from app.rag.context import ReportContextNotFound, ReportSnapshotUnavailable, assemble_context, check_context_is_current
 from app.reports.generator import SessionNotFound
 from app.reports.window import GRANULARITIES
 from app.store.database import get_database
@@ -56,6 +56,7 @@ class GuidanceRequest(BaseModel):
     granularity: str = Field(pattern="^(daily|weekly|monthly|quarterly|yearly)$")
     window_key: str = Field(min_length=1, max_length=128)
     view: str = Field(default="athlete", pattern="^(athlete|coach)$")
+    report_id: str | None = None
 
 
 class InterpretRequest(BaseModel):
@@ -77,8 +78,6 @@ def guidance_messages(ctx: dict, view: str) -> list[dict]:
     audience = ("面向教练：可以使用专业术语，侧重训练安排与重点观察项。" if view == "coach"
                 else "面向运动员本人：用「你」称呼，语气平实、鼓励，不写教练内部安排。")
     headings = "\n".join(GUIDANCE_HEADINGS)
-    references = ("仅有类型或引用的备注与历史结论代表原文未提供，不得推测其内容。\n"
-                  if ctx.get("strict_expression") else "")
     return [
         {"role": "system", "content": (
             f"你是射箭训练指导撰写助手{GUIDANCE_MARKER}。只能基于下面的结论骨架撰写本期训练指导，不得使用骨架以外的知识。\n"
@@ -93,7 +92,7 @@ def guidance_messages(ctx: dict, view: str) -> list[dict]:
             "4. 涉及伤病/训练调整只引用备注，不自行给出医疗建议；\n"
             "5. 中文，简洁，每个小标题下只写要点；\n"
             f"6. {audience}\n"
-            f"{references}"
+            "仅有类型或引用的备注与历史结论代表原文未提供，不得推测其内容。\n"
             f"骨架（JSON）：\nskeleton_json: {ctx['skeleton_json']}"
         )},
         {"role": "user", "content": GUIDANCE_QUESTION},
@@ -103,9 +102,8 @@ def guidance_messages(ctx: dict, view: str) -> list[dict]:
 def _interpret_context(athlete_id: str, body: InterpretRequest, report_id: str | None) -> dict:
     db = get_database()
     try:
-        with db.lock:
-            return assemble_context(db, athlete_id, GUIDANCE_QUESTION, body.granularity,
-                                    body.window_key, view=body.view, report_id=report_id, saved_only=True)
+        return assemble_context(db, athlete_id, GUIDANCE_QUESTION, body.granularity,
+                                body.window_key, view=body.view, report_id=report_id, strict_expression=True)
     except (ReportContextNotFound, SessionNotFound) as exc:
         raise HTTPException(404, str(exc)) from exc
     except (ValueError, OverflowError) as exc:
@@ -271,12 +269,16 @@ async def guidance_stream(athlete_id: str, body: GuidanceRequest):
         return busy_response(exc.task)
 
     try:
-        ctx = await run_in_threadpool(assemble_context, get_database(), athlete_id, GUIDANCE_QUESTION,
-                                      body.granularity, body.window_key, view=body.view)
+        db = get_database()
+        ctx = await run_in_threadpool(assemble_context, db, athlete_id, GUIDANCE_QUESTION,
+                                      body.granularity, body.window_key, view=body.view, report_id=body.report_id)
         client = get_llm_client(cfg.llm)
     except SessionNotFound as exc:
         registry.release(task)
         return JSONResponse(status_code=404, content={"code": "SESSION-NOT-FOUND", "detail": str(exc)})
+    except ReportSnapshotUnavailable as exc:
+        registry.release(task)
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         registry.release(task)
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -324,6 +326,11 @@ async def guidance_stream(athlete_id: str, body: GuidanceRequest):
             max_len=max_len,
             wait_upstream_idle=getattr(client, "wait_idle", None),
         )
+        if outcome.kind in ("final", "guardrail_failed"):
+            try:
+                await run_in_threadpool(check_context_is_current, db, ctx, view)
+            except ReportContextNotFound as exc:
+                outcome = StreamOutcome("error", {"code": "COACH-CONTEXT-STALE", "message": str(exc)})
         logger.info("guidance task=%s view=%s 结束：%s（%.1fs）", task.task_id, view, outcome.kind,
                     time.monotonic() - t0)
         # 走到这里时上游已关闭、锁已释放 → 客户端收到终止事件即可立即重试

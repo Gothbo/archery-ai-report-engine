@@ -22,7 +22,8 @@ _ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _VERDICT_FIELDS = ("verdict", "reason", "tier", "value", "anchor", "delta", "mdc")
 
 
-def expression_input(report: dict, notes: list[dict], history, profile_name: str | None, view: str) -> dict:
+def expression_input(report: dict, notes: list[dict], history, profile_name: str | None, view: str,
+                     *, baseline: dict, question: str) -> dict:
     key = WindowKey.parse(report["granularity"], report["window_key"])
     identifiers = (profile_name, report["athlete"]["id"], key.session_id)
 
@@ -56,8 +57,6 @@ def expression_input(report: dict, notes: list[dict], history, profile_name: str
         if metric in _METRIC_IDS:
             verdicts[metric] = {k: safe_text(v) if isinstance(v, str) else v
                                 for k in _VERDICT_FIELDS if (v := verdict.get(k)) is not None}
-    baseline = {k: v for k, v in extra.get("rolling_baseline", {}).items()
-                if k in ("n_shots", "avg_score") and type(v) in (int, float)}
     window_dates = {k: day for k in ("window_start", "window_end")
                     if _ISO_DAY.fullmatch(day := (report.get(k) or "")[:10])}
     facts = {"sections": sections, "metrics": metrics, "verdicts": verdicts,
@@ -99,7 +98,7 @@ def expression_input(report: dict, notes: list[dict], history, profile_name: str
         "version": hashlib.sha256(skeleton.encode("utf-8")).hexdigest()[:12],
         "numbers": extract_numbers("\n".join(_values(number_values))),
         "judgement_lines": [line for section in sections for line in section["content"]],
-        "strict_expression": True,
+        "model_question": safe_text(question),
         "report_id": report["report_id"],
         "rule_guidance": guide,
         "rule_pack": pack,

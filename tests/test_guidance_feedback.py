@@ -6,7 +6,7 @@ import pytest
 from app.api import guidance
 from app.llm.client import MockLLMClient
 from app.store.database import Database, get_database
-from tests.test_desktop_ingest import URL as INGEST, _snapshot
+from tests.test_desktop_ingest import URL as INGEST, _shot, _snapshot
 from tests.test_guidance_interpret import _interpret, _json, report_case
 from tests.test_guidance_stream import use_mock
 from tests.test_rule_packs import _draft
@@ -42,9 +42,13 @@ def _summary(case, **params):
     return _json(case[0].get(SUMMARY, headers=ADMIN, params=params))
 
 
-def _second_report(case, suffix):
+def _second_report(case, day):
     client, base, *_ = case
-    receipt = _json(client.post(INGEST, json=_snapshot(session_key=f"feedback-{suffix}")))
+    # Keep the original calendar report valid while exercising independent report rounds.
+    snapshot = _snapshot(session_key=f"feedback-{day}", start=f"{day}T10:00:00",
+                         shots=[_shot(i, ts=f"{day}T10:{i:02d}:00") for i in range(1, 7)])
+    snapshot["session"]["endedAt"] = f"{day}T11:00:00"
+    receipt = _json(client.post(INGEST, json=snapshot))
     return _json(client.post(f"{base}/reports/daily", params={"session_id": receipt["sessionId"]}))
 
 
@@ -94,8 +98,8 @@ def test_invalid_feedback(case, field, value, status):
 
 def test_summary_distinguishes_hits_ratings_and_two_distinct_low_rounds(case):
     first = case[2]
-    second = _second_report(case, "second")
-    third = _second_report(case, "third")
+    second = _second_report(case, "2026-11-20")
+    third = _second_report(case, "2026-11-21")
     rule = next(b["source"] for b in first["rule_guidance"]["bullets"] if b["source"] != "caveat_sample")
     assert case[0].get(SUMMARY).status_code == 401
     before = _summary(case)
@@ -162,7 +166,7 @@ def test_low_rounds_are_not_combined_across_rule_pack_versions(case):
     _json(client.put(f"/api/v1/rule-packs/{version}", json=_draft(client), headers=ADMIN))
     _json(client.post(f"/api/v1/rule-packs/{version}/publish",
                       json={"actor_id": "fixture-admin"}, headers=ADMIN))
-    new_report = _second_report(case, "new-version")
+    new_report = _second_report(case, "2026-11-20")
     for report in (old_report, new_report):
         _json(_submit(case, _body(report, rating=2)))
     summary = _summary(case)

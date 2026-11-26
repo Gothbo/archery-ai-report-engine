@@ -101,6 +101,67 @@ class TestAskMockOn:
         assert body["sources"]
         assert body["window_key"] == "2026-W33"
 
+    def test_drops_answer_when_its_report_is_invalidated_during_model_call(self, mclient, monkeypatch):
+        import app.api.ask as askmod
+        from tests.test_desktop_ingest import URL, _calendar_report, _snapshot
+
+        imported = mclient.post(URL, json=_snapshot()).json()
+        athlete = f"/api/v1/athletes/{imported['athleteId']}"
+        report = _calendar_report(mclient, athlete, "2026-11-19", imported["sessionId"])
+
+        class Model:
+            def chat(self, _messages):
+                assert mclient.post(f"{athlete}/sessions/{imported['sessionId']}/exclude", json={}).status_code == 200
+                return "本场有记录。"
+
+        monkeypatch.setattr(askmod, "get_llm_client", lambda _cfg: Model())
+        response = mclient.post(f"{athlete}/ask", json={
+            "question": "表现如何？", "view": "coach", "granularity": "daily",
+            "window_key": report["window_key"], "report_id": report["report_id"],
+        })
+
+        assert response.status_code == 400
+        assert "sources" not in response.json()
+
+    def test_drops_answer_when_a_cited_note_is_closed_during_model_call(self, mclient, monkeypatch):
+        import app.api.ask as askmod
+        from app.memory.notes import close_note
+
+        _ingest_and_report(mclient)
+        db = get_database()
+        note_id = add_note(db, ATHLETE, "goal", "肩部发力目标", "athlete", ATHLETE)
+
+        class Model:
+            def chat(self, messages):
+                prompt = messages[0]["content"]
+                notes = json.loads(prompt.split("skeleton_json: ", 1)[1])["notes"]
+                assert any(note["ref"] == f"note:{note_id}" for note in notes)
+                assert "肩部发力目标" not in prompt
+                assert close_note(db, ATHLETE, note_id) is True
+                return "本期报告包含目标备注。"
+
+        monkeypatch.setattr(askmod, "get_llm_client", lambda _cfg: Model())
+        response = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask", json={"question": "目标是什么？", "view": "coach"})
+
+        assert response.status_code == 400
+        assert "肩部发力目标" not in response.text
+
+    def test_model_does_not_receive_structured_athlete_identity(self, mclient, monkeypatch):
+        import app.api.ask as askmod
+
+        _ingest_and_report(mclient)
+
+        class Model:
+            def chat(self, messages):
+                skeleton = json.loads(messages[0]["content"].split("skeleton_json: ", 1)[1])
+                assert "athlete" not in skeleton
+                return "本期有训练记录。"
+
+        monkeypatch.setattr(askmod, "get_llm_client", lambda _cfg: Model())
+        response = mclient.post(f"/api/v1/athletes/{ATHLETE}/ask", json={"question": "训练表现如何？", "view": "coach"})
+
+        assert response.status_code == 200
+
     def test_mock_wording_matches_granularity(self, mclient):
         """真引擎联调 #3：mock 应答器的日报回答不能写「本周平均环」。"""
         _ingest_and_report(mclient)

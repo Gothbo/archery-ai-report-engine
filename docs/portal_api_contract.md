@@ -190,7 +190,7 @@
 | 场景 | 以前 | 现在 |
 |---|---|---|
 | 生成接口命中缓存 | 只返回 `{report_id, cached:true}` | 返回已存正文 + `cached:true`。本 PR 之前生成的旧缓存行（没有正文）按未命中处理：重新计算并补存正文，返回完整正文 + `cached:false`；**`report_id` 不变**，缓存行 `generated_at_utc` 更新为补存时间（与正文一致），该报告已有的历史结论不删、不重写、不重复写。`refresh=1` 不同：换新 `report_id`，清掉同窗口旧报告及其历史结论后重写 |
-| `/ask`、`/guidance/stream` | 每次都强制重算报告，`report_id` 失效、历史结论被重写 | 有已存正文就直接用（`report_id`、生成时间、`context_version` 保持不变）；没有才生成（旧缓存行没有正文时同上补存，不换 `report_id`） |
+| `/ask`、`/guidance/stream` | 读取时可能触发报告生成 | 只读取已存正文。可传 `report_id` 绑定已打开的快照。指定窗口未保存正文时返回 404，请先打开或生成报告。显式传入的问答快照失效时沿用 400。 |
 | 生成接口 `view=athlete` | 也返回 `coach_extra` | 不返回 `coach_extra` |
 | 日报不存在的 `session_id` | 生成 0 箭空报告并写缓存 | 404 `SESSION-NOT-FOUND`，不写缓存（场次属于别的运动员同样 404） |
 | 跨站页面发来的写请求 | 照常执行 | 403 `CROSS-SITE-BLOCKED`（§7） |
