@@ -154,6 +154,53 @@ def test_unrecognized_report_body_is_rejected(engine_env):
     assert response.status_code == 422, response.text
 
 
+def test_portal_window_report_does_not_share_desktop_snapshot_cache(engine_env):
+    from tests.conftest import seed_session
+
+    client = _client(engine_env)
+    a = _ingest(client, "session-a", "2026-11-19T10:00:00", DAY_A)
+    athlete = a["athleteId"]
+    # 非桌面来源的同周场次：门户窗口报告应包含它，桌面快照报告不应包含。
+    seed_session(_db(), athlete, "imported-session", "2026-11-17T02:00:00.000Z", [9] * 6)
+    endpoint = f"/api/v1/athletes/{athlete}/reports/weekly"
+    week = _week_key()
+    snapshot = _snapshot_body(athlete, [(a["sessionId"], a["revision"])])
+
+    desktop = client.post(endpoint, params={"week": week}, json=snapshot)
+    assert desktop.status_code == 200, desktop.text
+    assert desktop.json()["metrics"]["n_shots"] == 6
+
+    portal = client.post(endpoint, params={"week": week})
+    assert portal.status_code == 200, portal.text
+    assert portal.json()["metrics"]["n_shots"] == 12
+
+    again = client.post(endpoint, params={"week": week}, json=snapshot)
+    assert again.status_code == 200, again.text
+    assert again.json()["cached"] is True
+    assert again.json()["metrics"]["n_shots"] == 6
+
+
+def test_snapshot_window_uses_first_scoring_shot(engine_env):
+    client = _client(engine_env)
+    # 首箭是试射且落在前一周，首支记分箭落在 2026-W47 周一。
+    body = _snapshot("trial-boundary", start="2026-11-15T23:58:00", shots=[
+        _shot(1, ts="2026-11-15T23:59:00", trial=True, score=8),
+        *[_shot(i, ts=f"2026-11-16T00:0{i}:00", score=9) for i in range(1, 7)],
+    ])
+    ingested = client.post(DESKTOP_URL, json=body)
+    assert ingested.status_code == 200, ingested.text
+    receipt = ingested.json()
+
+    response = client.post(
+        f"/api/v1/athletes/{receipt['athleteId']}/reports/weekly",
+        params={"week": "2026-W47"},
+        json=_snapshot_body(receipt["athleteId"], [(receipt["sessionId"], receipt["revision"])],
+                            window_key="2026-W47"))
+
+    assert response.status_code == 200, response.text
+    assert response.json()["metrics"]["n_shots"] == 6
+
+
 def _fail_second_arrow(client):
     db = _db()
     with db.lock, db.conn:

@@ -38,30 +38,34 @@ class WindowSnapshotRequest(BaseModel):
     rule_pack_version: str | None = None
 
 
+class ReportRequestBody(BaseModel):
+    """兼容两种顶层请求体：按日汇总与周期覆盖契约。"""
+
+    day: date | None = None
+    session_ids: list[str] | None = None
+    window_snapshot: WindowSnapshotRequest | None = None
+
+
 @router.post("/athletes/{athlete_id}/reports/{granularity}")
 def generate(athlete_id: str, granularity: str,
              session_id: str | None = None,
              week: str | None = None, month: str | None = None,
              quarter: str | None = None, year: str | None = None,
              view: str = Query(default="athlete", pattern="^(athlete|coach)$"),
-             refresh: bool = False, payload: dict | None = Body(default=None)):
+             refresh: bool = False, payload: ReportRequestBody | None = Body(default=None)):
     if granularity not in GRANULARITIES:
         raise HTTPException(status_code=400, detail=f"granularity 必须为 {GRANULARITIES}")
-    # 兼容两种顶层请求体：桌面按日汇总 {day, session_ids}；周期覆盖契约 {window_snapshot: {...}}。
     desktop_day: DesktopDayRequest | None = None
     window_snapshot: WindowSnapshotRequest | None = None
-    try:
-        if payload is not None:
-            if not isinstance(payload, dict):
-                raise HTTPException(status_code=422, detail="请求体必须是 JSON 对象")
-            if "day" in payload or "session_ids" in payload:
-                desktop_day = DesktopDayRequest.model_validate(payload)
-            if "window_snapshot" in payload:
-                window_snapshot = WindowSnapshotRequest.model_validate(payload["window_snapshot"])
-            if desktop_day is None and window_snapshot is None and payload:
-                raise HTTPException(status_code=422, detail="无法识别的请求体字段")
-    except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    if payload is not None:
+        try:
+            if payload.day is not None or payload.session_ids is not None:
+                desktop_day = DesktopDayRequest(day=payload.day, session_ids=payload.session_ids or [])
+        except ValidationError as exc:
+            raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        window_snapshot = payload.window_snapshot
+        if desktop_day is None and window_snapshot is None:
+            raise HTTPException(status_code=422, detail="请求体不能为空")
     if desktop_day is not None and window_snapshot is not None:
         raise HTTPException(status_code=400, detail="按日汇总与窗口快照不能同时使用")
     try:

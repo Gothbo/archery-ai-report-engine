@@ -343,16 +343,26 @@ class Database:
             )) + "\n").encode("utf-8"))
         return digest.hexdigest()
 
+    def first_scoring_shot_time(self, session_id: str) -> str | None:
+        """场次首支记分箭时间（窗口归属口径，与桌面一致；试射不计入）。"""
+        rows = self._query(
+            "SELECT MIN(shot_time_utc) AS t FROM shot_fact WHERE session_id=? AND shooting_mode=1",
+            (session_id,))
+        return rows[0]["t"] if rows else None
+
     def desktop_sessions_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
         """窗口内（按场次首支计分箭时间）未被排除的桌面场次，用于覆盖核对。"""
         return self._query(
             """SELECT s.* FROM session_dim s
+               JOIN (SELECT session_id, MIN(shot_time_utc) AS first_scoring_utc
+                     FROM shot_fact WHERE shooting_mode=1 GROUP BY session_id) f
+                 ON f.session_id=s.session_id
                WHERE s.athlete_id=? AND s.site='desktop'
-                 AND s.session_time_utc>=? AND s.session_time_utc<?
+                 AND f.first_scoring_utc>=? AND f.first_scoring_utc<?
                  AND NOT EXISTS (SELECT 1 FROM session_lifecycle l
                      WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id
                        AND l.excluded_at_utc IS NOT NULL)
-               ORDER BY s.session_time_utc""",
+               ORDER BY f.first_scoring_utc""",
             (athlete_id, start_iso, end_iso))
 
 

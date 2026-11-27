@@ -218,7 +218,8 @@ def _prepare_snapshot(db: Database, athlete_id: str, granularity: str, window_ke
             raise SnapshotCoverage(f"场次 {session_id} 不存在或不属于该运动员的桌面归档")
         if db.is_session_excluded(athlete_id, session_id):
             raise SnapshotCoverage(f"场次 {session_id} 已排除")
-        if not (start_iso <= (session["session_time_utc"] or "") < end_iso):
+        first_scoring = db.first_scoring_shot_time(session_id)
+        if not first_scoring or not (start_iso <= first_scoring < end_iso):
             raise SnapshotCoverage(f"场次 {session_id} 不在所选窗口内")
         current = db.session_revision(session_id)
         if item.get("revision") != current:
@@ -386,10 +387,14 @@ def _comparability(db: Database, shots: list[dict], ref: dict) -> bool:
     return True
 
 
-def _report_cache_version(cfg: EngineConfig) -> str:
-    """分隔报告口径与规则包版本的缓存，旧报告仍可通过 ID 读取。"""
+def _report_cache_version(cfg: EngineConfig, *, desktop_snapshot: bool = False) -> str:
+    """分隔报告口径与规则包版本的缓存，旧报告仍可通过 ID 读取。
+
+    桌面快照报告使用独立缓存命名空间，避免与门户/其他接入方的窗口报告互相覆盖。
+    """
     base = f"mdc={cfg.mdc_source or 'empty'};caliber={cfg.report_caliber_version}"
-    return f"{base};rule_pack={cfg.rule_pack_version}" if cfg.rule_pack_version else base
+    version = f"{base};rule_pack={cfg.rule_pack_version}" if cfg.rule_pack_version else base
+    return f"{version};desktop_snapshot" if desktop_snapshot else version
 
 
 def _resolve_report_rules(db: Database) -> tuple[EngineConfig, dict | None]:
@@ -469,6 +474,7 @@ def _generate_report(db: Database, athlete_id: str, granularity: str, window_key
             raise ValueError("窗口快照只用于周期报告")
         snapshot_meta, snapshot_shots = _prepare_snapshot(
             db, athlete_id, granularity, window_key, window_snapshot, cfg)
+        cache_version = _report_cache_version(cfg, desktop_snapshot=True)
 
     cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cache_version)
@@ -903,7 +909,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                     "comparison_note": "不同规则包版本的判定不可直接比较。"}
         report["rule_pack"] = metadata
         rule_guidance["rule_pack"] = metadata
-    return ReportDraft(report=report, conclusions=conclusions, cache_version=_report_cache_version(cfg))
+    return ReportDraft(report=report, conclusions=conclusions,
+                       cache_version=_report_cache_version(
+                           cfg, desktop_snapshot=window_snapshot is not None))
 
 
 def persist_report(db: Database, draft: ReportDraft) -> None:
