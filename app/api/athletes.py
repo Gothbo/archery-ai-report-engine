@@ -124,5 +124,8 @@ def create_anchor(athlete_id: str, body: AnchorCreate) -> dict:
         snap = create_anchor_snapshot(db, athlete_id, body.bow_type, body.source_session_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    snap_id = db.insert_baseline_snapshot(snap)
+    # 锚点是全局参照系：写入与旧报告失效同一事务，避免出现「新锚点 + 旧报告」。
+    with db.write_transaction():
+        snap_id = db.insert_baseline_snapshot(snap)
+        db.invalidate_athlete_reports(athlete_id)
     return {"status": "ok", "snapshot_id": snap_id, "snapshot": snap}

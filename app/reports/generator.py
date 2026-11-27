@@ -244,12 +244,32 @@ def _prepare_snapshot(db: Database, athlete_id: str, granularity: str, window_ke
         shots.extend(dict(row) for row in rows)
     shots.sort(key=lambda shot: shot["shot_time_utc"])
 
+    # 窗口外依赖：锚点与滚动基线变化也要让报告快照失效（Q1-Q4 口径）。
+    primary_bow, _ = _primary_bow(shots)
+    anchor = db.latest_snapshot(athlete_id, "anchor", primary_bow) if primary_bow else None
+    rolling = None
+    if primary_bow:
+        rolling_rows = [dict(row) for row in db.recent_scoring_shots_before(
+            athlete_id, primary_bow, start_iso, cfg.rolling_window_shots)]
+        if rolling_rows:
+            vector = metric_vector(rolling_rows)
+            rolling = {
+                "n_shots": len(rolling_rows),
+                "avg_score": round(vector.avg_score, 6) if vector.avg_score is not None else None,
+                "collected_at_utc": rolling_rows[0]["shot_time_utc"],
+            }
+    dependencies = {
+        "anchor_snapshot_id": anchor["id"] if anchor else None,
+        "rolling_baseline": rolling,
+    }
+
     meta = {
         "athlete_id": athlete_id,
         "granularity": granularity,
         "window_key": window_key,
         "sessions": [{"session_id": sid, "revision": supplied[sid]} for sid in sorted(supplied)],
         "rule_pack_version": expected_version,
+        "dependencies": dependencies,
     }
     canonical = json.dumps(meta, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     meta["snapshot_id"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()

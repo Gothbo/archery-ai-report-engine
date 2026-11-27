@@ -201,6 +201,76 @@ def test_snapshot_window_uses_first_scoring_shot(engine_env):
     assert response.json()["metrics"]["n_shots"] == 6
 
 
+def test_anchor_creation_invalidates_cached_reports(engine_env):
+    from tests.conftest import seed_session
+
+    client = _client(engine_env)
+    a = _ingest(client, "session-a", "2026-11-19T10:00:00", DAY_A)
+    athlete = a["athleteId"]
+    seed_session(_db(), athlete, "anchor-source", "2026-10-01T02:00:00.000Z", [9] * 6)
+    report = client.post(f"/api/v1/athletes/{athlete}/reports/weekly",
+                         params={"week": _week_key()}).json()
+    assert report["report_id"]
+    assert client.get(f"/api/v1/reports/{report['report_id']}/content").status_code == 200
+
+    created = client.post(f"/api/v1/athletes/{athlete}/baseline/anchor",
+                          json={"bow_type": "反曲弓", "source_session_id": "anchor-source"})
+    assert created.status_code == 200, created.text
+
+    # 锚点是全局参照系：建/重建后旧报告不得继续用于查看或问答。
+    assert client.get(f"/api/v1/reports/{report['report_id']}/content").status_code == 404
+    assert client.get(f"/api/v1/athletes/{athlete}/reports").json()["reports"] == []
+
+
+def test_snapshot_regenerates_when_anchor_dependency_changes(engine_env):
+    from tests.conftest import seed_anchor, seed_session
+
+    client = _client(engine_env)
+    a = _ingest(client, "session-a", "2026-11-19T10:00:00", DAY_A)
+    athlete = a["athleteId"]
+    seed_session(_db(), athlete, "anchor-source", "2026-10-01T02:00:00.000Z", [9] * 6)
+    endpoint = f"/api/v1/athletes/{athlete}/reports/weekly"
+    snapshot = _snapshot_body(athlete, [(a["sessionId"], a["revision"])])
+
+    first = client.post(endpoint, params={"week": _week_key()}, json=snapshot)
+    assert first.status_code == 200, first.text
+    assert first.json()["cached"] is False
+    assert first.json()["window_snapshot"]["dependencies"]["anchor_snapshot_id"] is None
+
+    # 绕过 API 直接写锚点：不触发全量失效，验证快照依赖校验本身能让缓存过期。
+    seed_anchor(_db(), athlete, "anchor-source")
+
+    second = client.post(endpoint, params={"week": _week_key()}, json=snapshot)
+    assert second.status_code == 200, second.text
+    assert second.json()["cached"] is False
+    assert second.json()["report_id"] != first.json()["report_id"]
+    assert second.json()["window_snapshot"]["dependencies"]["anchor_snapshot_id"] is not None
+
+
+def test_snapshot_regenerates_when_rolling_baseline_changes(engine_env):
+    from tests.conftest import seed_session
+
+    client = _client(engine_env)
+    a = _ingest(client, "session-a", "2026-11-19T10:00:00", DAY_A)
+    athlete = a["athleteId"]
+    endpoint = f"/api/v1/athletes/{athlete}/reports/weekly"
+    snapshot = _snapshot_body(athlete, [(a["sessionId"], a["revision"])])
+
+    first = client.post(endpoint, params={"week": _week_key()}, json=snapshot)
+    assert first.status_code == 200, first.text
+    assert first.json()["window_snapshot"]["dependencies"]["rolling_baseline"] is None
+
+    # 直接写入窗口前的记分场次：不触发失效，验证滚动基线指纹变化会让缓存过期。
+    seed_session(_db(), athlete, "prior-session", "2026-11-10T02:00:00.000Z", [9] * 6)
+
+    second = client.post(endpoint, params={"week": _week_key()}, json=snapshot)
+    assert second.status_code == 200, second.text
+    assert second.json()["cached"] is False
+    rolling = second.json()["window_snapshot"]["dependencies"]["rolling_baseline"]
+    assert rolling["n_shots"] == 6
+    assert rolling["avg_score"] == 9
+
+
 def _fail_second_arrow(client):
     db = _db()
     with db.lock, db.conn:

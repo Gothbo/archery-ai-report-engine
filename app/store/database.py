@@ -1002,6 +1002,11 @@ class Database:
             args)
         self._conn.execute(f"DELETE FROM report_cache WHERE {where}", args)
 
+    def invalidate_athlete_reports(self, athlete_id: str) -> None:
+        """失效该运动员全部缓存报告（锚点建立/重建后参照系统变化，旧报告不再可信）。"""
+        with self.write_transaction():
+            self._delete_athlete_reports(athlete_id)
+
     def _delete_athlete_reports(self, athlete_id: str) -> None:
         self._conn.execute("DELETE FROM report_memories WHERE athlete_id=?", (athlete_id,))
         self._conn.execute("DELETE FROM report_cache WHERE athlete_id=?", (athlete_id,))
