@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import uuid
 from dataclasses import dataclass
@@ -68,6 +69,14 @@ class SessionNotFound(ValueError):
 
 class SessionExcluded(ValueError):
     """日报明确引用了已排除场次。"""
+
+
+class SnapshotCoverage(ValueError):
+    """桌面提交的窗口场次集合与引擎覆盖不一致（多一场/少一场/不在窗口/已排除）。"""
+
+
+class SnapshotMismatch(ValueError):
+    """快照标识不符：场次内容修订或规则包版本已变化。"""
 
 
 def _check_session(db: Database, athlete_id: str, session_id: str | None) -> None:
@@ -182,6 +191,68 @@ def _shots_in_window(db: Database, athlete_id: str, granularity: str, window_key
     start_iso, end_iso = window_bounds(get_config(), granularity, window_key)
     rows = db.shots_in_window(athlete_id, start_iso, end_iso)
     return [dict(r) for r in rows]
+
+
+def _prepare_snapshot(db: Database, athlete_id: str, granularity: str, window_key: str,
+                      snapshot: dict, cfg: EngineConfig) -> tuple[dict, list[dict]]:
+    """校验桌面覆盖契约并返回 (可追溯快照元数据, 快照场次箭集)。
+
+    口径：场次归属窗口按「首支计分箭时间」判定，跨窗场次整场计入；只计记分箭。
+    """
+    if snapshot.get("athlete_id") != athlete_id:
+        raise SnapshotMismatch("快照运动员与请求不一致")
+    if snapshot.get("granularity") != granularity or snapshot.get("window_key") != window_key:
+        raise SnapshotMismatch("快照窗口与请求不一致")
+    expected_version = getattr(cfg, "rule_pack_version", None)
+    if snapshot.get("rule_pack_version") and snapshot["rule_pack_version"] != expected_version:
+        raise SnapshotMismatch("规则包版本已变化，请重新打开报告")
+
+    start_iso, end_iso = window_bounds(get_config(), granularity, window_key)
+    supplied: dict[str, str] = {}
+    for item in snapshot.get("sessions") or []:
+        session_id = item.get("session_id")
+        if not session_id or session_id in supplied:
+            raise SnapshotCoverage("快照场次重复或为空")
+        session = db.session_of(session_id)
+        if not session or session["athlete_id"] != athlete_id or session["site"] != "desktop":
+            raise SnapshotCoverage(f"场次 {session_id} 不存在或不属于该运动员的桌面归档")
+        if db.is_session_excluded(athlete_id, session_id):
+            raise SnapshotCoverage(f"场次 {session_id} 已排除")
+        if not (start_iso <= (session["session_time_utc"] or "") < end_iso):
+            raise SnapshotCoverage(f"场次 {session_id} 不在所选窗口内")
+        current = db.session_revision(session_id)
+        if item.get("revision") != current:
+            raise SnapshotMismatch(f"场次 {session_id} 内容已变化，请重新核对")
+        supplied[session_id] = current
+
+    expected = {row["session_id"] for row in
+                db.desktop_sessions_in_window(athlete_id, start_iso, end_iso)}
+    if expected != set(supplied):
+        missing = expected - set(supplied)
+        extra = set(supplied) - expected
+        detail = []
+        if missing:
+            detail.append(f"引擎多出 {len(missing)} 场未纳入快照")
+        if extra:
+            detail.append(f"快照含 {len(extra)} 场不在引擎覆盖范围")
+        raise SnapshotCoverage("窗口覆盖不足：" + "；".join(detail))
+
+    shots: list[dict] = []
+    for session_id in sorted(supplied):
+        rows = db.scoring_shots_of_session(session_id)
+        shots.extend(dict(row) for row in rows)
+    shots.sort(key=lambda shot: shot["shot_time_utc"])
+
+    meta = {
+        "athlete_id": athlete_id,
+        "granularity": granularity,
+        "window_key": window_key,
+        "sessions": [{"session_id": sid, "revision": supplied[sid]} for sid in sorted(supplied)],
+        "rule_pack_version": expected_version,
+    }
+    canonical = json.dumps(meta, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    meta["snapshot_id"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return meta, shots
 
 
 def _primary_bow(shots: list[dict]) -> tuple[str | None, list[tuple[str, int]]]:
@@ -357,20 +428,23 @@ def _body_for_storage(report: dict) -> dict:
 
 def generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
                     session_id: str | None = None, view: str = "athlete", force: bool = False,
-                    desktop_session_ids: list[str] | None = None) -> dict:
+                    desktop_session_ids: list[str] | None = None,
+                    window_snapshot: dict | None = None) -> dict:
     """生成（或读缓存）一份报告：缓存查找 → 清理旧窗口 → 组装 → 持久化。
 
     force=True 跳过缓存强制重生成（B10 支持 ?refresh=1）。
     命中且有已存正文 → 返回正文（按本次视角现取备注）；PR #4 之前旧行无正文则补存。
+    window_snapshot（周期报告）在生成事务内校验，并只按快照场次计算。
     """
     with db.write_transaction():
         return _generate_report(db, athlete_id, granularity, window_key, session_id,
-                                view, force, desktop_session_ids)
+                                view, force, desktop_session_ids, window_snapshot)
 
 
 def _generate_report(db: Database, athlete_id: str, granularity: str, window_key: str,
                      session_id: str | None, view: str, force: bool,
-                     desktop_session_ids: list[str] | None) -> dict:
+                     desktop_session_ids: list[str] | None,
+                     window_snapshot: dict | None = None) -> dict:
     policy = _resolve_report_rules(db)
     cfg, _ = policy
     R.validate_rules(cfg)
@@ -388,20 +462,34 @@ def _generate_report(db: Database, athlete_id: str, granularity: str, window_key
     if granularity == "daily":
         _check_session(db, athlete_id, session_id)
 
+    snapshot_meta: dict | None = None
+    snapshot_shots: list[dict] | None = None
+    if window_snapshot is not None:
+        if granularity == "daily":
+            raise ValueError("窗口快照只用于周期报告")
+        snapshot_meta, snapshot_shots = _prepare_snapshot(
+            db, athlete_id, granularity, window_key, window_snapshot, cfg)
+
     cached_row = None if force else db.get_cached_report_row(
         athlete_id, granularity, window_key, cache_version)
     backfill_id = None
     if cached_row and not force:
         if cached_row["report_json"]:
-            return render_for_view(db, json.loads(cached_row["report_json"]), view, cached=True)
-        backfill_id = cached_row["report_id"]
+            stored = json.loads(cached_row["report_json"])
+            stored_snapshot = (stored.get("window_snapshot") or {}).get("snapshot_id")
+            if snapshot_meta is None or stored_snapshot == snapshot_meta["snapshot_id"]:
+                return render_for_view(db, stored, view, cached=True)
+            cached_row = None  # 快照变化：按新快照重新生成
+        elif snapshot_meta is None:
+            backfill_id = cached_row["report_id"]
 
     if backfill_id is None:
         db.purge_report_window(athlete_id, granularity, window_key, cache_version)
 
     # 落库正文固定 coach 视角（含完整 coach_extra）；对外再按请求 view 现取备注并剔除运维字段
     draft = build_report(db, athlete_id, granularity, window_key, session_id, view="coach",
-                         report_id=backfill_id, _policy=policy)
+                         report_id=backfill_id, _policy=policy,
+                         window_snapshot=snapshot_meta, snapshot_shots=snapshot_shots)
     body = _body_for_storage(draft.report)
     if backfill_id is not None:
         db.fill_report_body(backfill_id, json.dumps(body, ensure_ascii=False),
@@ -433,7 +521,9 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
                  session_id: str | None = None, view: str = "athlete",
                  report_id: str | None = None,
                  desktop_session_ids: list[str] | None = None, *,
-                 _policy: tuple[EngineConfig, dict | None] | None = None) -> ReportDraft:
+                 _policy: tuple[EngineConfig, dict | None] | None = None,
+                 window_snapshot: dict | None = None,
+                 snapshot_shots: list[dict] | None = None) -> ReportDraft:
     """组装一份报告（纯读 + 计算）：读记忆/事实 → 指标 → 规则结论 → 结构化 JSON。
 
     不写库；结论与缓存由 persist_report 落库。
@@ -442,7 +532,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
     R.validate_rules(cfg)
     is_signed = pack is not None and pack["status"] == "signed"
 
-    shots = _shots_in_window(db, athlete_id, granularity, window_key, session_id, desktop_session_ids)
+    shots = (snapshot_shots if snapshot_shots is not None else
+             _shots_in_window(db, athlete_id, granularity, window_key, session_id, desktop_session_ids))
     # 主弓种聚合（ADR-0004）：指标只算主弓种箭，其余弓种在 data_integrity 标注不计入
     primary_bow, other_bows = _primary_bow(shots)
     if primary_bow is not None:
@@ -805,6 +896,8 @@ def build_report(db: Database, athlete_id: str, granularity: str, window_key: st
         "metrics": metrics_out,
         "conclusions": conclusions_out,
     }
+    if window_snapshot is not None:
+        report["window_snapshot"] = window_snapshot
     if pack:
         metadata = {**RP.pack_metadata(pack), "current_status": pack["status"],
                     "comparison_note": "不同规则包版本的判定不可直接比较。"}

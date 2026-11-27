@@ -179,6 +179,8 @@ def ingest_desktop_session(
         "distanceM": distance_m,
         "shotCount": len(raw_shots),
         "sessionTimeUtc": dim["session_time_utc"],
+        "revision": db.session_revision(session_id),
+        "dbInstanceId": db.db_instance_id,
         "warnings": warnings,
     }
 

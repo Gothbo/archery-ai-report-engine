@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from datetime import date
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Body, HTTPException, Query
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
-from app.reports.generator import (SessionExcluded, SessionNotFound, generate_report, load_stored_report, public_view,
-                                   render_for_view)
+from app.reports.generator import (SessionExcluded, SessionNotFound, SnapshotCoverage, SnapshotMismatch,
+                                   generate_report, load_stored_report, public_view, render_for_view)
 from app.reports.window import WindowKey
 from app.store.database import get_database
 
@@ -23,15 +23,47 @@ class DesktopDayRequest(BaseModel):
     session_ids: list[str] = Field(min_length=1)
 
 
+class SnapshotSession(BaseModel):
+    session_id: str
+    revision: str
+
+
+class WindowSnapshotRequest(BaseModel):
+    """桌面覆盖契约（周期报告）：绑定运动员、窗口、场次集合及场次修订。"""
+
+    athlete_id: str
+    granularity: str
+    window_key: str
+    sessions: list[SnapshotSession] = Field(min_length=1)
+    rule_pack_version: str | None = None
+
+
 @router.post("/athletes/{athlete_id}/reports/{granularity}")
 def generate(athlete_id: str, granularity: str,
              session_id: str | None = None,
              week: str | None = None, month: str | None = None,
              quarter: str | None = None, year: str | None = None,
              view: str = Query(default="athlete", pattern="^(athlete|coach)$"),
-             refresh: bool = False, desktop_day: DesktopDayRequest | None = None):
+             refresh: bool = False, payload: dict | None = Body(default=None)):
     if granularity not in GRANULARITIES:
         raise HTTPException(status_code=400, detail=f"granularity 必须为 {GRANULARITIES}")
+    # 兼容两种顶层请求体：桌面按日汇总 {day, session_ids}；周期覆盖契约 {window_snapshot: {...}}。
+    desktop_day: DesktopDayRequest | None = None
+    window_snapshot: WindowSnapshotRequest | None = None
+    try:
+        if payload is not None:
+            if not isinstance(payload, dict):
+                raise HTTPException(status_code=422, detail="请求体必须是 JSON 对象")
+            if "day" in payload or "session_ids" in payload:
+                desktop_day = DesktopDayRequest.model_validate(payload)
+            if "window_snapshot" in payload:
+                window_snapshot = WindowSnapshotRequest.model_validate(payload["window_snapshot"])
+            if desktop_day is None and window_snapshot is None and payload:
+                raise HTTPException(status_code=422, detail="无法识别的请求体字段")
+    except ValidationError as exc:
+        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+    if desktop_day is not None and window_snapshot is not None:
+        raise HTTPException(status_code=400, detail="按日汇总与窗口快照不能同时使用")
     try:
         if desktop_day is not None:
             if granularity != "daily" or session_id is not None:
@@ -42,11 +74,17 @@ def generate(athlete_id: str, granularity: str,
         report = generate_report(get_database(), athlete_id, granularity, window_key,
                                  session_id=session_id if granularity == "daily" else None,
                                  view=view, force=refresh,
-                                 desktop_session_ids=desktop_day.session_ids if desktop_day else None)
+                                 desktop_session_ids=desktop_day.session_ids if desktop_day else None,
+                                 window_snapshot=(window_snapshot.model_dump()
+                                                  if window_snapshot is not None else None))
     except SessionNotFound as exc:
         return session_not_found(exc)
     except SessionExcluded as exc:
         return JSONResponse(status_code=409, content={"code": "session_excluded", "detail": str(exc)})
+    except SnapshotCoverage as exc:
+        return JSONResponse(status_code=409, content={"code": "snapshot_coverage", "detail": str(exc)})
+    except SnapshotMismatch as exc:
+        return JSONResponse(status_code=409, content={"code": "snapshot_mismatch", "detail": str(exc)})
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return public_view(report, view)

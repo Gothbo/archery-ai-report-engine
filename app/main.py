@@ -64,6 +64,9 @@ async def lifespan(_: FastAPI):
     setup_logging(cfg.log_dir)
     db = get_database(cfg)
     logger.info("引擎启动 config_summary=%s db=%s", cfg.summary(), db.db_path)
+    # 上次进程中断在 v1.2 重建中途：待重建范围已持久化，启动后续跑。
+    from app.ingest.v12.receiver import resume_pending_rebuilds
+    resume_pending_rebuilds(db)
     yield
 
 
@@ -131,8 +134,9 @@ def health() -> dict:
         "config_version": cfg.config_version,
         "timezone": cfg.timezone,
         "db": db.db_path,
+        "db_instance_id": db.db_instance_id,
         "mdc_source": "empty" if cfg.mdc_source is None else cfg.mdc_source,
         "llm_enabled": cfg.llm.enabled,  # B1：对话增强开关状态（默认关闭，P1 报告链路零影响）
         "engine_version": ENGINE_VERSION,  # PR #4：取自 pyproject.toml；版本号规则待 PM 定
-        "desktop_report_contract": 2,  # v2 makes by-key exclusion durable even before ingest
+        "desktop_report_contract": 3,  # v3: 库实例标识 + 周期窗口快照覆盖契约
     }

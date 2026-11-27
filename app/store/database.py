@@ -6,10 +6,12 @@ M2：shot_fact/session_dim 读写；M2b：记忆表读写方法随后并入（pr
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import sqlite3
 import threading
+import uuid
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
@@ -54,6 +56,7 @@ class Database:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA_DDL)
+        self._instance_id = self._load_instance_id()
         self._migrate_columns()
         self._migrate_memory_closure()
         self._migrate_portal_p0()
@@ -77,6 +80,23 @@ class Database:
     def conn(self) -> sqlite3.Connection:
         """原始连接：调用方必须在 `with db.lock:` 内使用（含事务全程）。"""
         return self._conn
+
+    @property
+    def db_instance_id(self) -> str:
+        """持久化的库实例标识：首次建库生成，重启沿用；换库后必然不同。"""
+        return self._instance_id
+
+    def _load_instance_id(self) -> str:
+        row = self._conn.execute("SELECT value FROM store_meta WHERE key='db_instance_id'").fetchone()
+        if row and row[0]:
+            return row[0]
+        value = uuid.uuid4().hex
+        self._conn.execute(
+            "INSERT INTO store_meta(key, value) VALUES('db_instance_id', ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value", (value,))
+        self._conn.commit()
+        logger.info("生成库实例标识 db_instance_id=%s", value)
+        return value
 
     # ---- 列级迁移（CREATE TABLE IF NOT EXISTS 不补列；对已存在库幂等补列）----
 
@@ -297,6 +317,44 @@ class Database:
             "SELECT s.*, (l.excluded_at_utc IS NOT NULL) AS excluded, l.excluded_at_utc "
             "FROM session_dim s LEFT JOIN session_lifecycle l USING (athlete_id, session_id) "
             "WHERE s.athlete_id=? ORDER BY s.session_time_utc", (athlete_id,))
+
+    def session_revision(self, session_id: str) -> str:
+        """场次内容修订：对库内该场全部箭做确定性哈希（仅引擎计算，桌面回执原样保存）。"""
+        digest = hashlib.sha256()
+        dim = self.session_of(session_id)
+        if dim is not None:
+            digest.update(f"dim|{dim['distance_m']}|{dim['mode_composition'] or ''}\n".encode("utf-8"))
+        rows = self._query(
+            "SELECT * FROM shot_fact WHERE session_id=? ORDER BY shot_seq", (session_id,))
+        for row in rows:
+            digest.update(("|".join((
+                str(row["shot_seq"]),
+                f"{float(row['score']):.3f}",
+                "1" if row["hit"] else "0",
+                "" if row["x_mm"] is None else f"{float(row['x_mm']):.3f}",
+                "" if row["y_mm"] is None else f"{float(row['y_mm']):.3f}",
+                str(row["shooting_mode"]),
+                row["bow_type"] or "",
+                row["shot_time_utc"] or "",
+                "" if row["mcr_t"] is None else f"{float(row['mcr_t']):.4f}",
+                "" if row["hr"] is None else f"{float(row['hr']):.3f}",
+                "" if row["wind_speed"] is None else f"{float(row['wind_speed']):.3f}",
+                "" if row["wind_dir_deg"] is None else f"{float(row['wind_dir_deg']):.3f}",
+            )) + "\n").encode("utf-8"))
+        return digest.hexdigest()
+
+    def desktop_sessions_in_window(self, athlete_id: str, start_iso: str, end_iso: str) -> list[sqlite3.Row]:
+        """窗口内（按场次首支计分箭时间）未被排除的桌面场次，用于覆盖核对。"""
+        return self._query(
+            """SELECT s.* FROM session_dim s
+               WHERE s.athlete_id=? AND s.site='desktop'
+                 AND s.session_time_utc>=? AND s.session_time_utc<?
+                 AND NOT EXISTS (SELECT 1 FROM session_lifecycle l
+                     WHERE l.athlete_id=s.athlete_id AND l.session_id=s.session_id
+                       AND l.excluded_at_utc IS NOT NULL)
+               ORDER BY s.session_time_utc""",
+            (athlete_id, start_iso, end_iso))
+
 
     def session_lifecycle(self, athlete_id: str, session_id: str) -> sqlite3.Row | None:
         rows = self._query("SELECT * FROM session_lifecycle WHERE athlete_id=? AND session_id=?",
@@ -785,6 +843,11 @@ class Database:
                WHERE athlete_id=? AND session_id=? AND shooting_mode=1 ORDER BY shot_seq LIMIT 1""",
             (athlete_id, session_id)).fetchone()
         return row["shot_time_utc"] if row else ""
+
+    def invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
+        """失效该场次影响的日/周/月/季/年报告（含比较窗口与锚点依赖），供导入重建复用。"""
+        with self.write_transaction():
+            self._invalidate_session_reports(athlete_id, session_id)
 
     def _invalidate_session_reports(self, athlete_id: str, session_id: str) -> None:
         """Called inside the lifecycle transaction, with db.lock held."""

@@ -15,7 +15,7 @@ from tests.test_guidance_stream import parse_sse
 
 
 def test_engine_advertises_the_desktop_contract(report_case):
-    assert _json(report_case[0].get("/api/v1/health"))["desktop_report_contract"] == 2
+    assert _json(report_case[0].get("/api/v1/health"))["desktop_report_contract"] == 3
 
 
 @pytest.mark.parametrize(("endpoint", "module"), [("ask", ask), ("guidance/stream", guidance)])

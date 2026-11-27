@@ -290,6 +290,20 @@ CREATE TABLE IF NOT EXISTS v12_trajectory (
     points_json          TEXT
 );
 
+-- 库实例标识：换库后桌面可据此识别并重新对账（重启沿用，新建库重新生成）
+CREATE TABLE IF NOT EXISTS store_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+
+-- v1.2 待重建范围：与原始消息/去重记录同一事务落库；重建失败或重启后继续处理
+CREATE TABLE IF NOT EXISTS v12_pending_rebuild (
+    athlete_id     TEXT NOT NULL,
+    local_date     TEXT NOT NULL,
+    created_at_utc TEXT NOT NULL,
+    PRIMARY KEY (athlete_id, local_date)
+);
+
 -- dt5 拉力 / dt6 撒放时序：本期只校验 + 存原文（开发授权 PM 侧 mock 格式），不参与计算
 CREATE TABLE IF NOT EXISTS v12_raw_message (
     message_id       TEXT PRIMARY KEY,

@@ -34,6 +34,7 @@ from app.ingest.align import align_session
 from app.ingest.base import SessionRaw, ShotRaw
 from app.ingest.v12.mapping import dt2_warnings, map_dt2, map_sample, utc_ms_str
 from app.ingest.v12.validate import parse_utc_z, validate_message
+from app.memory.baseline import refresh_rolling_after_import
 from app.store.database import Database
 
 logger = logging.getLogger("engine.ingest.v12")
@@ -83,24 +84,26 @@ def _process_one(db: Database, msg: Any, affected: set) -> dict:
         return {**res, "status": "invalid", "reason": "结构非法（schema/文档硬约束）", "errors": errors}
 
     conn = db.conn
+    data = msg.get("data") if isinstance(msg, dict) else None
+    now = _now_utc()
     seen = conn.execute("SELECT payload_sha256 FROM ingest_messages WHERE message_id=?", (mid,)).fetchone()
     if seen:
         out = {**res, "status": "duplicate", "reason": "messageId 已受理（§4.3：仅处理一次，不覆盖）"}
         if seen[0] != _sha256(msg):
             out["payload_differs"] = True  # 同 messageId 内容不同：按文档丢弃，但提示发送端
             logger.warning("v1.2 重复 messageId 内容不同（已丢弃）messageId=%s", mid)
+        # 上次重建失败时，数据行已提交、待重建范围也在同一事务里落库；重发要续跑重建。
+        _resume_from_duplicate(conn, dt, data or {}, affected)
         return out
 
     if dt not in IN_PHASE and dt not in RAW_ONLY:
         return {**res, "status": "unsupported",
                 "reason": f"dataType={dt} 不在本期范围（本期 dt 1/2/3/4/7，dt 5/6 只存原文）；未落库，支持后可原样重发"}
 
-    data = msg["data"]
     if dt == 2 and not data.get("athleteId"):
         return {**res, "status": "unsupported",
                 "reason": "dt2 缺 athleteId：引擎不做 lane+排班补填（确认点 #17），无法归属运动员；"
                           "未落库、不占用 messageId，补齐 athleteId 后可原样重发"}
-    now = _now_utc()
     try:
         with conn:  # 单条消息原子：数据行 + messageId 同时提交
             outcome = _dispatch(conn, mid, dt, data, now, affected)
@@ -116,6 +119,35 @@ def _process_one(db: Database, msg: Any, affected: set) -> dict:
     return {**res, "status": "accepted", **outcome}
 
 
+def _record_pending(conn, athlete_id: str, local_date: str, now: str) -> None:
+    """把待重建范围写进当前消息事务：数据/去重记录与待重建范围一并提交。"""
+    conn.execute(
+        "INSERT OR IGNORE INTO v12_pending_rebuild (athlete_id, local_date, created_at_utc) "
+        "VALUES (?,?,?)", (athlete_id, local_date, now))
+
+
+def _resume_from_duplicate(conn, dt, data: dict, affected: set) -> None:
+    """重发已受理的消息：只有上次重建遗留待重建范围时，才续跑重建（正常重复不重算）。"""
+    if dt not in IN_PHASE:
+        return
+    shot_ids: list[str] = []
+    if dt == 3:
+        shot_ids = [v.get("shotId") for v in (data.get("videos") or []) if v.get("shotId")]
+    elif data.get("shotId"):
+        shot_ids = [data["shotId"]]
+    targets: set[tuple[str, str]] = set()
+    for shot_id in shot_ids:
+        row = conn.execute("SELECT athlete_id, local_date FROM v12_shot WHERE shot_id=?",
+                           (shot_id,)).fetchone()
+        if row:
+            targets.add((row[0], row[1]))
+    if not targets:
+        return
+    pending = {(r[0], r[1]) for r in conn.execute(
+        "SELECT athlete_id, local_date FROM v12_pending_rebuild").fetchall()}
+    affected.update(targets & pending)
+
+
 def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> dict:
     if dt == 2:
         row = map_dt2(data)
@@ -128,6 +160,7 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
         conn.execute(f"INSERT INTO v12_shot ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                      tuple(row[c] for c in cols))
         affected.add((row["athlete_id"], row["local_date"]))
+        _record_pending(conn, row["athlete_id"], row["local_date"], now)
         out = {"athlete_id": row["athlete_id"], "shotId": row["shot_id"]}
         warns = dt2_warnings(data)
         if warns:
@@ -140,7 +173,7 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
         cols = list(row)
         conn.execute(f"INSERT INTO v12_sample ({','.join(cols)}) VALUES ({','.join('?' * len(cols))})",
                      tuple(row[c] for c in cols))
-        _mark_shot(conn, row["shot_id"], affected)
+        _mark_shot(conn, row["shot_id"], affected, now)
         return {"hasShotId": row["shot_id"] is not None}
 
     if dt == 3:
@@ -153,7 +186,7 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
                 (v["shotId"], v["source"], v["videoPath"], mid, utc_ms_str(data.get("releaseTime")),
                  data["shotSeq"], data.get("lane")))
             stored += cur.rowcount
-            _mark_shot(conn, v["shotId"], affected)
+            _mark_shot(conn, v["shotId"], affected, now)
         if stored == 0 and data["videos"]:
             return {"status": "duplicate", "reason": "该箭视频引用已存在（shotId+source，不覆盖）"}
         return {"videos_stored": stored}
@@ -180,13 +213,14 @@ def _dispatch(conn, mid: str, dt: int, data: dict, now: str, affected: set) -> d
     return {"note": "本期只存原文，不参与计算"}
 
 
-def _mark_shot(conn, shot_id: str | None, affected: set) -> None:
+def _mark_shot(conn, shot_id: str | None, affected: set, now: str) -> None:
     """实时流/事后通道晚于弹着到达：凭 shotId 找到所属（运动员, 本地日）以便重建。"""
     if not shot_id:
         return
     r = conn.execute("SELECT athlete_id, local_date FROM v12_shot WHERE shot_id=?", (shot_id,)).fetchone()
     if r:
         affected.add((r[0], r[1]))
+        _record_pending(conn, r[0], r[1], now)
 
 
 # ---- 场次重建（复用现有 align/store/记忆层）----
@@ -218,16 +252,18 @@ def _video_ref(conn, shot_id: str) -> str | None:
 
 
 def _rebuild(db: Database, affected: set[tuple[str, str]], on_imported) -> int:
-    if not affected:
+    conn = db.conn
+    # 待重建范围是持久化的真源：上次重建失败或进程重启后仍在这里，续跑即可恢复。
+    pending = {(r[0], r[1]) for r in conn.execute(
+        "SELECT athlete_id, local_date FROM v12_pending_rebuild").fetchall()}
+    targets = pending | set(affected)
+    if not targets:
         return 0
     store = get_config().store
-    conn = db.conn
     rebuilt = 0
     touched_athletes: dict[str, list[str]] = {}
-    for aid, day in sorted(affected):
+    for aid, day in sorted(targets):
         prefix = f"{aid}_{day}_{SESSION_TAG}"
-        old_ids = [r[0] for r in conn.execute(
-            "SELECT session_id FROM session_dim WHERE athlete_id=? AND session_id LIKE ?", (aid, prefix + "%"))]
         rows = conn.execute(
             "SELECT * FROM v12_shot WHERE athlete_id=? AND local_date=? ORDER BY shot_time_utc, shot_seq, shot_id",
             (aid, day)).fetchall()
@@ -239,43 +275,53 @@ def _rebuild(db: Database, affected: set[tuple[str, str]], on_imported) -> int:
             else:
                 clusters.append([r])
 
-        new_ids: list[str] = []
-        with conn:
+        # 删除旧场次、重建事实、失效相关报告、清除待重建标记：同一事务，失败整体回滚。
+        with db.write_transaction():
+            old_ids = [r[0] for r in conn.execute(
+                "SELECT session_id FROM session_dim WHERE athlete_id=? AND session_id LIKE ?",
+                (aid, prefix + "%"))]
             for sid in old_ids:
+                db.invalidate_session_reports(aid, sid)
                 conn.execute("DELETE FROM shot_fact WHERE session_id=?", (sid,))
                 conn.execute("DELETE FROM session_dim WHERE session_id=?", (sid,))
-        for n, cluster in enumerate(clusters, start=1):
-            sid = f"{prefix}{n:02d}"
-            shots = []
-            for i, r in enumerate(cluster, start=1):
-                hr, ws, wd = r["hr"], r["wind_speed"], r["wind_dir_deg"]
-                if hr is None or ws is None:
-                    f_hr, f_ws, f_wd = _fallback_samples(conn, r["shot_id"], _ms(r["shot_time_utc"]))
-                    hr = hr if hr is not None else f_hr
-                    if ws is None and f_ws is not None:
-                        ws, wd = f_ws, f_wd
-                shots.append(ShotRaw(
-                    athlete_id=aid, session_id=sid, shot_seq=i,
-                    score=r["score"], hit=r["score"] > 0,
-                    x_mm=r["x_mm"], y_mm=r["y_mm"], mcr_t=None,
-                    hr=hr, wind_speed=ws, wind_dir_deg=wd,
-                    shooting_mode=r["shooting_mode"], bow_type=r["bow_type"],
-                    video_ref=_video_ref(conn, r["shot_id"]),
-                    shot_time_utc=r["shot_time_utc"],
-                    shot_id=r["shot_id"], score_id=r["score_id"], lane=r["lane"],
-                    release_time_utc=r["release_time_utc"], hit_time_utc=r["hit_time_utc"],
-                    flight_time_ms=r["flight_time_ms"],
-                    inner_ten=None if r["inner_ten"] is None else bool(r["inner_ten"]),
-                ))
-            dim, fact_rows = align_session(SessionRaw(
-                session_id=sid, athlete_id=aid, shots=shots,
-                distance_m=store.default_distance_m, site="v1.2"))
-            db.upsert_session(dim)
-            db.insert_shots(fact_rows)
-            new_ids.append(sid)
-            rebuilt += 1
-        for sid in set(old_ids) | set(new_ids):
-            db.invalidate_session_cache(aid, sid)
+            new_ids: list[str] = []
+            for n, cluster in enumerate(clusters, start=1):
+                sid = f"{prefix}{n:02d}"
+                shots = []
+                for i, r in enumerate(cluster, start=1):
+                    hr, ws, wd = r["hr"], r["wind_speed"], r["wind_dir_deg"]
+                    if hr is None or ws is None:
+                        f_hr, f_ws, f_wd = _fallback_samples(conn, r["shot_id"], _ms(r["shot_time_utc"]))
+                        hr = hr if hr is not None else f_hr
+                        if ws is None and f_ws is not None:
+                            ws, wd = f_ws, f_wd
+                    shots.append(ShotRaw(
+                        athlete_id=aid, session_id=sid, shot_seq=i,
+                        score=r["score"], hit=r["score"] > 0,
+                        x_mm=r["x_mm"], y_mm=r["y_mm"], mcr_t=None,
+                        hr=hr, wind_speed=ws, wind_dir_deg=wd,
+                        shooting_mode=r["shooting_mode"], bow_type=r["bow_type"],
+                        video_ref=_video_ref(conn, r["shot_id"]),
+                        shot_time_utc=r["shot_time_utc"],
+                        shot_id=r["shot_id"], score_id=r["score_id"], lane=r["lane"],
+                        release_time_utc=r["release_time_utc"], hit_time_utc=r["hit_time_utc"],
+                        flight_time_ms=r["flight_time_ms"],
+                        inner_ten=None if r["inner_ten"] is None else bool(r["inner_ten"]),
+                    ))
+                dim, fact_rows = align_session(SessionRaw(
+                    session_id=sid, athlete_id=aid, shots=shots,
+                    distance_m=store.default_distance_m, site="v1.2"))
+                db.upsert_session(dim)
+                db.insert_shots(fact_rows)
+                new_ids.append(sid)
+                rebuilt += 1
+            # 首次导入的场次也要失效覆盖到它的日/周/月/季/年报告（含比较窗口与锚点依赖）。
+            for sid in new_ids:
+                if sid not in old_ids:
+                    db.invalidate_session_reports(aid, sid)
+            conn.execute("DELETE FROM v12_pending_rebuild WHERE athlete_id=? AND local_date=?",
+                         (aid, day))
+
         _ensure_profile(db, aid, rows[-1]["bow_type"] if rows else None)
         touched_athletes.setdefault(aid, []).extend(new_ids)
         logger.info("v1.2 重建 athlete=%s day=%s 场次 %d→%d 箭 %d", aid, day, len(old_ids), len(new_ids), len(rows))
@@ -289,6 +335,15 @@ def _rebuild(db: Database, affected: set[tuple[str, str]], on_imported) -> int:
     return rebuilt
 
 
+def resume_pending_rebuilds(db: Database, on_imported=refresh_rolling_after_import) -> int:
+    """进程重启后继续上次未完成的重建（失败只记录，留给下次重发/重启）。"""
+    try:
+        return _rebuild(db, set(), on_imported)
+    except Exception as exc:  # noqa: BLE001 启动不应因重建失败而中断服务
+        logger.warning("v1.2 待重建范围恢复失败（保留标记，稍后重试）: %s", exc)
+        return 0
+
+
 def _ensure_profile(db: Database, aid: str, bow_type: str | None) -> None:
     """dt9A 不在本期：首次出现的运动员建最小档案。已有档案不覆盖。
     PR #4：名字留空（NULL），门户显示「未命名选手」；不再用脱敏 ID 后四位拼名字（HMAC 派生，隐私）。
@@ -297,5 +352,5 @@ def _ensure_profile(db: Database, aid: str, bow_type: str | None) -> None:
         db.upsert_profile({"athlete_id": aid, "name": None, "bow_type": bow_type})
 
 
-__all__ = ["ingest_messages", "IN_PHASE", "RAW_ONLY"]
+__all__ = ["ingest_messages", "resume_pending_rebuilds", "IN_PHASE", "RAW_ONLY"]
 
